@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use axum::{
-    extract::{Query, Request},
-    http::StatusCode,
+    body::{Body, Bytes},
+    extract::{Query, Request, State},
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -18,7 +19,10 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Condvar, Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -32,19 +36,60 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 #[cfg(target_os = "windows")]
 use windows::{
-    core::{HSTRING, PCWSTR},
+    core::{HRESULT, HSTRING, PCWSTR},
     Win32::{
+        Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK},
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-            COINIT_APARTMENTTHREADED,
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        },
+        System::{
+            Ole::{
+                DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize,
+                DROPEFFECT, DROPEFFECT_COPY,
+            },
+            SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS},
         },
         UI::Shell::{
-            FileOperation, IFileOperation, IShellItem, IsUserAnAdmin, SHCreateItemFromParsingName,
-            FOFX_RECYCLEONDELETE, FOF_NOCONFIRMATION,
+            BHID_DataObject, Common::ITEMIDLIST, FileOperation, IFileOperation, IShellItem,
+            IsUserAnAdmin, SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists,
+            SHParseDisplayName, FOFX_RECYCLEONDELETE, FOF_NOCONFIRMATION,
         },
     },
 };
+
+#[cfg(target_os = "windows")]
+#[windows::core::implement(IDropSource)]
+struct WindowsFileDragSource;
+
+#[cfg(target_os = "windows")]
+impl WindowsFileDragSource {
+    fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl IDropSource_Impl for WindowsFileDragSource_Impl {
+    fn QueryContinueDrag(
+        &self,
+        escape_pressed: windows::core::BOOL,
+        key_state: MODIFIERKEYS_FLAGS,
+    ) -> HRESULT {
+        if escape_pressed.as_bool() {
+            DRAGDROP_S_CANCEL
+        } else if key_state.0 & MK_LBUTTON.0 == 0 {
+            DRAGDROP_S_DROP
+        } else {
+            S_OK
+        }
+    }
+
+    fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+        DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
 
 const CONFIG_VERSION: u32 = 1;
 const DEFAULT_EXTENSIONS: [&str; 14] = [
@@ -101,6 +146,13 @@ fn default_thumbnail_capture_position() -> String {
     "middle".to_string()
 }
 
+fn default_video_extensions() -> Vec<String> {
+    DEFAULT_EXTENSIONS
+        .iter()
+        .map(|item| item.to_string())
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Preferences {
@@ -116,6 +168,8 @@ struct Preferences {
     show_hidden_items: bool,
     show_nomedia_media: bool,
     video_extensions: Vec<String>,
+    #[serde(default = "default_video_extensions")]
+    managed_video_extensions: Vec<String>,
     open_unsupported_externally: bool,
     #[serde(default = "default_list_columns")]
     list_columns: Vec<ListColumn>,
@@ -133,10 +187,8 @@ impl Default for Preferences {
             muted: false,
             show_hidden_items: false,
             show_nomedia_media: false,
-            video_extensions: DEFAULT_EXTENSIONS
-                .iter()
-                .map(|item| item.to_string())
-                .collect(),
+            video_extensions: default_video_extensions(),
+            managed_video_extensions: default_video_extensions(),
             open_unsupported_externally: true,
             list_columns: default_list_columns(),
         }
@@ -325,6 +377,25 @@ struct VideoStreamServer {
 #[derive(Debug, Deserialize)]
 struct VideoStreamQuery {
     path: String,
+    #[serde(default)]
+    mode: VideoStreamMode,
+    start: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum VideoStreamMode {
+    #[default]
+    Direct,
+    Transcode,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoStreamUrl {
+    url: String,
+    is_transcoded: bool,
+    duration: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -646,7 +717,16 @@ fn add_sidecar_candidates(base: &Path, name: &str, candidates: &mut Vec<PathBuf>
     }
 }
 
+static SIDECAR_PATH_CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
 fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
+    let cache = SIDECAR_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some(path) = entries.get(name) {
+            return Ok(path.clone());
+        }
+    }
+
     let mut candidates = Vec::new();
     if let Ok(current_dir) = std::env::current_dir() {
         let mut cursor = Some(current_dir.as_path());
@@ -671,6 +751,9 @@ fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
         .map(|candidate| fs::canonicalize(&candidate).unwrap_or(candidate));
     match resolved {
         Some(path) => {
+            if let Ok(mut entries) = cache.lock() {
+                entries.insert(name.to_string(), path.clone());
+            }
             log::debug!("Resolved {name} sidecar at {}", path_string(&path));
             Ok(path)
         }
@@ -1229,26 +1312,38 @@ fn validate_config(config: &mut AppConfig) -> Result<(), String> {
     }
 
     config.settings.volume = config.settings.volume.min(100);
-    config.settings.video_extensions = config
-        .settings
-        .video_extensions
-        .iter()
-        .map(|extension| extension.trim().to_ascii_lowercase())
-        .filter(|extension| !extension.is_empty())
-        .map(|extension| {
-            if extension.starts_with('.') {
-                extension
-            } else {
-                format!(".{extension}")
-            }
-        })
-        .collect();
-    config.settings.video_extensions.sort();
-    config.settings.video_extensions.dedup();
+    let normalize_extensions = |extensions: &mut Vec<String>| {
+        *extensions = extensions
+            .iter()
+            .map(|extension| extension.trim().to_ascii_lowercase())
+            .filter(|extension| !extension.is_empty())
+            .map(|extension| {
+                if extension.starts_with('.') {
+                    extension
+                } else {
+                    format!(".{extension}")
+                }
+            })
+            .collect();
+        extensions.sort();
+        extensions.dedup();
+    };
+    normalize_extensions(&mut config.settings.video_extensions);
+    normalize_extensions(&mut config.settings.managed_video_extensions);
 
     if config.settings.video_extensions.is_empty() {
         return Err("At least one supported video extension is required.".to_string());
     }
+    for extension in &config.settings.video_extensions {
+        if !config.settings.managed_video_extensions.contains(extension) {
+            config
+                .settings
+                .managed_video_extensions
+                .push(extension.clone());
+        }
+    }
+    config.settings.managed_video_extensions.sort();
+    config.settings.managed_video_extensions.dedup();
 
     // The filename is always the first visible column; other metadata columns may be rearranged.
     let defaults = default_list_columns();
@@ -1378,6 +1473,42 @@ fn resolve_stream_video_path(path: &str) -> Result<PathBuf, String> {
     Ok(video_path)
 }
 
+fn probe_preview_duration(video_path: &Path) -> Result<Option<f64>, String> {
+    let ffprobe = resolve_sidecar("ffprobe")?;
+    let mut command = Command::new(ffprobe);
+    configure_sidecar_command(&mut command);
+    let output = command
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(video_path)
+        .output()
+        .map_err(|error| format!("Unable to inspect the preview codec: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "FFprobe could not inspect the preview codec: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let duration = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|document| {
+            document
+                .get("format")?
+                .get("duration")?
+                .as_str()?
+                .parse::<f64>()
+                .ok()
+        })
+        .filter(|duration| duration.is_finite() && *duration > 0.0);
+    Ok(duration)
+}
+
 fn encode_query_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
@@ -1393,7 +1524,11 @@ fn encode_query_component(value: &str) -> String {
     encoded
 }
 
-async fn serve_video_stream(Query(query): Query<VideoStreamQuery>, request: Request) -> Response {
+async fn serve_video_stream(
+    State(transcode_generation): State<Arc<AtomicU64>>,
+    Query(query): Query<VideoStreamQuery>,
+    request: Request,
+) -> Response {
     let video_path = match resolve_stream_video_path(&query.path) {
         Ok(path) => path,
         Err(error) => {
@@ -1406,6 +1541,16 @@ async fn serve_video_stream(Query(query): Query<VideoStreamQuery>, request: Requ
         }
     };
 
+    if query.mode == VideoStreamMode::Transcode {
+        return serve_transcoded_video_stream(
+            video_path,
+            query.start,
+            request,
+            State(transcode_generation),
+        )
+        .await;
+    }
+
     match ServeFile::new(video_path).oneshot(request).await {
         Ok(response) => response.into_response(),
         Err(error) => {
@@ -1417,6 +1562,134 @@ async fn serve_video_stream(Query(query): Query<VideoStreamQuery>, request: Requ
                 .into_response()
         }
     }
+}
+
+async fn serve_transcoded_video_stream(
+    video_path: PathBuf,
+    start: Option<f64>,
+    request: Request,
+    State(transcode_generation): State<Arc<AtomicU64>>,
+) -> Response {
+    if request.method() == Method::HEAD {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "video/mp4")
+            .header("accept-ranges", "none")
+            .header("cache-control", "no-store")
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+
+    let ffmpeg = match resolve_sidecar("ffmpeg") {
+        Ok(path) => path,
+        Err(error) => {
+            log::error!("Unable to start transcode preview: {error}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "FFmpeg is unavailable for this preview.",
+            )
+                .into_response();
+        }
+    };
+    let mut command = tokio::process::Command::new(ffmpeg);
+    #[cfg(target_os = "windows")]
+    command.as_std_mut().creation_flags(0x0000_4000); // BELOW_NORMAL_PRIORITY_CLASS
+    let mut child = match {
+        let start = start.filter(|start| start.is_finite() && *start > 0.0);
+        command.args(["-hide_banner", "-loglevel", "error"]);
+        if let Some(start) = start {
+            // Input seeking keeps startup responsive; while transcoding, FFmpeg's default
+            // accurate seek decodes and discards frames up to the requested timestamp.
+            command.arg("-ss").arg(format!("{start:.3}"));
+        }
+        command.arg("-i").arg(&video_path);
+        command
+    }
+    .args([
+        "-map",
+        "0:v:0?",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-tune",
+        "zerolatency",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        "30",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "frag_keyframe+empty_moov+default_base_moof",
+        "-f",
+        "mp4",
+        "pipe:1",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            log::error!("Unable to spawn FFmpeg transcode preview: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to start the FFmpeg preview.",
+            )
+                .into_response();
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.start_kill();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "FFmpeg preview output is unavailable.",
+            )
+                .into_response();
+        }
+    };
+
+    // A new live preview replaces the previous FFmpeg process. Dropping this body also kills the
+    // child when the browser changes selection or closes the request.
+    let generation = transcode_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let stream = async_stream::stream! {
+        use tokio::io::AsyncReadExt;
+
+        let mut stdout = tokio::io::BufReader::new(stdout);
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            if transcode_generation.load(Ordering::SeqCst) != generation {
+                break;
+            }
+            match stdout.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
+                Err(error) => {
+                    log::warn!("FFmpeg preview stream read failed: {error}");
+                    yield Err::<Bytes, std::io::Error>(error);
+                    break;
+                }
+            }
+        }
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "video/mp4")
+        .header("accept-ranges", "none")
+        .header("cache-control", "no-store")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 fn start_video_stream_server() -> Result<String, String> {
@@ -1450,8 +1723,9 @@ fn start_video_stream_server() -> Result<String, String> {
                         return;
                     }
                 };
-                let app =
-                    Router::new().route("/video", get(serve_video_stream).head(serve_video_stream));
+                let app = Router::new()
+                    .route("/video", get(serve_video_stream).head(serve_video_stream))
+                    .with_state(Arc::new(AtomicU64::new(0)));
                 if let Err(error) = axum::serve(listener, app).await {
                     log::error!("The local video stream server stopped unexpectedly: {error}");
                 }
@@ -2278,17 +2552,49 @@ async fn read_thumbnail(
 #[tauri::command]
 fn get_video_stream_url(
     path: String,
+    start_seconds: Option<f64>,
+    force_transcode: Option<bool>,
     video_stream_server: tauri::State<VideoStreamServer>,
-) -> Result<String, String> {
+) -> Result<VideoStreamUrl, String> {
     let video_path = resolve_stream_video_path(&path)?;
+    let is_transcoded = force_transcode.unwrap_or(false);
+    let duration = if is_transcoded {
+        match probe_preview_duration(&video_path) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "Unable to read the duration for FFmpeg preview {}: {error}",
+                    path_string(&video_path)
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let base_url = video_stream_server
         .base_url
         .as_ref()
         .ok_or_else(|| "The local video stream service is unavailable.".to_string())?;
-    Ok(format!(
-        "{base_url}?path={}",
-        encode_query_component(&path_string(&video_path))
-    ))
+    let start_seconds = start_seconds
+        .filter(|start| start.is_finite() && *start > 0.0)
+        .unwrap_or(0.0);
+    let mode = if is_transcoded { "&mode=transcode" } else { "" };
+    let start = if is_transcoded && start_seconds > 0.0 {
+        format!("&start={start_seconds:.3}")
+    } else {
+        String::new()
+    };
+    Ok(VideoStreamUrl {
+        url: format!(
+            "{base_url}?path={}{}{}",
+            encode_query_component(&path_string(&video_path)),
+            mode,
+            start,
+        ),
+        is_transcoded,
+        duration,
+    })
 }
 
 #[tauri::command]
@@ -2299,6 +2605,116 @@ fn open_video_externally(path: String) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("Unable to open the selected video externally: {error}"))?;
     Ok(())
+}
+
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    let target = fs::canonicalize(path)
+        .map_err(|error| format!("Unable to access the selected path: {error}"))?;
+    let metadata = fs::metadata(&target)
+        .map_err(|error| format!("Unable to inspect the selected path: {error}"))?;
+    let mut explorer = Command::new("explorer.exe");
+    if metadata.is_dir() {
+        explorer.arg(&target);
+    } else {
+        explorer.arg(format!("/select,{}", path_string(&target)));
+    }
+    explorer
+        .spawn()
+        .map_err(|error| format!("Unable to show the selected path in Explorer: {error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn parse_shell_item_id_list(path: &Path) -> Result<*mut ITEMIDLIST, String> {
+    unsafe {
+        let mut item_id_list = std::ptr::null_mut();
+        log::debug!(
+            "Preparing Shell item ID list for file drag: {}",
+            path_string(path)
+        );
+        SHParseDisplayName(
+            &HSTRING::from(path_string(path)),
+            None::<&IBindCtx>,
+            &mut item_id_list,
+            0,
+            None,
+        )
+        .map_err(|error| format!("Unable to prepare the dragged video: {error}"))?;
+        if item_id_list.is_null() {
+            return Err("Unable to prepare the dragged video.".to_string());
+        }
+        log::debug!(
+            "Prepared Shell item ID list for file drag: {}",
+            path_string(path)
+        );
+        Ok(item_id_list)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_windows_file_drag(paths: Vec<PathBuf>) -> Result<(), String> {
+    unsafe {
+        log::debug!("Initializing OLE file drag for {} video(s)", paths.len());
+        OleInitialize(None)
+            .map_err(|error| format!("Unable to initialize Windows drag-and-drop: {error}"))?;
+        log::debug!("OLE initialization succeeded for file drag");
+        let mut item_id_lists = Vec::with_capacity(paths.len());
+        let result = (|| {
+            for path in &paths {
+                item_id_lists.push(parse_shell_item_id_list(path)?);
+            }
+            let raw_item_id_lists = item_id_lists
+                .iter()
+                .map(|item_id_list| *item_id_list as *const ITEMIDLIST)
+                .collect::<Vec<_>>();
+            log::debug!(
+                "Creating Shell item array for {} dragged video(s)",
+                raw_item_id_lists.len()
+            );
+            let shell_items = SHCreateShellItemArrayFromIDLists(&raw_item_id_lists)
+                .map_err(|error| format!("Unable to prepare the dragged videos: {error}"))?;
+            log::debug!("Shell item array created; requesting IDataObject for file drag");
+            let data_object: IDataObject = shell_items
+                .BindToHandler(None::<&IBindCtx>, &BHID_DataObject)
+                .map_err(|error| format!("Unable to create the drag data object: {error}"))?;
+            log::debug!("File-drag IDataObject created; entering DoDragDrop with COPY effect");
+            let drag_source: IDropSource = WindowsFileDragSource::new().into();
+            let mut effect = DROPEFFECT(0);
+            DoDragDrop(&data_object, &drag_source, DROPEFFECT_COPY, &mut effect)
+                .ok()
+                .map_err(|error| format!("Windows drag-and-drop failed: {error}"))?;
+            log::debug!(
+                "DoDragDrop returned successfully with effect 0x{:X}",
+                effect.0
+            );
+            Ok(())
+        })();
+        for item_id_list in item_id_lists {
+            CoTaskMemFree(Some(item_id_list.cast()));
+        }
+        OleUninitialize();
+        match &result {
+            Ok(()) => log::debug!("OLE file drag session finished successfully"),
+            Err(error) => log::warn!("OLE file drag session failed: {error}"),
+        }
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_windows_file_drag(_paths: Vec<PathBuf>) -> Result<(), String> {
+    Err(
+        "Dragging files to the system file manager is currently available only on Windows."
+            .to_string(),
+    )
+}
+
+#[tauri::command]
+fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
+    let paths = normalize_video_paths(paths)?;
+    log::debug!("Received file-drag command for {} video(s)", paths.len());
+    start_windows_file_drag(paths)
 }
 
 #[tauri::command]
@@ -2370,9 +2786,19 @@ fn show_file_context_menu(
         None::<&str>,
     )
     .map_err(|error| format!("Unable to create the context menu: {error}"))?;
+    let refresh = MenuItem::with_id(&window, "context-menu-refresh", "刷新", true, None::<&str>)
+        .map_err(|error| format!("Unable to create the context menu: {error}"))?;
     let menu = if is_directory {
-        Menu::with_items(&window, &[&open, &reveal])
+        Menu::with_items(&window, &[&open, &reveal, &refresh])
     } else {
+        let copy_to = MenuItem::with_id(
+            &window,
+            "context-menu-copy-to",
+            "复制到…",
+            true,
+            None::<&str>,
+        )
+        .map_err(|error| format!("Unable to create the context menu: {error}"))?;
         let delete = MenuItem::with_id(
             &window,
             "context-menu-delete",
@@ -2381,7 +2807,7 @@ fn show_file_context_menu(
             None::<&str>,
         )
         .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-        Menu::with_items(&window, &[&open, &reveal, &delete])
+        Menu::with_items(&window, &[&open, &reveal, &refresh, &copy_to, &delete])
     }
     .map_err(|error| format!("Unable to create the context menu: {error}"))?;
 
@@ -2475,7 +2901,11 @@ fn main() {
         }))
         .on_menu_event(|app, event| {
             let result = match event.id().as_ref() {
-                "context-menu-open" | "context-menu-reveal" | "context-menu-delete" => {
+                "context-menu-open"
+                | "context-menu-reveal"
+                | "context-menu-refresh"
+                | "context-menu-copy-to"
+                | "context-menu-delete" => {
                     let target = app
                         .state::<ContextMenuState>()
                         .0
@@ -2485,6 +2915,11 @@ fn main() {
                     match target {
                         Some(target) if event.id().as_ref() == "context-menu-open" => {
                             open_context_target(&target)
+                        }
+                        Some(_) if event.id().as_ref() == "context-menu-refresh" => {
+                            app.emit("workspace-refresh-request", ()).map_err(|error| {
+                                format!("Unable to request a workspace refresh: {error}")
+                            })
                         }
                         Some(target) if event.id().as_ref() == "context-menu-delete" => {
                             let queue = app.state::<FileOperationQueue>().0.clone();
@@ -2507,6 +2942,18 @@ fn main() {
                                 }
                             }
                         }
+                        Some(target) if event.id().as_ref() == "context-menu-copy-to" => app
+                            .emit(
+                                "copy-to-request",
+                                target
+                                    .operation_paths
+                                    .iter()
+                                    .map(|path| path_string(path))
+                                    .collect::<Vec<_>>(),
+                            )
+                            .map_err(|error| {
+                                format!("Unable to request a copy destination: {error}")
+                            }),
                         Some(target) => reveal_context_target(&target),
                         None => Ok(()),
                     }
@@ -2530,10 +2977,12 @@ fn main() {
             read_thumbnail,
             get_video_stream_url,
             open_video_externally,
+            start_file_drag,
             read_recent_logs,
             recycle_videos,
             rename_video,
-            copy_videos_to_workspace
+            copy_videos_to_workspace,
+            reveal_path
         ])
         .run(tauri::generate_context!())
         .expect("failed to run VideoSweeper");

@@ -43,22 +43,26 @@ import {
   Star,
   StarOff,
   Sun,
+  Trash2,
   Video,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
 import {
+  forwardRef,
   memo,
   startTransition,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 
 type ViewMode = "grid" | "list";
@@ -92,6 +96,38 @@ type VideoEntry = {
   thumbnailPath: string | null;
 };
 
+type WorkspaceSelectionBox = {
+  viewMode: ViewMode;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type WorkspaceSelectionGesture = {
+  viewMode: ViewMode;
+  pointerId: number;
+  root: HTMLDivElement;
+  startClientX: number;
+  startClientY: number;
+  lastClientX: number;
+  lastClientY: number;
+  initialSelection: Set<string>;
+  intersectedPaths: Set<string>;
+  additive: boolean;
+  moved: boolean;
+  hasAutoScrolled: boolean;
+};
+
+type FileDragGesture = {
+  pointerId: number;
+  root: HTMLDivElement;
+  startClientX: number;
+  startClientY: number;
+  paths: string[];
+  started: boolean;
+};
+
 type DirectoryListing = {
   path: string;
   folders: DirectoryEntry[];
@@ -114,6 +150,20 @@ type CopyResult = {
   copiedPaths: string[];
   skippedPaths: string[];
   failedPaths: string[];
+};
+
+type WorkspaceContextMenu = {
+  x: number;
+  y: number;
+  workspacePath: string;
+  paths: string[];
+  primaryPath: string | null;
+};
+
+type VideoStreamUrl = {
+  url: string;
+  isTranscoded: boolean;
+  duration: number | null;
 };
 
 type VideoMetadata = {
@@ -176,6 +226,7 @@ type Preferences = {
   showHiddenItems: boolean;
   showNomediaMedia: boolean;
   videoExtensions: string[];
+  managedVideoExtensions: string[];
   openUnsupportedExternally: boolean;
   listColumns: ListColumn[];
 };
@@ -224,6 +275,22 @@ const fallbackConfig: AppConfig = {
     showHiddenItems: false,
     showNomediaMedia: false,
     videoExtensions: [
+      ".mp4",
+      ".mkv",
+      ".webm",
+      ".avi",
+      ".mov",
+      ".wmv",
+      ".flv",
+      ".m4v",
+      ".mpeg",
+      ".mpg",
+      ".3gp",
+      ".rm",
+      ".rmvb",
+      ".ts",
+    ],
+    managedVideoExtensions: [
       ".mp4",
       ".mkv",
       ".webm",
@@ -471,6 +538,7 @@ const VideoThumbnail = memo(function VideoThumbnail({
           src={thumbnailSrc ?? ""}
           alt=""
           loading="lazy"
+          draggable={false}
           onError={() => {
             setFailedPath(thumbnailPath);
             writeClientLog("error", `缩略图显示失败：${thumbnailPath}`);
@@ -486,15 +554,12 @@ const VideoThumbnail = memo(function VideoThumbnail({
   );
 });
 
-function PreviewPlayer({
-  video,
-  thumbnailPath,
-  autoplay,
-  volume,
-  muted,
-  onEnsureThumbnail,
-  onAudioPreferenceChange,
-}: {
+type PreviewPlayerHandle = {
+  togglePlayback: () => void;
+  skipPlayback: (seconds: number) => void;
+};
+
+type PreviewPlayerProps = {
   video: VideoEntry | null;
   thumbnailPath: string | null;
   autoplay: boolean;
@@ -502,11 +567,22 @@ function PreviewPlayer({
   muted: boolean;
   onEnsureThumbnail: (video: VideoEntry) => void;
   onAudioPreferenceChange: (volume: number, muted: boolean, persistImmediately?: boolean) => void;
-}) {
+};
+
+const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>(function PreviewPlayer({
+  video,
+  thumbnailPath,
+  autoplay,
+  volume,
+  muted,
+  onEnsureThumbnail,
+  onAudioPreferenceChange,
+}, ref) {
   const videoElement = useRef<HTMLVideoElement>(null);
   const playerSurface = useRef<HTMLDivElement>(null);
   const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [isTranscoded, setIsTranscoded] = useState(false);
   const [playerState, setPlayerState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -515,6 +591,11 @@ function PreviewPlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState(1);
+  const streamStartTime = useRef(0);
+  const streamRequest = useRef(0);
+  const resumeAfterSeek = useRef(false);
+  const isScrubbing = useRef(false);
+  const directFallbackRequested = useRef(false);
 
   useEffect(() => {
     setThumbnailSrc(null);
@@ -544,21 +625,28 @@ function PreviewPlayer({
 
   useEffect(() => {
     setStreamUrl(null);
+    setIsTranscoded(false);
     setPlayerError(null);
     setPlayerState(video ? "loading" : "idle");
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    streamStartTime.current = 0;
+    resumeAfterSeek.current = false;
+    directFallbackRequested.current = false;
+    const request = ++streamRequest.current;
     if (!video) {
       return;
     }
     let active = true;
     // A short stable-selection delay prevents rapid range selection from opening a stream per item.
     const timer = window.setTimeout(() => {
-      void invoke<string>("get_video_stream_url", { path: video.path })
-        .then((url) => {
-          if (active) {
+      void invoke<VideoStreamUrl>("get_video_stream_url", { path: video.path })
+        .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
+          if (active && request === streamRequest.current) {
             setStreamUrl(url);
+            setIsTranscoded(nextIsTranscoded);
+            setDuration(streamDuration ?? 0);
           }
         })
         .catch((error) => {
@@ -607,14 +695,79 @@ function PreviewPlayer({
     }
   };
 
-  const seek = (nextTime: number) => {
-    const element = videoElement.current;
-    if (!element || !Number.isFinite(nextTime)) {
+  const startTranscodedPreview = (startTime: number, resume: boolean) => {
+    if (!video || !Number.isFinite(startTime)) {
       return;
     }
-    element.currentTime = nextTime;
-    setCurrentTime(nextTime);
+    const targetTime = duration > 0 ? Math.min(Math.max(0, startTime), duration) : Math.max(0, startTime);
+    const request = ++streamRequest.current;
+    streamStartTime.current = targetTime;
+    resumeAfterSeek.current = resume;
+    setCurrentTime(targetTime);
+    setPlayerError(null);
+    setPlayerState("loading");
+    setStreamUrl(null);
+    void invoke<VideoStreamUrl>("get_video_stream_url", {
+      path: video.path,
+      startSeconds: targetTime,
+      forceTranscode: true,
+    })
+      .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
+        if (request === streamRequest.current) {
+          setIsTranscoded(nextIsTranscoded);
+          setDuration(streamDuration ?? duration);
+          setStreamUrl(url);
+        }
+      })
+      .catch((error) => {
+        if (request === streamRequest.current) {
+          const message = errorMessage(error);
+          setPlayerError(message);
+          setPlayerState("error");
+          writeClientLog("error", `创建转码预览失败：${video.path}，${message}`);
+        }
+      });
   };
+
+  const fallbackDirectPreview = (reason: string, resume: boolean) => {
+    if (isTranscoded || directFallbackRequested.current) {
+      return;
+    }
+    directFallbackRequested.current = true;
+    writeClientLog("warn", `原文件内嵌预览缺少可用视频轨，回退到 FFmpeg 转码：${reason}，${video?.path ?? ""}`);
+    startTranscodedPreview(0, resume);
+  };
+
+  const seek = (nextTime: number) => {
+    const element = videoElement.current;
+    if (!element || !video || !Number.isFinite(nextTime)) {
+      return;
+    }
+    const targetTime = Math.min(Math.max(0, nextTime), duration);
+    if (!isTranscoded) {
+      element.currentTime = targetTime;
+      setCurrentTime(targetTime);
+      return;
+    }
+    startTranscodedPreview(targetTime, !element.paused);
+  };
+
+  const skipPlayback = (seconds: number) => {
+    const element = videoElement.current;
+    if (!element || playerState !== "ready") {
+      return;
+    }
+    seek(currentTime + seconds);
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      togglePlayback,
+      skipPlayback,
+    }),
+    [currentTime, duration, isTranscoded, playerState, video],
+  );
 
   const openExternally = () => {
     if (!video) {
@@ -647,20 +800,47 @@ function PreviewPlayer({
             src={streamUrl}
             preload="metadata"
             playsInline
-            onCanPlay={() => {
+            onCanPlay={(event) => {
+              if (!isTranscoded && (event.currentTarget.videoWidth === 0 || event.currentTarget.videoHeight === 0)) {
+                fallbackDirectPreview(
+                  `canplay 时视频尺寸为 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
+                  autoplay || !event.currentTarget.paused,
+                );
+                return;
+              }
               setPlayerState("ready");
-              if (autoplay) {
+              if (autoplay || resumeAfterSeek.current) {
+                resumeAfterSeek.current = false;
                 void videoElement.current?.play().catch((error) => {
                   writeClientLog("warn", `自动播放预览被阻止：${video.path}，${errorMessage(error)}`);
                 });
               }
             }}
-            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-            onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            onLoadedMetadata={(event) => {
+              if (!isTranscoded && (event.currentTarget.videoWidth === 0 || event.currentTarget.videoHeight === 0)) {
+                fallbackDirectPreview(
+                  `loadedmetadata 时视频尺寸为 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
+                  autoplay || !event.currentTarget.paused,
+                );
+                return;
+              }
+              if (!isTranscoded && Number.isFinite(event.currentTarget.duration)) {
+                setDuration(event.currentTarget.duration);
+              }
+            }}
+            onTimeUpdate={(event) => {
+              if (!isScrubbing.current) {
+                setCurrentTime(streamStartTime.current + event.currentTarget.currentTime);
+              }
+            }}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
             onEnded={() => setIsPlaying(false)}
             onError={() => {
+              if (!isTranscoded) {
+                fallbackDirectPreview("浏览器报告媒体加载错误", autoplay);
+                return;
+              }
               const message = "此视频无法在内嵌播放器中播放";
               setPlayerError(message);
               setPlayerState("error");
@@ -676,6 +856,7 @@ function PreviewPlayer({
           </div>
         )}
       </div>
+      {isTranscoded && <p className="transcode-notice">实时转码预览：拖动结束后会从目标位置重新开始转码</p>}
       <div className="player-controls" aria-label="播放器控制">
         <button type="button" aria-label={isPlaying ? "暂停" : "播放"} title={isPlaying ? "暂停" : "播放"} onClick={togglePlayback} disabled={playerState !== "ready"}>
           {isPlaying ? <Pause size={16} /> : <Play size={16} />}
@@ -690,7 +871,22 @@ function PreviewPlayer({
           value={Math.min(currentTime, duration || 0)}
           aria-label="播放进度"
           disabled={playerState !== "ready" || duration <= 0}
-          onInput={(event) => seek(Number(event.currentTarget.value))}
+          onPointerDown={() => {
+            isScrubbing.current = true;
+          }}
+          onInput={(event) => setCurrentTime(Number(event.currentTarget.value))}
+          onPointerUp={(event) => {
+            isScrubbing.current = false;
+            seek(Number(event.currentTarget.value));
+          }}
+          onPointerCancel={() => {
+            isScrubbing.current = false;
+          }}
+          onKeyUp={(event) => {
+            if (["ArrowLeft", "ArrowRight", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+              seek(Number(event.currentTarget.value));
+            }
+          }}
         />
         <button
           type="button"
@@ -739,7 +935,7 @@ function PreviewPlayer({
       </div>
     </section>
   );
-}
+});
 
 function DirectoryTreeNode({
   entry,
@@ -837,6 +1033,7 @@ export default function App() {
   const [isLogPanelOpen, setIsLogPanelOpen] = useState(false);
   const [logMinimumLevel, setLogMinimumLevel] = useState<LogMinimumLevel>("warn");
   const [settingsDraft, setSettingsDraft] = useState<Preferences>(fallbackConfig.settings);
+  const [newVideoExtension, setNewVideoExtension] = useState("");
   const [systemColorMode, setSystemColorMode] = useState<ColorMode>("dark");
   const [toast, setToast] = useState<string | null>(null);
   const [logSnapshot, setLogSnapshot] = useState<LogSnapshot | null>(null);
@@ -844,9 +1041,12 @@ export default function App() {
   const [logLoading, setLogLoading] = useState(false);
   const [liveLogs, setLiveLogs] = useState<LiveLogEntry[]>([]);
   const [metadataLoading, setMetadataLoading] = useState(false);
+  const [selectedMetadataLoading, setSelectedMetadataLoading] = useState(false);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [isExternalDropActive, setIsExternalDropActive] = useState(false);
+  const [workspaceSelectionBox, setWorkspaceSelectionBox] = useState<WorkspaceSelectionBox | null>(null);
+  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenu | null>(null);
   const [gridColumns, setGridColumns] = useState(1);
   const [gridViewport, setGridViewport] = useState<HTMLDivElement | null>(null);
   const [workspaceMinSize, setWorkspaceMinSize] = useState(34);
@@ -856,10 +1056,16 @@ export default function App() {
   // A later folder click supersedes earlier scans that are still waiting for the Rust command.
   const workspaceRequest = useRef(0);
   const metadataRequest = useRef(0);
+  const selectedMetadataRequest = useRef(0);
   const probedMetadataPaths = useRef<Set<string>>(new Set());
   const renameInputRef = useRef<HTMLInputElement>(null);
   const renameSubmitting = useRef(false);
   const renameCancelling = useRef(false);
+  const workspaceSelectionGesture = useRef<WorkspaceSelectionGesture | null>(null);
+  const workspaceSelectionAutoScrollFrame = useRef<number | null>(null);
+  const suppressBackgroundSelectionClear = useRef(false);
+  const fileDragGesture = useRef<FileDragGesture | null>(null);
+  const previewPlayerRef = useRef<PreviewPlayerHandle>(null);
   const toastTimeout = useRef<number | null>(null);
   const panelGroupRef = useRef<HTMLDivElement>(null);
   const gridScrollElement = useRef<HTMLDivElement>(null);
@@ -1361,6 +1567,66 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const requestId = ++selectedMetadataRequest.current;
+    const currentVideo = selectedVideo;
+    const currentWorkspacePath = workspace?.path;
+    const requiresProbe = currentVideo && (
+      currentVideo.duration === null ||
+      currentVideo.width === null ||
+      currentVideo.height === null
+    );
+    if (!currentVideo || !currentWorkspacePath || !requiresProbe || probedMetadataPaths.current.has(currentVideo.path)) {
+      setSelectedMetadataLoading(false);
+      return;
+    }
+
+    setSelectedMetadataLoading(true);
+    writeClientLog("debug", `补充读取右栏媒体信息：${currentVideo.path}`);
+    void invoke<MetadataBatchResult>("probe_video_metadata_batch_command", { paths: [currentVideo.path] })
+      .then((result) => {
+        if (requestId !== selectedMetadataRequest.current) {
+          return;
+        }
+        probedMetadataPaths.current.add(currentVideo.path);
+        const metadata = result.metadata.find((item) => item.path === currentVideo.path);
+        if (!metadata) {
+          writeClientLog("warn", `无法读取右栏媒体信息：${currentVideo.path}`);
+          return;
+        }
+        setWorkspace((current) => {
+          if (!current || current.path !== currentWorkspacePath) {
+            return current;
+          }
+          return {
+            ...current,
+            videos: current.videos.map((video) => (
+              video.path === currentVideo.path
+                ? {
+                    ...video,
+                    duration: metadata.duration ?? video.duration,
+                    width: metadata.width ?? video.width,
+                    height: metadata.height ?? video.height,
+                  }
+                : video
+            )),
+          };
+        });
+        writeClientLog("debug", `右栏媒体信息读取完成：${currentVideo.path}`);
+      })
+      .catch((error: unknown) => {
+        if (requestId === selectedMetadataRequest.current) {
+          probedMetadataPaths.current.add(currentVideo.path);
+          writeClientLog("warn", `右栏媒体信息读取失败：${currentVideo.path}，${errorMessage(error)}`);
+        }
+      })
+      .finally(() => {
+        if (requestId === selectedMetadataRequest.current) {
+          setSelectedMetadataLoading(false);
+        }
+      });
+  }, [selectedVideo?.duration, selectedVideo?.height, selectedVideo?.path, selectedVideo?.width, workspace?.path]);
+
   const toggleTreeNode = (path: string) => {
     const nextExpanded = !expandedPaths.has(path);
     setExpandedPaths((current) => {
@@ -1448,11 +1714,255 @@ export default function App() {
   };
 
   const clearSelectionFromBackground = (event: ReactMouseEvent<HTMLElement>) => {
+    if (suppressBackgroundSelectionClear.current) {
+      suppressBackgroundSelectionClear.current = false;
+      return;
+    }
     const target = event.target;
     if (!(target instanceof Element) || target.closest(".video-card, .video-list-row, .video-list-header")) {
       return;
     }
     clearWorkspaceSelection();
+  };
+
+  const selectionPathsIntersecting = (root: HTMLDivElement, selectionRect: DOMRect) => {
+    const paths = new Set<string>();
+    root.querySelectorAll<HTMLElement>(".video-card[data-video-path], .video-list-row[data-video-path]").forEach((item) => {
+      const itemRect = item.getBoundingClientRect();
+      const intersects =
+        itemRect.left < selectionRect.right &&
+        itemRect.right > selectionRect.left &&
+        itemRect.top < selectionRect.bottom &&
+        itemRect.bottom > selectionRect.top;
+      if (intersects) {
+        const path = item.dataset.videoPath;
+        if (path) {
+          paths.add(path);
+        }
+      }
+    });
+    return paths;
+  };
+
+  const startWorkspaceRectangleSelection = (event: ReactPointerEvent<HTMLDivElement>, mode: ViewMode) => {
+    if (event.button !== 0 || !workspace || visibleVideos.length === 0) {
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest(".video-card, .video-list-row, .video-list-header, input, button, select, a, [contenteditable='true']")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const rootRect = event.currentTarget.getBoundingClientRect();
+    writeClientLog(
+      "debug",
+      `开始框选：${mode}，鼠标 (${event.clientX}, ${event.clientY})，容器 (${Math.round(rootRect.left)}, ${Math.round(rootRect.top)})，滚动 (${Math.round(event.currentTarget.scrollLeft)}, ${Math.round(event.currentTarget.scrollTop)})`,
+    );
+    workspaceSelectionGesture.current = {
+      viewMode: mode,
+      pointerId: event.pointerId,
+      root: event.currentTarget,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      lastClientX: event.clientX,
+      lastClientY: event.clientY,
+      initialSelection: new Set(selectedVideos),
+      intersectedPaths: new Set(),
+      additive: event.ctrlKey || event.metaKey || event.shiftKey,
+      moved: false,
+      hasAutoScrolled: false,
+    };
+  };
+
+  const stopWorkspaceSelectionAutoScroll = () => {
+    if (workspaceSelectionAutoScrollFrame.current !== null) {
+      window.cancelAnimationFrame(workspaceSelectionAutoScrollFrame.current);
+      workspaceSelectionAutoScrollFrame.current = null;
+    }
+  };
+
+  const applyWorkspaceRectangleSelection = (
+    gesture: WorkspaceSelectionGesture,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const width = Math.abs(clientX - gesture.startClientX);
+    const height = Math.abs(clientY - gesture.startClientY);
+    if (!gesture.moved && width < 4 && height < 4) {
+      return;
+    }
+    gesture.moved = true;
+    const leftClient = Math.min(gesture.startClientX, clientX);
+    const topClient = Math.min(gesture.startClientY, clientY);
+    const selectionRect = new DOMRect(leftClient, topClient, width, height);
+    const rootRect = gesture.root.getBoundingClientRect();
+    setWorkspaceSelectionBox({
+      viewMode: gesture.viewMode,
+      // Use viewport coordinates so a scrolling/virtualized container cannot shift the visual box.
+      left: leftClient,
+      top: topClient,
+      width,
+      height,
+    });
+    if (width < 8 && height < 8) {
+      writeClientLog(
+        "debug",
+        `框选进入拖动：${gesture.viewMode}，视口 (${Math.round(leftClient)}, ${Math.round(topClient)})，容器内 (${Math.round(leftClient - rootRect.left + gesture.root.scrollLeft)}, ${Math.round(topClient - rootRect.top + gesture.root.scrollTop)})，尺寸 ${Math.round(width)}×${Math.round(height)}`,
+      );
+    }
+    const intersectingPaths = selectionPathsIntersecting(gesture.root, selectionRect);
+    if (gesture.hasAutoScrolled) {
+      intersectingPaths.forEach((path) => gesture.intersectedPaths.add(path));
+    } else {
+      gesture.intersectedPaths = intersectingPaths;
+    }
+    const nextSelection = gesture.additive ? new Set(gesture.initialSelection) : new Set<string>();
+    gesture.intersectedPaths.forEach((path) => nextSelection.add(path));
+    setSelectedVideos(nextSelection);
+    const nextAnchor = visibleVideos.find((video) => gesture.intersectedPaths.has(video.path))?.path;
+    if (nextAnchor) {
+      setSelectionAnchor(nextAnchor);
+    } else if (nextSelection.size === 0) {
+      setSelectionAnchor(null);
+    }
+  };
+
+  const updateWorkspaceSelectionAutoScroll = (gesture: WorkspaceSelectionGesture) => {
+    const edgeSize = 56;
+    let scrollStep = 0;
+    // Pointer capture keeps this gesture alive outside the workspace, so use the application viewport
+    // rather than the scroll container's bounds. This allows a drag to reach the title bar or bottom edge.
+    if (gesture.lastClientY <= edgeSize) {
+      const proximity = Math.min(1, (edgeSize - gesture.lastClientY) / edgeSize);
+      scrollStep = -Math.ceil(5 + proximity * 19);
+    } else if (gesture.lastClientY >= window.innerHeight - edgeSize) {
+      const proximity = Math.min(1, (gesture.lastClientY - (window.innerHeight - edgeSize)) / edgeSize);
+      scrollStep = Math.ceil(5 + proximity * 19);
+    }
+
+    if (scrollStep === 0) {
+      stopWorkspaceSelectionAutoScroll();
+      return;
+    }
+    if (workspaceSelectionAutoScrollFrame.current !== null) {
+      return;
+    }
+
+    const tick = () => {
+      workspaceSelectionAutoScrollFrame.current = null;
+      const activeGesture = workspaceSelectionGesture.current;
+      if (!activeGesture || activeGesture !== gesture) {
+        return;
+      }
+      const previousScrollTop = activeGesture.root.scrollTop;
+      activeGesture.root.scrollTop = Math.max(0, previousScrollTop + scrollStep);
+      if (activeGesture.root.scrollTop === previousScrollTop) {
+        return;
+      }
+      if (!activeGesture.hasAutoScrolled) {
+        activeGesture.hasAutoScrolled = true;
+        writeClientLog("debug", `框选自动滚动开始：${activeGesture.viewMode}，方向 ${scrollStep > 0 ? "向下" : "向上"}`);
+      }
+      applyWorkspaceRectangleSelection(activeGesture, activeGesture.lastClientX, activeGesture.lastClientY);
+      updateWorkspaceSelectionAutoScroll(activeGesture);
+    };
+    workspaceSelectionAutoScrollFrame.current = window.requestAnimationFrame(tick);
+  };
+
+  const updateWorkspaceRectangleSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = workspaceSelectionGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+    gesture.lastClientX = event.clientX;
+    gesture.lastClientY = event.clientY;
+    applyWorkspaceRectangleSelection(gesture, event.clientX, event.clientY);
+    updateWorkspaceSelectionAutoScroll(gesture);
+  };
+
+  const finishWorkspaceRectangleSelection = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = workspaceSelectionGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+    stopWorkspaceSelectionAutoScroll();
+    workspaceSelectionGesture.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setWorkspaceSelectionBox(null);
+    if (gesture.moved) {
+      suppressBackgroundSelectionClear.current = true;
+      window.setTimeout(() => {
+        suppressBackgroundSelectionClear.current = false;
+      }, 0);
+      writeClientLog("debug", `完成框选：${gesture.viewMode}，当前选中 ${selectedVideos.size} 个视频`);
+    } else {
+      clearWorkspaceSelection();
+    }
+  };
+
+  const startVideoFileDrag = (event: ReactPointerEvent<HTMLDivElement>, path: string) => {
+    if (event.button !== 0 || renamingPath === path) {
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    fileDragGesture.current = {
+      pointerId: event.pointerId,
+      root: event.currentTarget,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      paths: selectedVideos.has(path) ? [...selectedVideos] : [path],
+      started: false,
+    };
+    writeClientLog(
+      "debug",
+      `准备文件拖出：候选 ${selectedVideos.has(path) ? selectedVideos.size : 1} 个，起点 (${event.clientX}, ${event.clientY})，路径 ${path}`,
+    );
+  };
+
+  const updateVideoFileDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = fileDragGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId || gesture.started) {
+      return;
+    }
+    if (Math.hypot(event.clientX - gesture.startClientX, event.clientY - gesture.startClientY) < 7) {
+      return;
+    }
+    gesture.started = true;
+    event.preventDefault();
+    event.stopPropagation();
+    if (gesture.root.hasPointerCapture(event.pointerId)) {
+      gesture.root.releasePointerCapture(event.pointerId);
+    }
+    setSelectedVideos(new Set(gesture.paths));
+    setSelectionAnchor(gesture.paths[0] ?? null);
+    writeClientLog(
+      "debug",
+      `达到文件拖出阈值：${gesture.paths.length} 个，位移 ${Math.round(Math.hypot(event.clientX - gesture.startClientX, event.clientY - gesture.startClientY))}px，调用后端 OLE 拖放`,
+    );
+    void invoke("start_file_drag", { paths: gesture.paths })
+      .then(() => writeClientLog("debug", "后端 OLE 拖放会话结束"))
+      .catch((error: unknown) => {
+        const message = errorMessage(error);
+        notify(message);
+        writeClientLog("warn", `无法开始或完成文件拖出：${message}`);
+      });
+  };
+
+  const finishVideoFileDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = fileDragGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) {
+      return;
+    }
+    fileDragGesture.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const applyRecycleResult = (result: RecycleResult) => {
@@ -1475,8 +1985,7 @@ export default function App() {
     }
   };
 
-  const recycleSelectedVideos = async () => {
-    const paths = [...selectedVideos];
+  const recycleVideos = async (paths: string[]) => {
     if (paths.length === 0 || !window.confirm(`将 ${paths.length} 个视频移到回收站？`)) {
       return;
     }
@@ -1489,6 +1998,8 @@ export default function App() {
       writeClientLog("error", `回收站操作失败：${message}`);
     }
   };
+
+  const recycleSelectedVideos = () => recycleVideos([...selectedVideos]);
 
   const startInlineRename = (path: string) => {
     if (selectedVideos.size !== 1 || !workspace) {
@@ -1571,6 +2082,31 @@ export default function App() {
     }
   };
 
+  const copyVideosToDirectory = async (paths: string[]) => {
+    if (paths.length === 0) {
+      return;
+    }
+    try {
+      const destination = await open({ directory: true, multiple: false, title: "复制视频到" });
+      if (typeof destination !== "string") {
+        return;
+      }
+      const result = await invoke<CopyResult>("copy_videos_to_workspace", { paths, workspacePath: destination });
+      if (result.copiedPaths.length > 0 && workspace?.path === destination) {
+        await refreshWorkspace(destination, "复制到当前工作区");
+      }
+      notify(`已复制 ${result.copiedPaths.length} 个视频，跳过 ${result.skippedPaths.length} 个，失败 ${result.failedPaths.length} 个`);
+      writeClientLog(
+        result.failedPaths.length > 0 ? "warn" : "info",
+        `复制到目录完成：成功 ${result.copiedPaths.length}，跳过 ${result.skippedPaths.length}，失败 ${result.failedPaths.length}`,
+      );
+    } catch (error) {
+      const message = errorMessage(error);
+      notify(message);
+      writeClientLog("error", `复制到目录失败：${message}`);
+    }
+  };
+
   const showPathContextMenu = (
     event: ReactMouseEvent<HTMLElement>,
     path: string,
@@ -1591,12 +2127,118 @@ export default function App() {
     });
   };
 
+  const showWorkspaceContextMenu = (event: ReactMouseEvent<HTMLElement>, paths: string[] = []) => {
+    if (!workspace) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const primaryPath = paths[0] ?? null;
+    setWorkspaceContextMenu({
+      x: Math.max(12, Math.min(event.clientX, window.innerWidth - 252)),
+      y: Math.max(12, Math.min(event.clientY, window.innerHeight - (paths.length > 0 ? 252 : 146))),
+      workspacePath: workspace.path,
+      paths,
+      primaryPath,
+    });
+  };
+
+  const runWorkspaceContextMenuAction = async (action: "open" | "reveal" | "copy" | "delete" | "refresh") => {
+    const menu = workspaceContextMenu;
+    setWorkspaceContextMenu(null);
+    if (!menu) {
+      return;
+    }
+    try {
+      if (action === "refresh") {
+        await refreshWorkspace(menu.workspacePath, "右键手动刷新");
+      } else if (action === "open" && menu.primaryPath) {
+        await invoke("open_video_externally", { path: menu.primaryPath });
+      } else if (action === "reveal") {
+        await invoke("reveal_path", { path: menu.primaryPath ?? menu.workspacePath });
+      } else if (action === "copy" && menu.paths.length > 0) {
+        await copyVideosToDirectory(menu.paths);
+      } else if (action === "delete" && menu.paths.length > 0) {
+        await recycleVideos(menu.paths);
+      }
+    } catch (error) {
+      const message = errorMessage(error);
+      notify(message);
+      writeClientLog("error", `执行工作区右键菜单操作失败：${message}`);
+    }
+  };
+
   const openSettings = () => {
     setSettingsDraft({
       ...config.settings,
       videoExtensions: [...config.settings.videoExtensions],
+      managedVideoExtensions: [...config.settings.managedVideoExtensions],
     });
+    setNewVideoExtension("");
     setIsSettingsOpen(true);
+  };
+
+  const normalizeVideoExtension = (value: string) => {
+    const extension = value.trim().toLocaleLowerCase();
+    if (!extension || /[\\/:*?"<>|\s]/.test(extension)) {
+      return null;
+    }
+    return extension.startsWith(".") ? extension : `.${extension}`;
+  };
+
+  const toggleVideoExtension = (extension: string) => {
+    setSettingsDraft((draft) => {
+      const enabled = draft.videoExtensions.includes(extension);
+      if (enabled && draft.videoExtensions.length === 1) {
+        notify("至少保留一种已启用的视频格式");
+        return draft;
+      }
+      return {
+        ...draft,
+        videoExtensions: enabled
+          ? draft.videoExtensions.filter((item) => item !== extension)
+          : [...draft.videoExtensions, extension].sort(),
+      };
+    });
+  };
+
+  const addVideoExtension = () => {
+    const extension = normalizeVideoExtension(newVideoExtension);
+    if (!extension) {
+      notify("请输入有效的扩展名，例如 .mp4");
+      return;
+    }
+    setSettingsDraft((draft) => {
+      if (draft.managedVideoExtensions.includes(extension)) {
+        return {
+          ...draft,
+          videoExtensions: draft.videoExtensions.includes(extension)
+            ? draft.videoExtensions
+            : [...draft.videoExtensions, extension].sort(),
+        };
+      }
+      return {
+        ...draft,
+        managedVideoExtensions: [...draft.managedVideoExtensions, extension].sort(),
+        videoExtensions: [...draft.videoExtensions, extension].sort(),
+      };
+    });
+    setNewVideoExtension("");
+  };
+
+  const removeVideoExtension = (extension: string) => {
+    setSettingsDraft((draft) => {
+      const enabled = draft.videoExtensions.includes(extension);
+      if (enabled && draft.videoExtensions.length === 1) {
+        notify("至少保留一种已启用的视频格式");
+        return draft;
+      }
+      return {
+        ...draft,
+        managedVideoExtensions: draft.managedVideoExtensions.filter((item) => item !== extension),
+        videoExtensions: draft.videoExtensions.filter((item) => item !== extension),
+      };
+    });
   };
 
   const settingsDirty = JSON.stringify(settingsDraft) !== JSON.stringify(config.settings);
@@ -1883,6 +2525,36 @@ export default function App() {
   }, [renamingPath]);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string[]>("copy-to-request", (event) => {
+      if (Array.isArray(event.payload)) {
+        void copyVideosToDirectory(event.payload);
+      }
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch((error: unknown) => writeClientLog("warn", `复制到菜单监听不可用：${errorMessage(error)}`));
+    return () => unlisten?.();
+  }, [workspace?.path]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("workspace-refresh-request", () => {
+      if (!workspace) {
+        return;
+      }
+      writeClientLog("info", `右键请求刷新工作区：${workspace.path}`);
+      void refreshWorkspace(workspace.path, "右键手动刷新");
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch((error: unknown) => writeClientLog("warn", `刷新菜单监听不可用：${errorMessage(error)}`));
+    return () => unlisten?.();
+  }, [workspace?.path]);
+
+  useEffect(() => {
     if (!workspace) {
       return;
     }
@@ -1935,6 +2607,7 @@ export default function App() {
       .then((cleanup) => {
         if (active) {
           unwatch = cleanup;
+          writeClientLog("debug", `工作区监听已启动：${workspace.path}`);
         } else {
           cleanup();
         }
@@ -1955,6 +2628,28 @@ export default function App() {
     document.addEventListener("contextmenu", preventBrowserContextMenu);
     return () => document.removeEventListener("contextmenu", preventBrowserContextMenu);
   }, []);
+
+  useEffect(() => {
+    if (!workspaceContextMenu) {
+      return;
+    }
+    const dismiss = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".workspace-context-menu")) {
+        setWorkspaceContextMenu(null);
+      }
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setWorkspaceContextMenu(null);
+      }
+    };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [workspaceContextMenu]);
 
   useEffect(() => {
     let isCurrent = true;
@@ -2178,10 +2873,7 @@ export default function App() {
               type="button"
               aria-label="列表视图"
               title="列表视图"
-              onClick={() => {
-                setViewMode("list");
-                void loadWorkspaceMetadata();
-              }}
+              onClick={() => setViewMode("list")}
             >
               <List size={17} />
             </button>
@@ -2211,7 +2903,11 @@ export default function App() {
             )}
           </div>
         ) : visibleVideos.length === 0 ? (
-          <div className="empty-workspace compact-empty" onClick={clearWorkspaceSelection}>
+          <div
+            className="empty-workspace compact-empty"
+            onClick={clearWorkspaceSelection}
+            onContextMenu={(event) => showWorkspaceContextMenu(event)}
+          >
             <div className="empty-symbol" aria-hidden="true">
               <Video size={28} />
             </div>
@@ -2233,6 +2929,11 @@ export default function App() {
             aria-label="视频文件"
             onScroll={handleThumbnailViewportScroll}
             onClick={clearSelectionFromBackground}
+            onContextMenu={(event) => showWorkspaceContextMenu(event)}
+            onPointerDown={(event) => startWorkspaceRectangleSelection(event, "grid")}
+            onPointerMove={updateWorkspaceRectangleSelection}
+            onPointerUp={finishWorkspaceRectangleSelection}
+            onPointerCancel={finishWorkspaceRectangleSelection}
           >
             <div className="video-grid-virtualizer" style={{ height: gridRowVirtualizer.getTotalSize() }}>
               {gridRowVirtualizer.getVirtualItems().map((virtualRow) => (
@@ -2250,15 +2951,25 @@ export default function App() {
                       <div
                         className={`video-card ${selectedVideos.has(video.path) ? "selected" : ""}`}
                         key={video.path}
+                        data-video-path={video.path}
+                        draggable={false}
                         role="listitem"
                         tabIndex={0}
                         title={renamingPath === video.path ? undefined : video.name}
+                        onPointerDown={(event) => startVideoFileDrag(event, video.path)}
+                        onPointerMove={updateVideoFileDrag}
+                        onPointerUp={finishVideoFileDrag}
+                        onPointerCancel={finishVideoFileDrag}
+                        onDragStart={(event) => {
+                          event.preventDefault();
+                          writeClientLog("debug", `已阻止浏览器原生缩略图拖拽：${video.path}`);
+                        }}
                         onClick={(event) => selectVideo(event, video.path)}
                         onContextMenu={(event) => {
                           const operationPaths = selectedVideos.has(video.path) ? [...selectedVideos] : [video.path];
                           setSelectedVideos(new Set(operationPaths));
                           setSelectionAnchor(video.path);
-                          showPathContextMenu(event, video.path, false, operationPaths);
+                          showWorkspaceContextMenu(event, operationPaths);
                         }}
                       >
                         <VideoThumbnail
@@ -2298,6 +3009,18 @@ export default function App() {
                 </div>
               ))}
             </div>
+            {workspaceSelectionBox?.viewMode === "grid" && (
+              <div
+                className="workspace-selection-box"
+                aria-hidden="true"
+                style={{
+                  left: workspaceSelectionBox.left,
+                  top: workspaceSelectionBox.top,
+                  width: workspaceSelectionBox.width,
+                  height: workspaceSelectionBox.height,
+                }}
+              />
+            )}
           </div>
         ) : (
           <div
@@ -2308,6 +3031,11 @@ export default function App() {
             style={listGridStyle}
             onScroll={handleThumbnailViewportScroll}
             onClick={clearSelectionFromBackground}
+            onContextMenu={(event) => showWorkspaceContextMenu(event)}
+            onPointerDown={(event) => startWorkspaceRectangleSelection(event, "list")}
+            onPointerMove={updateWorkspaceRectangleSelection}
+            onPointerUp={finishWorkspaceRectangleSelection}
+            onPointerCancel={finishWorkspaceRectangleSelection}
           >
             <div className="video-list-header" role="row">
               {visibleListColumns.map((column) => (
@@ -2339,14 +3067,24 @@ export default function App() {
                     className={`video-list-row ${selectedVideos.has(video.path) ? "selected" : ""}`}
                     role="row"
                     key={video.path}
+                    data-video-path={video.path}
+                    draggable={false}
                     tabIndex={0}
                     style={{ ...listGridStyle, transform: `translateY(${virtualRow.start}px)` }}
+                    onPointerDown={(event) => startVideoFileDrag(event, video.path)}
+                    onPointerMove={updateVideoFileDrag}
+                    onPointerUp={finishVideoFileDrag}
+                    onPointerCancel={finishVideoFileDrag}
+                    onDragStart={(event) => {
+                      event.preventDefault();
+                      writeClientLog("debug", `已阻止浏览器原生缩略图拖拽：${video.path}`);
+                    }}
                     onClick={(event) => selectVideo(event, video.path)}
                     onContextMenu={(event) => {
                       const operationPaths = selectedVideos.has(video.path) ? [...selectedVideos] : [video.path];
                       setSelectedVideos(new Set(operationPaths));
                       setSelectionAnchor(video.path);
-                      showPathContextMenu(event, video.path, false, operationPaths);
+                      showWorkspaceContextMenu(event, operationPaths);
                     }}
                   >
                     {visibleListColumns.map((column) => {
@@ -2404,6 +3142,18 @@ export default function App() {
                 );
               })}
             </div>
+            {workspaceSelectionBox?.viewMode === "list" && (
+              <div
+                className="workspace-selection-box"
+                aria-hidden="true"
+                style={{
+                  left: workspaceSelectionBox.left,
+                  top: workspaceSelectionBox.top,
+                  width: workspaceSelectionBox.width,
+                  height: workspaceSelectionBox.height,
+                }}
+              />
+            )}
           </div>
         )}
         {isExternalDropActive && workspace && (
@@ -2419,8 +3169,36 @@ export default function App() {
         <>
           <PanelResizeHandle className="panel-resize-handle" aria-label="调整预览栏宽度" />
           <Panel defaultSize={26} minSize={0}>
-        <aside className="preview-panel">
+        <aside
+          className="preview-panel"
+          tabIndex={0}
+          aria-label="视频预览和文件信息"
+          onMouseDown={(event) => {
+            if (event.target instanceof Element && !event.target.closest("button, input, select, a, [contenteditable='true']")) {
+              event.currentTarget.focus();
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.target instanceof Element && event.target.closest("button, input, select, a, [contenteditable='true']")) {
+              return;
+            }
+            if (event.key === " " || event.key === "Spacebar") {
+              event.preventDefault();
+              event.stopPropagation();
+              previewPlayerRef.current?.togglePlayback();
+            } else if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              event.stopPropagation();
+              previewPlayerRef.current?.skipPlayback(-5);
+            } else if (event.key === "ArrowRight") {
+              event.preventDefault();
+              event.stopPropagation();
+              previewPlayerRef.current?.skipPlayback(5);
+            }
+          }}
+        >
           <PreviewPlayer
+            ref={previewPlayerRef}
             key={selectedVideo?.path ?? "empty-preview"}
             video={selectedVideo}
             thumbnailPath={selectedVideo ? thumbnailPathOverrides.get(selectedVideo.path) ?? selectedVideo.thumbnailPath : null}
@@ -2453,11 +3231,11 @@ export default function App() {
               </div>
               <div>
                 <dt>时长</dt>
-                <dd>{selectedVideo ? formatDuration(selectedVideo.duration) : "-"}</dd>
+                <dd>{selectedVideo ? selectedVideo.duration === null && selectedMetadataLoading ? "读取中…" : formatDuration(selectedVideo.duration) : "-"}</dd>
               </div>
               <div>
                 <dt>分辨率</dt>
-                <dd>{selectedVideo ? formatResolution(selectedVideo) : "-"}</dd>
+                <dd>{selectedVideo ? (!selectedVideo.width || !selectedVideo.height) && selectedMetadataLoading ? "读取中…" : formatResolution(selectedVideo) : "-"}</dd>
               </div>
             </dl>
           </section>
@@ -2469,6 +3247,52 @@ export default function App() {
       </div>
 
       {toast && <div className="toast" role="status">{toast}</div>}
+
+      {workspaceContextMenu && (
+        <div
+          className="workspace-context-menu"
+          role="menu"
+          aria-label="工作区菜单"
+          style={{ left: workspaceContextMenu.x, top: workspaceContextMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {workspaceContextMenu.paths.length > 0 ? (
+            <>
+              <div className="workspace-context-menu-title">已选择 {workspaceContextMenu.paths.length} 个视频</div>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("open")}>
+                <Play size={16} />
+                使用默认应用打开
+              </button>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("reveal")}>
+                <FolderOpen size={16} />
+                在资源管理器中显示
+              </button>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("copy")}>
+                <ClipboardCopy size={16} />
+                复制到…
+              </button>
+              <div className="workspace-context-menu-separator" />
+              <button className="danger" type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("delete")}>
+                <Trash2 size={16} />
+                移到回收站
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="workspace-context-menu-title">当前工作区</div>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("reveal")}>
+                <FolderOpen size={16} />
+                在资源管理器中打开
+              </button>
+            </>
+          )}
+          <div className="workspace-context-menu-separator" />
+          <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("refresh")}>
+            <RefreshCw size={16} />
+            刷新
+          </button>
+        </div>
+      )}
 
       {metadataLoading && (
         <div className="metadata-loading-overlay" role="alertdialog" aria-modal="true" aria-live="assertive">
@@ -2691,20 +3515,57 @@ export default function App() {
                     <output>{settingsDraft.volume}%</output>
                   </span>
                 </label>
-                <label className="setting-row">
-                  <span>支持的视频扩展名</span>
-                  <input
-                    className="extension-input"
-                    type="text"
-                    value={settingsDraft.videoExtensions.join(", ")}
-                    onChange={(event) =>
-                      setSettingsDraft((draft) => ({
-                        ...draft,
-                        videoExtensions: event.target.value.split(",").map((extension) => extension.trim()),
-                      }))
-                    }
-                  />
-                </label>
+                <div className="setting-row extension-setting">
+                  <span>支持的视频格式</span>
+                  <div className="extension-manager">
+                    <div className="extension-add">
+                      <input
+                        className="extension-input"
+                        type="text"
+                        value={newVideoExtension}
+                        placeholder="例如 .mp4"
+                        aria-label="添加视频扩展名"
+                        onChange={(event) => setNewVideoExtension(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            addVideoExtension();
+                          }
+                        }}
+                      />
+                      <button type="button" className="extension-add-button" onClick={addVideoExtension}>
+                        <Plus size={14} />
+                        添加
+                      </button>
+                    </div>
+                    <ul className="extension-list" aria-label="视频格式列表">
+                      {settingsDraft.managedVideoExtensions.map((extension) => {
+                        const enabled = settingsDraft.videoExtensions.includes(extension);
+                        return (
+                          <li key={extension}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={enabled}
+                                onChange={() => toggleVideoExtension(extension)}
+                              />
+                              <span>{extension}</span>
+                            </label>
+                            <button
+                              type="button"
+                              className="quiet-icon-button"
+                              aria-label={`删除 ${extension}`}
+                              title="删除格式"
+                              onClick={() => removeVideoExtension(extension)}
+                            >
+                              <X size={14} />
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </div>
               </section>
 
               <section className="settings-section">
