@@ -1,0 +1,98 @@
+import type { CSSProperties } from "react";
+
+type ThemeTokens = CSSProperties & Record<`--${string}`, string>;
+
+export const themePresets = [
+  {
+    id: "teal",
+    name: "青绿",
+    color: "#39c5bb",
+    soft: "#1e4946",
+    deep: "#173c39",
+    lightDeep: "#d9f5f1",
+    border: "#68d9d1",
+    ink: "#082522",
+    focus: "#278e87",
+  },
+  {
+    id: "sky",
+    name: "晴空",
+    color: "#66ccff",
+    soft: "#204556",
+    deep: "#173b4b",
+    lightDeep: "#dff2ff",
+    border: "#91dbff",
+    ink: "#08232e",
+    focus: "#499bc1",
+  },
+  {
+    id: "amber",
+    name: "琥珀",
+    color: "#f4bd58",
+    soft: "#4d3a1d",
+    deep: "#403117",
+    lightDeep: "#fff1d4",
+    border: "#ffd584",
+    ink: "#2b1c04",
+    focus: "#b98b3b",
+  },
+  {
+    id: "coral",
+    name: "珊瑚",
+    color: "#ed8d79",
+    soft: "#4b2d2a",
+    deep: "#3d2523",
+    lightDeep: "#ffe3dd",
+    border: "#ffb1a1",
+    ink: "#2d110d",
+    focus: "#b66151",
+  },
+  {
+    id: "lime",
+    name: "青柠",
+    color: "#a6d86f",
+    soft: "#354829",
+    deep: "#2d3d23",
+    lightDeep: "#e8f6d7",
+    border: "#c5ef97",
+    ink: "#1b2a10",
+    focus: "#789e4e",
+  },
+] as const;
+
+export type ThemeId = (typeof themePresets)[number]["id"];
+
+export const colorModeTokens: Record<"dark" | "light", ThemeTokens> = {
+  dark: {
+    "--surface-base": "#1c1c1e",
+    "--surface-raised": "#242426",
+    "--surface-control": "#2c2c2e",
+    "--surface-hover": "#3a3a3c",
+    "--text-primary": "#f2f2f7",
+    "--text-secondary": "#d1d1d6",
+    "--text-muted": "#98989d",
+    "--text-subtle": "#8e8e93",
+    "--icon-muted": "#aeaeb2",
+    "--border-subtle": "#38383a",
+    "--border-strong": "#48484a",
+    "--border-hover": "#636366",
+    "--scrollbar-track": "#242426",
+    "--scrollbar-thumb": "#636366",
+  },
+  light: {
+    "--surface-base": "#f2f2f7",
+    "--surface-raised": "#ffffff",
+    "--surface-control": "#ffffff",
+    "--surface-hover": "#e5e5ea",
+    "--text-primary": "#1c1c1e",
+    "--text-secondary": "#3a3a3c",
+    "--text-muted": "#636366",
+    "--text-subtle": "#636366",
+    "--icon-muted": "#636366",
+    "--border-subtle": "#d1d1d6",
+    "--border-strong": "#d1d1d6",
+    "--border-hover": "#aeaeb2",
+    "--scrollbar-track": "#ffffff",
+    "--scrollbar-thumb": "#aeaeb2",
+  },
+};
