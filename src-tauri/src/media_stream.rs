@@ -137,7 +137,9 @@ async fn serve_transcoded_video_stream(
     };
     let mut command = tokio::process::Command::new(ffmpeg);
     #[cfg(target_os = "windows")]
-    command.as_std_mut().creation_flags(0x0000_4000); // BELOW_NORMAL_PRIORITY_CLASS
+    command
+        .as_std_mut()
+        .creation_flags(sidecar::sidecar_creation_flags());
     let mut child = match {
         let start = start.filter(|start| start.is_finite() && *start > 0.0);
         command.args(["-hide_banner", "-loglevel", "error"]);

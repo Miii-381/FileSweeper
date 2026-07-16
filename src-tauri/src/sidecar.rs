@@ -1,5 +1,15 @@
 use super::*;
 
+#[cfg(target_os = "windows")]
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(target_os = "windows")]
+pub(super) const fn sidecar_creation_flags() -> u32 {
+    BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW
+}
+
 pub(super) fn sidecar_filename(name: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{name}-x86_64-pc-windows-msvc.exe")
@@ -69,8 +79,9 @@ pub(super) fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
 pub(super) fn configure_sidecar_command(command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
-        // Keep background media helpers behind the interactive GUI in the Windows scheduler.
-        command.creation_flags(0x0000_4000); // BELOW_NORMAL_PRIORITY_CLASS
+        // Media helpers are console applications. A release GUI process must explicitly suppress
+        // their console window or every thumbnail/probe command briefly flashes a terminal.
+        command.creation_flags(sidecar_creation_flags());
     }
     #[cfg(not(target_os = "windows"))]
     let _ = command;
@@ -105,7 +116,9 @@ pub(super) fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<(),
             None if start.elapsed() >= timeout => {
                 #[cfg(target_os = "windows")]
                 {
-                    let _ = Command::new("taskkill")
+                    let mut taskkill = Command::new("taskkill");
+                    configure_sidecar_command(&mut taskkill);
+                    let _ = taskkill
                         .args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
