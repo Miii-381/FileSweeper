@@ -74,6 +74,7 @@ type LogMinimumLevel = "warn" | "info" | "debug";
 
 const MAX_THUMBNAIL_CONCURRENCY = 10;
 const GRID_CARD_WIDTH = 220;
+// 180px card height plus the 16px vertical track gap kept between virtual rows.
 const GRID_ROW_HEIGHT = 196;
 const LIST_ROW_HEIGHT = 40;
 
@@ -223,6 +224,7 @@ type Preferences = {
   autoplay: boolean;
   volume: number;
   muted: boolean;
+  rememberWorkspaceFocus: boolean;
   showHiddenItems: boolean;
   showNomediaMedia: boolean;
   videoExtensions: string[];
@@ -236,6 +238,10 @@ type FavoriteFolder = {
   name: string;
 };
 
+type WorkspaceFocus = {
+  videoPath: string;
+};
+
 type ListColumn = {
   id: ListColumnId;
   visible: boolean;
@@ -246,6 +252,7 @@ type AppConfig = {
   version: number;
   favorites: FavoriteFolder[];
   lastWorkspace: string | null;
+  workspaceFocus: Record<string, WorkspaceFocus>;
   settings: Preferences;
 };
 
@@ -264,6 +271,7 @@ const fallbackConfig: AppConfig = {
   version: 1,
   favorites: [],
   lastWorkspace: null,
+  workspaceFocus: {},
   settings: {
     appearance: "dark",
     accentTheme: "teal",
@@ -272,6 +280,7 @@ const fallbackConfig: AppConfig = {
     autoplay: true,
     volume: 100,
     muted: false,
+    rememberWorkspaceFocus: true,
     showHiddenItems: false,
     showNomediaMedia: false,
     videoExtensions: [
@@ -1049,6 +1058,7 @@ export default function App() {
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenu | null>(null);
   const [gridColumns, setGridColumns] = useState(1);
   const [gridViewport, setGridViewport] = useState<HTMLDivElement | null>(null);
+  const [suppressPreviewAutoplay, setSuppressPreviewAutoplay] = useState(false);
   const [workspaceMinSize, setWorkspaceMinSize] = useState(34);
   const [draggedListColumn, setDraggedListColumn] = useState<ListColumnId | null>(null);
   const [listColumnDropTarget, setListColumnDropTarget] = useState<ListColumnId | null>(null);
@@ -1063,6 +1073,10 @@ export default function App() {
   const renameCancelling = useRef(false);
   const workspaceSelectionGesture = useRef<WorkspaceSelectionGesture | null>(null);
   const workspaceSelectionAutoScrollFrame = useRef<number | null>(null);
+  const workspaceFocusRestorePath = useRef<string | null>(null);
+  const workspaceFocusRestorePending = useRef(false);
+  const workspaceFocusByPath = useRef<Record<string, WorkspaceFocus>>({});
+  const workspaceFocusPersistence = useRef<Promise<void>>(Promise.resolve());
   const suppressBackgroundSelectionClear = useRef(false);
   const fileDragGesture = useRef<FileDragGesture | null>(null);
   const previewPlayerRef = useRef<PreviewPlayerHandle>(null);
@@ -1083,6 +1097,36 @@ export default function App() {
   const liveLogCounter = useRef(0);
   const audioPreferenceTimer = useRef<number | null>(null);
   const pendingAudioConfig = useRef<AppConfig | null>(null);
+
+  const persistWorkspaceFocus = useCallback(async (workspacePath: string, videoPath: string) => {
+    if (workspaceFocusByPath.current[workspacePath]?.videoPath === videoPath) {
+      writeClientLog("debug", `工作区焦点无需保存：工作区 ${workspacePath}，视频 ${videoPath}`);
+      await workspaceFocusPersistence.current;
+      return;
+    }
+    workspaceFocusByPath.current = {
+      ...workspaceFocusByPath.current,
+      [workspacePath]: { videoPath },
+    };
+    setConfig((current) => ({
+      ...current,
+      workspaceFocus: {
+        ...current.workspaceFocus,
+        [workspacePath]: { videoPath },
+      },
+    }));
+    writeClientLog("debug", `开始保存工作区焦点：工作区 ${workspacePath}，视频 ${videoPath}`);
+    const pending = workspaceFocusPersistence.current.then(async () => {
+      try {
+        await invoke("set_workspace_focus", { workspacePath, videoPath });
+        writeClientLog("debug", `工作区焦点已写入配置：工作区 ${workspacePath}，视频 ${videoPath}`);
+      } catch (error) {
+        writeClientLog("warn", `保存工作区视频焦点失败：工作区 ${workspacePath}，视频 ${videoPath}，${errorMessage(error)}`);
+      }
+    });
+    workspaceFocusPersistence.current = pending;
+    await pending;
+  }, []);
   const setGridScrollRef = useCallback((element: HTMLDivElement | null) => {
     gridScrollElement.current = element;
     setGridViewport(element);
@@ -1183,6 +1227,25 @@ export default function App() {
     workspaceVideoPaths.current = new Set(workspace?.videos.map((video) => video.path) ?? []);
   }, [workspace]);
 
+  useEffect(() => {
+    if (!config.settings.rememberWorkspaceFocus || !workspace || !selectionAnchor || !selectedVideos.has(selectionAnchor)) {
+      return;
+    }
+    if (workspaceFocusByPath.current[workspace.path]?.videoPath === selectionAnchor) {
+      return;
+    }
+    const workspacePath = workspace.path;
+    const videoPath = selectionAnchor;
+    writeClientLog("debug", `工作区焦点将在 350ms 后保存：工作区 ${workspacePath}，视频 ${videoPath}`);
+    const timer = window.setTimeout(() => {
+      void persistWorkspaceFocus(workspacePath, videoPath);
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      writeClientLog("debug", `取消延迟保存工作区焦点：工作区 ${workspacePath}，视频 ${videoPath}`);
+    };
+  }, [config.settings.rememberWorkspaceFocus, persistWorkspaceFocus, selectedVideos, selectionAnchor, workspace]);
+
   useLayoutEffect(() => {
     if (viewMode !== "grid" || !gridViewport) {
       return;
@@ -1199,6 +1262,75 @@ export default function App() {
       observer.disconnect();
     };
   }, [gridViewport, viewMode]);
+
+  useEffect(() => {
+    if (!workspaceFocusRestorePending.current || !workspace) {
+      return;
+    }
+    if (viewMode === "grid" && !gridViewport) {
+      writeClientLog("debug", `等待网格视口挂载后恢复工作区焦点：${workspace.path}`);
+      return;
+    }
+    if (viewMode === "grid" && gridViewport) {
+      const availableWidth = Math.max(0, gridViewport.clientWidth - 32);
+      const measuredColumns = Math.max(1, Math.floor((availableWidth + 12) / (GRID_CARD_WIDTH + 12)));
+      if (gridColumns !== measuredColumns) {
+        writeClientLog(
+          "debug",
+          `等待网格列数稳定后恢复工作区焦点：当前 ${gridColumns} 列，测得 ${measuredColumns} 列，工作区 ${workspace.path}`,
+        );
+        return;
+      }
+    }
+    const focusPath = workspaceFocusRestorePath.current;
+    const videoIndex = focusPath ? visibleVideos.findIndex((video) => video.path === focusPath) : -1;
+    if (focusPath && videoIndex < 0) {
+      writeClientLog(
+        "warn",
+        `无法恢复工作区焦点：视频不在当前可见列表中，工作区 ${workspace.path}，视频 ${focusPath}，可见视频 ${visibleVideos.length} 个`,
+      );
+    } else if (focusPath) {
+      writeClientLog(
+        "debug",
+        `准备恢复工作区焦点：工作区 ${workspace.path}，视频 ${focusPath}，列表索引 ${videoIndex}，视图 ${viewMode}`,
+      );
+    }
+    const restoreScroll = () => {
+      if (viewMode === "grid") {
+        if (!gridScrollElement.current) {
+          writeClientLog("warn", `无法初始化工作区滚动位置：网格滚动容器尚未挂载，工作区 ${workspace.path}`);
+          return;
+        }
+        if (videoIndex >= 0 && focusPath) {
+          const rowIndex = Math.floor(videoIndex / gridColumns);
+          gridRowVirtualizer.scrollToIndex(rowIndex, { align: "start" });
+          writeClientLog("debug", `工作区焦点已定位网格行：视频 ${focusPath}，行 ${rowIndex}，列数 ${gridColumns}`);
+        } else {
+          gridRowVirtualizer.scrollToOffset(0);
+          writeClientLog("debug", `工作区无可恢复焦点，网格滚动位置已重置：${workspace.path}`);
+        }
+      } else {
+        if (!listScrollElement.current) {
+          writeClientLog("warn", `无法初始化工作区滚动位置：列表滚动容器尚未挂载，工作区 ${workspace.path}`);
+          return;
+        }
+        if (videoIndex >= 0 && focusPath) {
+          listRowVirtualizer.scrollToIndex(videoIndex, { align: "start" });
+          writeClientLog("debug", `工作区焦点已定位列表行：视频 ${focusPath}，行 ${videoIndex}`);
+        } else {
+          listRowVirtualizer.scrollToOffset(0);
+          writeClientLog("debug", `工作区无可恢复焦点，列表滚动位置已重置：${workspace.path}`);
+        }
+      }
+      workspaceFocusRestorePending.current = false;
+      workspaceFocusRestorePath.current = null;
+      if (focusPath && videoIndex >= 0) {
+        writeClientLog("debug", `已恢复工作区视频焦点：${focusPath}`);
+      }
+    };
+    const frame = window.requestAnimationFrame(restoreScroll);
+    return () => window.cancelAnimationFrame(frame);
+  }, [gridColumns, gridRowVirtualizer, gridViewport, listRowVirtualizer, viewMode, visibleVideos, workspace]);
 
   useEffect(
     () => () => {
@@ -1431,7 +1563,15 @@ export default function App() {
     }
   };
 
-  const activateWorkspace = async (requestedPath: string, persist = true) => {
+  const activateWorkspace = async (
+    requestedPath: string,
+    persist = true,
+    focusMemoryEnabled = config.settings.rememberWorkspaceFocus,
+  ) => {
+    if (focusMemoryEnabled && workspace && selectionAnchor && selectedVideos.has(selectionAnchor)) {
+      writeClientLog("debug", `切换工作区前保存当前焦点：工作区 ${workspace.path}，视频 ${selectionAnchor}`);
+      await persistWorkspaceFocus(workspace.path, selectionAnchor);
+    }
     const requestId = ++workspaceRequest.current;
     metadataRequest.current += 1;
     probedMetadataPaths.current.clear();
@@ -1450,10 +1590,30 @@ export default function App() {
       thumbnailPathOverrideRef.current.clear();
       setThumbnailPathOverrides(new Map());
       workspaceVideoPaths.current = new Set(listing.videos.map((video) => video.path));
+      const rememberedPath = focusMemoryEnabled ? workspaceFocusByPath.current[listing.path]?.videoPath : undefined;
+      const rememberedVideo = rememberedPath ? listing.videos.find((video) => video.path === rememberedPath) : null;
+      workspaceFocusRestorePath.current = rememberedVideo?.path ?? null;
+      workspaceFocusRestorePending.current = true;
+      setSuppressPreviewAutoplay(Boolean(rememberedVideo));
+      if (rememberedVideo) {
+        writeClientLog(
+          "debug",
+          `工作区焦点命中：工作区 ${listing.path}，视频 ${rememberedVideo.path}，共 ${listing.videos.length} 个视频`,
+        );
+      } else if (rememberedPath) {
+        writeClientLog(
+          "warn",
+          `工作区焦点未命中：工作区 ${listing.path}，已记录 ${rememberedPath}，当前视频 ${listing.videos.length} 个`,
+        );
+      } else if (focusMemoryEnabled) {
+        writeClientLog("debug", `工作区没有已保存焦点：${listing.path}`);
+      } else {
+        writeClientLog("debug", `工作区焦点记忆已关闭，滚动位置将从顶部开始：${listing.path}`);
+      }
       setWorkspace(listing);
       setSelectedPath(listing.path);
-      setSelectedVideos(new Set());
-      setSelectionAnchor(null);
+      setSelectedVideos(rememberedVideo ? new Set([rememberedVideo.path]) : new Set());
+      setSelectionAnchor(rememberedVideo?.path ?? null);
       setSearchQuery("");
       writeClientLog("info", `工作区读取完成：${listing.path}，视频 ${listing.videos.length} 个`);
       if (persist) {
@@ -1682,6 +1842,7 @@ export default function App() {
   };
 
   const selectVideo = (event: ReactMouseEvent<HTMLElement>, path: string) => {
+    setSuppressPreviewAutoplay(false);
     if (event.shiftKey && selectionAnchor) {
       const start = visibleVideos.findIndex((video) => video.path === selectionAnchor);
       const end = visibleVideos.findIndex((video) => video.path === path);
@@ -2269,7 +2430,7 @@ export default function App() {
         setThumbnailPathOverrides(new Map());
       }
       if (workspace) {
-        await activateWorkspace(workspace.path, false);
+        await activateWorkspace(workspace.path, false, nextConfig.settings.rememberWorkspaceFocus);
       }
     } catch (error) {
       const message = errorMessage(error);
@@ -2492,6 +2653,7 @@ export default function App() {
         const delta = event.key === "ArrowDown" ? 1 : -1;
         const nextIndex = Math.min(visibleVideos.length - 1, Math.max(0, currentIndex === -1 ? (delta > 0 ? 0 : visibleVideos.length - 1) : currentIndex + delta));
         const nextPath = visibleVideos[nextIndex].path;
+        setSuppressPreviewAutoplay(false);
         setSelectedVideos(new Set([nextPath]));
         setSelectionAnchor(nextPath);
         return;
@@ -2659,6 +2821,11 @@ export default function App() {
         if (!isCurrent) {
           return;
         }
+        workspaceFocusByPath.current = state.config.workspaceFocus ?? {};
+        writeClientLog(
+          "debug",
+          `加载工作区焦点配置：共 ${Object.keys(workspaceFocusByPath.current).length} 个工作区记录`,
+        );
         setConfig(state.config);
         setRoots(state.roots);
         const elevated = await invoke<boolean>("is_running_as_administrator").catch(() => false);
@@ -3202,7 +3369,7 @@ export default function App() {
             key={selectedVideo?.path ?? "empty-preview"}
             video={selectedVideo}
             thumbnailPath={selectedVideo ? thumbnailPathOverrides.get(selectedVideo.path) ?? selectedVideo.thumbnailPath : null}
-            autoplay={config.settings.autoplay && selectedVideos.size === 1}
+            autoplay={config.settings.autoplay && selectedVideos.size === 1 && !suppressPreviewAutoplay}
             volume={config.settings.volume}
             muted={config.settings.muted}
             onEnsureThumbnail={enqueueThumbnail}
@@ -3578,6 +3745,24 @@ export default function App() {
                     role="switch"
                     aria-checked={settingsDraft.autoplay}
                     onClick={() => setSettingsDraft((draft) => ({ ...draft, autoplay: !draft.autoplay }))}
+                  >
+                    <span />
+                  </button>
+                </div>
+                <div className="setting-row">
+                  <span>记忆工作区视频焦点</span>
+                  <button
+                    className={`switch ${settingsDraft.rememberWorkspaceFocus ? "on" : ""}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={settingsDraft.rememberWorkspaceFocus}
+                    aria-label="记忆工作区视频焦点"
+                    onClick={() =>
+                      setSettingsDraft((draft) => ({
+                        ...draft,
+                        rememberWorkspaceFocus: !draft.rememberWorkspaceFocus,
+                      }))
+                    }
                   >
                     <span />
                   </button>

@@ -1284,7 +1284,8 @@ select:focus-visible {
 .video-name {
     color: inherit;
     font-size: 13px;
-    font-weight: 580
+    font-weight: 580;
+    height: 18px;
 }
 
 .inline-rename {

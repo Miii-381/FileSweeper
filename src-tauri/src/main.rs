@@ -146,6 +146,10 @@ fn default_thumbnail_capture_position() -> String {
     "middle".to_string()
 }
 
+fn default_remember_workspace_focus() -> bool {
+    true
+}
+
 fn default_video_extensions() -> Vec<String> {
     DEFAULT_EXTENSIONS
         .iter()
@@ -165,6 +169,8 @@ struct Preferences {
     volume: u8,
     #[serde(default)]
     muted: bool,
+    #[serde(default = "default_remember_workspace_focus")]
+    remember_workspace_focus: bool,
     show_hidden_items: bool,
     show_nomedia_media: bool,
     video_extensions: Vec<String>,
@@ -185,6 +191,7 @@ impl Default for Preferences {
             autoplay: true,
             volume: 100,
             muted: false,
+            remember_workspace_focus: default_remember_workspace_focus(),
             show_hidden_items: false,
             show_nomedia_media: false,
             video_extensions: default_video_extensions(),
@@ -197,10 +204,18 @@ impl Default for Preferences {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceFocus {
+    video_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AppConfig {
     version: u32,
     favorites: Vec<FavoriteFolder>,
     last_workspace: Option<String>,
+    #[serde(default)]
+    workspace_focus: HashMap<String, WorkspaceFocus>,
     settings: Preferences,
 }
 
@@ -210,6 +225,7 @@ impl Default for AppConfig {
             version: CONFIG_VERSION,
             favorites: Vec::new(),
             last_workspace: None,
+            workspace_focus: HashMap::new(),
             settings: Preferences::default(),
         }
     }
@@ -1984,6 +2000,78 @@ fn set_last_workspace(path: Option<String>) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
+fn set_workspace_focus(workspace_path: String, video_path: String) -> Result<(), String> {
+    log::debug!(
+        "Persisting workspace focus request: workspace={}, video={}",
+        workspace_path,
+        video_path
+    );
+    let workspace = fs::canonicalize(workspace_path).map_err(|error| {
+        log::warn!("Unable to resolve focus workspace: {error}");
+        format!("Unable to access the workspace for focus persistence: {error}")
+    })?;
+    if !workspace.is_dir() {
+        log::warn!(
+            "Rejected focus workspace because it is not a directory: {:?}",
+            workspace
+        );
+        return Err("The focus workspace is not a folder.".to_string());
+    }
+    let video = fs::canonicalize(video_path).map_err(|error| {
+        log::warn!("Unable to resolve focused video: {error}");
+        format!("Unable to access the focused video: {error}")
+    })?;
+    if !video.is_file() {
+        log::warn!(
+            "Rejected focus video because it is not a regular file: {:?}",
+            video
+        );
+        return Err("The focused item is not a regular file.".to_string());
+    }
+    let video_parent = video
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok())
+        .ok_or_else(|| {
+            log::warn!(
+                "Unable to resolve parent folder for focused video: {:?}",
+                video
+            );
+            "Unable to resolve the focused video's parent folder.".to_string()
+        })?;
+    if video_parent != workspace {
+        log::warn!(
+            "Rejected focus video outside workspace: workspace={:?}, video_parent={:?}",
+            workspace,
+            video_parent
+        );
+        return Err("The focused video is not a direct item of the workspace.".to_string());
+    }
+
+    let mut config = load_config()?;
+    let normalized_workspace = path_string(&workspace);
+    let normalized_video = path_string(&video);
+    let previous_focus = config
+        .workspace_focus
+        .get(&normalized_workspace)
+        .map(|focus| focus.video_path.clone())
+        .unwrap_or_else(|| "<none>".to_string());
+    config.workspace_focus.insert(
+        normalized_workspace.clone(),
+        WorkspaceFocus {
+            video_path: normalized_video.clone(),
+        },
+    );
+    write_config(&config)?;
+    log::debug!(
+        "Persisted workspace focus: workspace={}, previous={}, current={}",
+        normalized_workspace,
+        previous_focus,
+        normalized_video
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn toggle_favorite(path: String) -> Result<AppConfig, String> {
     let mut config = load_config()?;
     let directory = fs::canonicalize(path)
@@ -2970,6 +3058,7 @@ fn main() {
             list_directory,
             save_configuration,
             set_last_workspace,
+            set_workspace_focus,
             toggle_favorite,
             show_file_context_menu,
             generate_thumbnails,
