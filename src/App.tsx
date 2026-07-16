@@ -4,35 +4,80 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { watch } from "@tauri-apps/plugin-fs";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  attachLogger,
-  debug as logDebug,
-  error as logErrorMessage,
-  info as logInfo,
-  LogLevel,
-  warn as logWarn,
-} from "@tauri-apps/plugin-log";
+import { attachLogger, LogLevel } from "@tauri-apps/plugin-log";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { colorModeTokens, themePresets, type ThemeId } from "./theme";
+import { colorModeTokens, themePresets } from "./theme";
+import {
+  clearThumbnailDataCache,
+  invalidateThumbnailData,
+  VideoThumbnail,
+} from "./components/VideoThumbnail";
+import { PreviewPlayer, type PreviewPlayerHandle } from "./components/PreviewPlayer";
+import { DirectoryTreeNode } from "./components/DirectoryTreeNode";
+import {
+  fallbackConfig,
+  GRID_CARD_WIDTH,
+  GRID_ROW_HEIGHT,
+  LIST_ROW_HEIGHT,
+  listColumnLabels,
+  MAX_THUMBNAIL_CONCURRENCY,
+  type AppConfig,
+  type ApplicationState,
+  type ColorMode,
+  type CopyResult,
+  type DirectoryEntry,
+  type DirectoryListing,
+  type FileDragGesture,
+  type ListColumn,
+  type ListColumnId,
+  type LiveLogEntry,
+  type LogSnapshot,
+  type MetadataBatchResult,
+  type Preferences,
+  type RecycleResult,
+  type RenameResult,
+  type SortKey,
+  type ThumbnailBatchResult,
+  type ThumbnailCapturePosition,
+  type ThumbnailResult,
+  type ThumbnailTask,
+  type TreeState,
+  type VideoEntry,
+  type VideoMetadata,
+  type ViewMode,
+  type WorkspaceContextMenu,
+  type WorkspaceFocus,
+  type WorkspaceSort,
+  type WorkspaceSelectionBox,
+  type WorkspaceSelectionGesture,
+} from "./app-types";
+import {
+  errorMessage,
+  filterLogContent,
+  formatBytes,
+  formatDate,
+  formatDuration,
+  formatResolution,
+  logLevelLabel,
+  logLevelRank,
+  minimumLogLevelRank,
+  type LogMinimumLevel,
+  writeClientLog,
+} from "./app-utils";
 import {
   ArrowDown,
   ArrowUp,
   ClipboardCopy,
   ChevronDown,
-  ChevronRight,
   Folder,
   FolderOpen,
   Grid2X2,
-  HardDrive,
   List,
   LoaderCircle,
   Monitor,
-  MonitorPlay,
   Moon,
-  Maximize2,
   PanelRightClose,
   PanelRightOpen,
-  Pause,
   Play,
   Plus,
   RefreshCw,
@@ -45,17 +90,12 @@ import {
   Sun,
   Trash2,
   Video,
-  Volume2,
-  VolumeX,
   X,
 } from "lucide-react";
 import {
-  forwardRef,
-  memo,
   startTransition,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -65,961 +105,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
-type ViewMode = "grid" | "list";
-type ColorMode = "dark" | "light";
-type SortKey = "createdAt" | "name" | "size" | "duration" | "resolution";
-type ListColumnId = "name" | "size" | "duration" | "resolution" | "modifiedAt";
-type ThumbnailCapturePosition = "opening" | "early" | "middle" | "late" | "ending";
-type LogMinimumLevel = "warn" | "info" | "debug";
 
-const MAX_THUMBNAIL_CONCURRENCY = 10;
-const GRID_CARD_WIDTH = 220;
-// 180px card height plus the 16px vertical track gap kept between virtual rows.
-const GRID_ROW_HEIGHT = 196;
-const LIST_ROW_HEIGHT = 40;
 
-type DirectoryEntry = {
-  path: string;
-  name: string;
-  hasChildren: boolean;
-};
-
-type VideoEntry = {
-  path: string;
-  name: string;
-  extension: string;
-  size: number;
-  createdAt: number | null;
-  modifiedAt: number | null;
-  duration: number | null;
-  width: number | null;
-  height: number | null;
-  thumbnailPath: string | null;
-};
-
-type WorkspaceSelectionBox = {
-  viewMode: ViewMode;
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
-type WorkspaceSelectionGesture = {
-  viewMode: ViewMode;
-  pointerId: number;
-  root: HTMLDivElement;
-  startClientX: number;
-  startClientY: number;
-  lastClientX: number;
-  lastClientY: number;
-  initialSelection: Set<string>;
-  intersectedPaths: Set<string>;
-  additive: boolean;
-  moved: boolean;
-  hasAutoScrolled: boolean;
-};
-
-type FileDragGesture = {
-  pointerId: number;
-  root: HTMLDivElement;
-  startClientX: number;
-  startClientY: number;
-  paths: string[];
-  started: boolean;
-};
-
-type DirectoryListing = {
-  path: string;
-  folders: DirectoryEntry[];
-  videos: VideoEntry[];
-  mediaSuppressed: boolean;
-};
-
-type RecycleResult = {
-  recycledPaths: string[];
-  failedPaths: string[];
-};
-
-type RenameResult = {
-  oldPath: string;
-  newPath: string;
-  name: string;
-};
-
-type CopyResult = {
-  copiedPaths: string[];
-  skippedPaths: string[];
-  failedPaths: string[];
-};
-
-type WorkspaceContextMenu = {
-  x: number;
-  y: number;
-  workspacePath: string;
-  paths: string[];
-  primaryPath: string | null;
-};
-
-type VideoStreamUrl = {
-  url: string;
-  isTranscoded: boolean;
-  duration: number | null;
-};
-
-type VideoMetadata = {
-  path: string;
-  duration: number | null;
-  width: number | null;
-  height: number | null;
-};
-
-type MetadataBatchResult = {
-  metadata: VideoMetadata[];
-  failedPaths: string[];
-};
-
-type ThumbnailResult = {
-  path: string;
-  thumbnailPath: string;
-};
-
-type ThumbnailFailure = {
-  path: string;
-  error: string;
-};
-
-type ThumbnailBatchResult = {
-  thumbnails: ThumbnailResult[];
-  failures: ThumbnailFailure[];
-};
-
-type ThumbnailData = {
-  path: string;
-  thumbnailPath: string;
-  dataUrl: string;
-};
-
-type ThumbnailTask = {
-  video: VideoEntry;
-};
-
-type LogSnapshot = {
-  path: string;
-  content: string;
-  size: number;
-};
-
-type LiveLogEntry = {
-  id: number;
-  level: LogLevel;
-  message: string;
-};
-
-type Preferences = {
-  appearance: "system" | ColorMode;
-  accentTheme: ThemeId;
-  thumbnailCacheGb: number;
-  thumbnailCapturePosition: ThumbnailCapturePosition;
-  autoplay: boolean;
-  volume: number;
-  muted: boolean;
-  rememberWorkspaceFocus: boolean;
-  showHiddenItems: boolean;
-  showNomediaMedia: boolean;
-  videoExtensions: string[];
-  managedVideoExtensions: string[];
-  openUnsupportedExternally: boolean;
-  listColumns: ListColumn[];
-};
-
-type FavoriteFolder = {
-  path: string;
-  name: string;
-};
-
-type WorkspaceFocus = {
-  videoPath: string;
-};
-
-type ListColumn = {
-  id: ListColumnId;
-  visible: boolean;
-  width: number;
-};
-
-type AppConfig = {
-  version: number;
-  favorites: FavoriteFolder[];
-  lastWorkspace: string | null;
-  workspaceFocus: Record<string, WorkspaceFocus>;
-  settings: Preferences;
-};
-
-type ApplicationState = {
-  config: AppConfig;
-  roots: DirectoryEntry[];
-};
-
-type TreeStatus = "idle" | "loading" | "loaded" | "error";
-type TreeState = Record<string, { status: TreeStatus; folders: DirectoryEntry[] }>;
-
-const thumbnailDataUrls = new Map<string, string>();
-const thumbnailDataRequests = new Map<string, Promise<string>>();
-
-const fallbackConfig: AppConfig = {
-  version: 1,
-  favorites: [],
-  lastWorkspace: null,
-  workspaceFocus: {},
-  settings: {
-    appearance: "dark",
-    accentTheme: "teal",
-    thumbnailCacheGb: 2,
-    thumbnailCapturePosition: "middle",
-    autoplay: true,
-    volume: 100,
-    muted: false,
-    rememberWorkspaceFocus: true,
-    showHiddenItems: false,
-    showNomediaMedia: false,
-    videoExtensions: [
-      ".mp4",
-      ".mkv",
-      ".webm",
-      ".avi",
-      ".mov",
-      ".wmv",
-      ".flv",
-      ".m4v",
-      ".mpeg",
-      ".mpg",
-      ".3gp",
-      ".rm",
-      ".rmvb",
-      ".ts",
-    ],
-    managedVideoExtensions: [
-      ".mp4",
-      ".mkv",
-      ".webm",
-      ".avi",
-      ".mov",
-      ".wmv",
-      ".flv",
-      ".m4v",
-      ".mpeg",
-      ".mpg",
-      ".3gp",
-      ".rm",
-      ".rmvb",
-      ".ts",
-    ],
-    openUnsupportedExternally: true,
-    listColumns: [
-      { id: "name", visible: true, width: 280 },
-      { id: "size", visible: true, width: 112 },
-      { id: "duration", visible: true, width: 94 },
-      { id: "resolution", visible: true, width: 112 },
-      { id: "modifiedAt", visible: true, width: 170 },
-    ],
-  },
-};
-
-const listColumnLabels: Record<ListColumnId, string> = {
-  name: "名称",
-  size: "大小",
-  duration: "时长",
-  resolution: "分辨率",
-  modifiedAt: "最后修改时间",
-};
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatBytes(size: number) {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  const units = ["KB", "MB", "GB", "TB"];
-  const unitIndex = Math.min(Math.floor(Math.log(size) / Math.log(1024)) - 1, units.length - 1);
-  return `${(size / 1024 ** (unitIndex + 1)).toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
-}
-
-function formatDate(timestamp: number | null) {
-  if (!timestamp) {
-    return "-";
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
-}
-
-function formatDuration(duration: number | null) {
-  return duration === null ? "-" : formatPlaybackTime(duration);
-}
-
-function formatResolution(video: VideoEntry) {
-  return video.width && video.height ? `${video.width} × ${video.height}` : "-";
-}
-
-function formatPlaybackTime(value: number) {
-  if (!Number.isFinite(value) || value < 0) {
-    return "--:--";
-  }
-  const totalSeconds = Math.floor(value);
-  const seconds = totalSeconds % 60;
-  const minutes = Math.floor(totalSeconds / 60) % 60;
-  const hours = Math.floor(totalSeconds / 3600);
-  return hours > 0
-    ? `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
-    : `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
-function logLevelLabel(level: LogLevel) {
-  return LogLevel[level]?.toUpperCase() ?? "LOG";
-}
-
-function logLevelRank(level: string) {
-  if (level.includes("ERROR")) {
-    return 4;
-  }
-  if (level.includes("WARN")) {
-    return 3;
-  }
-  if (level.includes("INFO")) {
-    return 2;
-  }
-  if (level.includes("DEBUG")) {
-    return 1;
-  }
-  return 0;
-}
-
-function minimumLogLevelRank(level: LogMinimumLevel) {
-  return level === "warn" ? 3 : level === "info" ? 2 : 1;
-}
-
-function filterLogContent(content: string, minimumLevel: LogMinimumLevel) {
-  const requiredRank = minimumLogLevelRank(minimumLevel);
-  return content
-    .split("\n")
-    .filter((line) => {
-      const level = line.match(/\]\[(TRACE|DEBUG|INFO|WARN|ERROR)\]/i)?.[1];
-      return level ? logLevelRank(level.toUpperCase()) >= requiredRank : false;
-    })
-    .join("\n");
-}
-
-function writeClientLog(level: "debug" | "info" | "warn" | "error", message: string) {
-  const logger =
-    level === "debug" ? logDebug : level === "info" ? logInfo : level === "warn" ? logWarn : logErrorMessage;
-  void logger(message, { file: "src/App.tsx" }).catch(() => {
-    // The Vite browser shell has no Tauri log plugin; ignore that path during local UI-only previews.
-  });
-}
-
-function loadThumbnailData(video: VideoEntry, thumbnailPath: string | null) {
-  if (!thumbnailPath) {
-    return Promise.resolve<string | null>(null);
-  }
-
-  const cached = thumbnailDataUrls.get(thumbnailPath);
-  if (cached) {
-    return Promise.resolve(cached);
-  }
-
-  const pending = thumbnailDataRequests.get(thumbnailPath);
-  if (pending) {
-    return pending;
-  }
-
-  const request = invoke<ThumbnailData>("read_thumbnail", { path: video.path })
-    .then((result) => {
-      thumbnailDataUrls.set(result.thumbnailPath, result.dataUrl);
-      return result.dataUrl;
-    })
-    .finally(() => {
-      thumbnailDataRequests.delete(thumbnailPath);
-    });
-  thumbnailDataRequests.set(thumbnailPath, request);
-  return request;
-}
-
-const VideoThumbnail = memo(function VideoThumbnail({
-  video,
-  thumbnailPath,
-  visibilityRevision,
-  compact = false,
-  onVisible,
-}: {
-  video: VideoEntry;
-  thumbnailPath: string | null;
-  visibilityRevision: number;
-  compact?: boolean;
-  onVisible?: (video: VideoEntry) => void;
-}) {
-  const thumbnailElement = useRef<HTMLSpanElement>(null);
-  const [failedPath, setFailedPath] = useState<string | null>(null);
-  const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(() =>
-    thumbnailPath ? thumbnailDataUrls.get(thumbnailPath) ?? null : null,
-  );
-
-  useEffect(() => {
-    let active = true;
-    setFailedPath(null);
-
-    if (!thumbnailPath) {
-      setThumbnailSrc(null);
-      return () => {
-        active = false;
-      };
-    }
-
-    const cached = thumbnailDataUrls.get(thumbnailPath);
-    if (cached) {
-      setThumbnailSrc(cached);
-      return () => {
-        active = false;
-      };
-    }
-
-    setThumbnailSrc(null);
-    void loadThumbnailData(video, thumbnailPath)
-      .then((source) => {
-        if (active) {
-          setThumbnailSrc(source);
-        }
-      })
-      .catch((error) => {
-        if (active) {
-          setFailedPath(thumbnailPath);
-          writeClientLog("error", `读取缩略图缓存失败：${thumbnailPath}，${errorMessage(error)}`);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [thumbnailPath, video.path]);
-
-  useEffect(() => {
-    if (thumbnailPath || !onVisible) {
-      return;
-    }
-
-    const element = thumbnailElement.current;
-    if (!element) {
-      return;
-    }
-    if (!("IntersectionObserver" in window)) {
-      onVisible(video);
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          onVisible(video);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "240px 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [onVisible, thumbnailPath, video, visibilityRevision]);
-
-  const hasImage = thumbnailSrc !== null && thumbnailPath !== failedPath;
-
-  return (
-    <span
-      ref={thumbnailElement}
-      className={`video-thumbnail ${compact ? "compact-thumbnail" : ""} ${hasImage ? "has-image" : ""}`}
-    >
-      {hasImage ? (
-        <img
-          src={thumbnailSrc ?? ""}
-          alt=""
-          loading="lazy"
-          draggable={false}
-          onError={() => {
-            setFailedPath(thumbnailPath);
-            writeClientLog("error", `缩略图显示失败：${thumbnailPath}`);
-          }}
-        />
-      ) : (
-        <>
-          <Video size={compact ? 15 : 26} />
-          {!compact && <span>{video.extension.slice(1).toUpperCase()}</span>}
-        </>
-      )}
-    </span>
-  );
-});
-
-type PreviewPlayerHandle = {
-  togglePlayback: () => void;
-  skipPlayback: (seconds: number) => void;
-};
-
-type PreviewPlayerProps = {
-  video: VideoEntry | null;
-  thumbnailPath: string | null;
-  autoplay: boolean;
-  volume: number;
-  muted: boolean;
-  onEnsureThumbnail: (video: VideoEntry) => void;
-  onAudioPreferenceChange: (volume: number, muted: boolean, persistImmediately?: boolean) => void;
-};
-
-const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>(function PreviewPlayer({
-  video,
-  thumbnailPath,
-  autoplay,
-  volume,
-  muted,
-  onEnsureThumbnail,
-  onAudioPreferenceChange,
-}, ref) {
-  const videoElement = useRef<HTMLVideoElement>(null);
-  const playerSurface = useRef<HTMLDivElement>(null);
-  const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null);
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [isTranscoded, setIsTranscoded] = useState(false);
-  const [playerState, setPlayerState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [playerError, setPlayerError] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(muted);
-  const [playerVolume, setPlayerVolume] = useState(volume);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [rate, setRate] = useState(1);
-  const streamStartTime = useRef(0);
-  const streamRequest = useRef(0);
-  const resumeAfterSeek = useRef(false);
-  const isScrubbing = useRef(false);
-  const directFallbackRequested = useRef(false);
-
-  useEffect(() => {
-    setThumbnailSrc(null);
-    if (!video) {
-      return;
-    }
-    if (!thumbnailPath) {
-      onEnsureThumbnail(video);
-      return;
-    }
-    let active = true;
-    void loadThumbnailData(video, thumbnailPath)
-      .then((source) => {
-        if (active) {
-          setThumbnailSrc(source);
-        }
-      })
-      .catch((error) => {
-        if (active) {
-          writeClientLog("error", `读取预览缩略图失败：${thumbnailPath}，${errorMessage(error)}`);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [onEnsureThumbnail, thumbnailPath, video]);
-
-  useEffect(() => {
-    setStreamUrl(null);
-    setIsTranscoded(false);
-    setPlayerError(null);
-    setPlayerState(video ? "loading" : "idle");
-    setIsPlaying(false);
-    setCurrentTime(0);
-    setDuration(0);
-    streamStartTime.current = 0;
-    resumeAfterSeek.current = false;
-    directFallbackRequested.current = false;
-    const request = ++streamRequest.current;
-    if (!video) {
-      return;
-    }
-    let active = true;
-    // A short stable-selection delay prevents rapid range selection from opening a stream per item.
-    const timer = window.setTimeout(() => {
-      void invoke<VideoStreamUrl>("get_video_stream_url", { path: video.path })
-        .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
-          if (active && request === streamRequest.current) {
-            setStreamUrl(url);
-            setIsTranscoded(nextIsTranscoded);
-            setDuration(streamDuration ?? 0);
-          }
-        })
-        .catch((error) => {
-          if (active) {
-            const message = errorMessage(error);
-            setPlayerError(message);
-            setPlayerState("error");
-            writeClientLog("error", `创建预览流失败：${video.path}，${message}`);
-          }
-        });
-    }, 250);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [video]);
-
-  useEffect(() => {
-    const element = videoElement.current;
-    if (!element) {
-      return;
-    }
-    element.volume = Math.min(1, Math.max(0, playerVolume / 100));
-    element.muted = isMuted;
-    element.playbackRate = rate;
-  }, [isMuted, playerVolume, rate, streamUrl]);
-
-  useEffect(() => {
-    setPlayerVolume(volume);
-    setIsMuted(muted);
-  }, [muted, volume]);
-
-  const togglePlayback = () => {
-    const element = videoElement.current;
-    if (!element || playerState !== "ready") {
-      return;
-    }
-    if (element.paused) {
-      void element.play().catch((error) => {
-        const message = errorMessage(error);
-        setPlayerError(message);
-        writeClientLog("error", `播放预览失败：${video?.path ?? ""}，${message}`);
-      });
-    } else {
-      element.pause();
-    }
-  };
-
-  const startTranscodedPreview = (startTime: number, resume: boolean) => {
-    if (!video || !Number.isFinite(startTime)) {
-      return;
-    }
-    const targetTime = duration > 0 ? Math.min(Math.max(0, startTime), duration) : Math.max(0, startTime);
-    const request = ++streamRequest.current;
-    streamStartTime.current = targetTime;
-    resumeAfterSeek.current = resume;
-    setCurrentTime(targetTime);
-    setPlayerError(null);
-    setPlayerState("loading");
-    setStreamUrl(null);
-    void invoke<VideoStreamUrl>("get_video_stream_url", {
-      path: video.path,
-      startSeconds: targetTime,
-      forceTranscode: true,
-    })
-      .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
-        if (request === streamRequest.current) {
-          setIsTranscoded(nextIsTranscoded);
-          setDuration(streamDuration ?? duration);
-          setStreamUrl(url);
-        }
-      })
-      .catch((error) => {
-        if (request === streamRequest.current) {
-          const message = errorMessage(error);
-          setPlayerError(message);
-          setPlayerState("error");
-          writeClientLog("error", `创建转码预览失败：${video.path}，${message}`);
-        }
-      });
-  };
-
-  const fallbackDirectPreview = (reason: string, resume: boolean) => {
-    if (isTranscoded || directFallbackRequested.current) {
-      return;
-    }
-    directFallbackRequested.current = true;
-    writeClientLog("warn", `原文件内嵌预览缺少可用视频轨，回退到 FFmpeg 转码：${reason}，${video?.path ?? ""}`);
-    startTranscodedPreview(0, resume);
-  };
-
-  const seek = (nextTime: number) => {
-    const element = videoElement.current;
-    if (!element || !video || !Number.isFinite(nextTime)) {
-      return;
-    }
-    const targetTime = Math.min(Math.max(0, nextTime), duration);
-    if (!isTranscoded) {
-      element.currentTime = targetTime;
-      setCurrentTime(targetTime);
-      return;
-    }
-    startTranscodedPreview(targetTime, !element.paused);
-  };
-
-  const skipPlayback = (seconds: number) => {
-    const element = videoElement.current;
-    if (!element || playerState !== "ready") {
-      return;
-    }
-    seek(currentTime + seconds);
-  };
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      togglePlayback,
-      skipPlayback,
-    }),
-    [currentTime, duration, isTranscoded, playerState, video],
-  );
-
-  const openExternally = () => {
-    if (!video) {
-      return;
-    }
-    void invoke("open_video_externally", { path: video.path }).catch((error: unknown) => {
-      writeClientLog("error", `使用外部播放器打开失败：${video.path}，${errorMessage(error)}`);
-    });
-  };
-
-  if (!video) {
-    return (
-      <section className="player-placeholder">
-        <div className="player-icon" aria-hidden="true">
-          <MonitorPlay size={28} />
-        </div>
-        <p>选择一个视频后显示预览</p>
-      </section>
-    );
-  }
-
-  return (
-    <section className="preview-player" aria-label={`${video.name} 的视频预览`}>
-      <div className="preview-media" ref={playerSurface}>
-        {thumbnailSrc ? <img className="preview-thumbnail" src={thumbnailSrc} alt="" /> : <div className="preview-thumbnail-fallback"><Video size={30} /></div>}
-        {streamUrl && (
-          <video
-            ref={videoElement}
-            className={`preview-video ${playerState === "ready" ? "is-ready" : ""}`}
-            src={streamUrl}
-            preload="metadata"
-            playsInline
-            onCanPlay={(event) => {
-              if (!isTranscoded && (event.currentTarget.videoWidth === 0 || event.currentTarget.videoHeight === 0)) {
-                fallbackDirectPreview(
-                  `canplay 时视频尺寸为 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
-                  autoplay || !event.currentTarget.paused,
-                );
-                return;
-              }
-              setPlayerState("ready");
-              if (autoplay || resumeAfterSeek.current) {
-                resumeAfterSeek.current = false;
-                void videoElement.current?.play().catch((error) => {
-                  writeClientLog("warn", `自动播放预览被阻止：${video.path}，${errorMessage(error)}`);
-                });
-              }
-            }}
-            onLoadedMetadata={(event) => {
-              if (!isTranscoded && (event.currentTarget.videoWidth === 0 || event.currentTarget.videoHeight === 0)) {
-                fallbackDirectPreview(
-                  `loadedmetadata 时视频尺寸为 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
-                  autoplay || !event.currentTarget.paused,
-                );
-                return;
-              }
-              if (!isTranscoded && Number.isFinite(event.currentTarget.duration)) {
-                setDuration(event.currentTarget.duration);
-              }
-            }}
-            onTimeUpdate={(event) => {
-              if (!isScrubbing.current) {
-                setCurrentTime(streamStartTime.current + event.currentTarget.currentTime);
-              }
-            }}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => setIsPlaying(false)}
-            onError={() => {
-              if (!isTranscoded) {
-                fallbackDirectPreview("浏览器报告媒体加载错误", autoplay);
-                return;
-              }
-              const message = "此视频无法在内嵌播放器中播放";
-              setPlayerError(message);
-              setPlayerState("error");
-              writeClientLog("error", `内嵌预览加载失败：${video.path}`);
-            }}
-          />
-        )}
-        {playerState === "loading" && <div className="preview-status">正在准备内嵌预览…</div>}
-        {playerState === "error" && (
-          <div className="preview-error">
-            <span>{playerError ?? "预览不可用"}</span>
-            <button type="button" onClick={openExternally}>使用外部播放器打开</button>
-          </div>
-        )}
-      </div>
-      {isTranscoded && <p className="transcode-notice">实时转码预览：拖动结束后会从目标位置重新开始转码</p>}
-      <div className="player-controls" aria-label="播放器控制">
-        <button type="button" aria-label={isPlaying ? "暂停" : "播放"} title={isPlaying ? "暂停" : "播放"} onClick={togglePlayback} disabled={playerState !== "ready"}>
-          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-        </button>
-        <span className="player-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
-        <input
-          className="player-progress"
-          type="range"
-          min="0"
-          max={duration || 0}
-          step="0.1"
-          value={Math.min(currentTime, duration || 0)}
-          aria-label="播放进度"
-          disabled={playerState !== "ready" || duration <= 0}
-          onPointerDown={() => {
-            isScrubbing.current = true;
-          }}
-          onInput={(event) => setCurrentTime(Number(event.currentTarget.value))}
-          onPointerUp={(event) => {
-            isScrubbing.current = false;
-            seek(Number(event.currentTarget.value));
-          }}
-          onPointerCancel={() => {
-            isScrubbing.current = false;
-          }}
-          onKeyUp={(event) => {
-            if (["ArrowLeft", "ArrowRight", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
-              seek(Number(event.currentTarget.value));
-            }
-          }}
-        />
-        <button
-          type="button"
-          aria-label={isMuted ? "取消静音" : "静音"}
-          title={isMuted ? "取消静音" : "静音"}
-          onClick={() => {
-            const nextMuted = !isMuted;
-            setIsMuted(nextMuted);
-            onAudioPreferenceChange(playerVolume, nextMuted, true);
-          }}
-          disabled={playerState !== "ready"}
-        >
-          {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-        </button>
-        <input
-          className="player-volume"
-          type="range"
-          min="0"
-          max="100"
-          value={isMuted ? 0 : playerVolume}
-          aria-label="音量"
-          disabled={playerState !== "ready"}
-          onInput={(event) => {
-            const nextVolume = Number(event.currentTarget.value);
-            const element = videoElement.current;
-            if (element) {
-              element.volume = (nextVolume || playerVolume) / 100;
-              element.muted = nextVolume === 0;
-            }
-            if (nextVolume > 0) {
-              setPlayerVolume(nextVolume);
-              setIsMuted(false);
-              onAudioPreferenceChange(nextVolume, false);
-            } else {
-              setIsMuted(true);
-              onAudioPreferenceChange(playerVolume, true);
-            }
-          }}
-        />
-        <select aria-label="播放速率" value={rate} disabled={playerState !== "ready"} onChange={(event) => setRate(Number(event.target.value))}>
-          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((value) => <option key={value} value={value}>{value}×</option>)}
-        </select>
-        <button type="button" aria-label="全屏" title="全屏" disabled={playerState !== "ready"} onClick={() => void playerSurface.current?.requestFullscreen?.()}>
-          <Maximize2 size={16} />
-        </button>
-      </div>
-    </section>
-  );
-});
-
-function DirectoryTreeNode({
-  entry,
-  depth,
-  selectedPath,
-  expandedPaths,
-  treeState,
-  onSelect,
-  onToggle,
-  onContextMenu,
-}: {
-  entry: DirectoryEntry;
-  depth: number;
-  selectedPath: string | null;
-  expandedPaths: Set<string>;
-  treeState: TreeState;
-  onSelect: (path: string) => void;
-  onToggle: (path: string) => void;
-  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, path: string) => void;
-}) {
-  const isExpanded = expandedPaths.has(entry.path);
-  const state = treeState[entry.path];
-  const isRoot = depth === 0;
-
-  return (
-    <li className="tree-node">
-      <div className={`tree-row ${selectedPath === entry.path ? "active" : ""}`} style={{ paddingLeft: 8 + depth * 16 }}>
-        {entry.hasChildren ? (
-          <button
-            className="tree-disclosure"
-            type="button"
-            aria-label={isExpanded ? `收起 ${entry.name}` : `展开 ${entry.name}`}
-            title={isExpanded ? "收起" : "展开"}
-            onClick={() => onToggle(entry.path)}
-          >
-            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          </button>
-        ) : (
-          <span className="tree-disclosure-spacer" aria-hidden="true" />
-        )}
-        <button
-          className="tree-label"
-          type="button"
-          title={entry.path}
-          aria-current={selectedPath === entry.path ? "page" : undefined}
-          onClick={() => onSelect(entry.path)}
-          onContextMenu={(event) => onContextMenu(event, entry.path)}
-        >
-          {isRoot ? <HardDrive size={16} /> : isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />}
-          <span>{entry.name}</span>
-        </button>
-      </div>
-
-      {isExpanded && state?.status === "loading" && <div className="tree-status">正在读取…</div>}
-      {isExpanded && state?.status === "error" && <div className="tree-status">无法读取</div>}
-      {isExpanded && state?.status === "loaded" && state.folders.length > 0 && (
-        <ul className="tree-children">
-          {state.folders.map((child) => (
-            <DirectoryTreeNode
-              entry={child}
-              depth={depth + 1}
-              key={child.path}
-              selectedPath={selectedPath}
-              expandedPaths={expandedPaths}
-              treeState={treeState}
-              onSelect={onSelect}
-              onToggle={onToggle}
-              onContextMenu={onContextMenu}
-            />
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(fallbackConfig);
@@ -1076,7 +163,9 @@ export default function App() {
   const workspaceFocusRestorePath = useRef<string | null>(null);
   const workspaceFocusRestorePending = useRef(false);
   const workspaceFocusByPath = useRef<Record<string, WorkspaceFocus>>({});
-  const workspaceFocusPersistence = useRef<Promise<void>>(Promise.resolve());
+  const workspaceSortByPath = useRef<Record<string, WorkspaceSort>>({});
+  const activeWorkspaceSort = useRef<WorkspaceSort>({ key: "createdAt", ascending: false });
+  const workspaceStatePersistence = useRef<Promise<void>>(Promise.resolve());
   const suppressBackgroundSelectionClear = useRef(false);
   const fileDragGesture = useRef<FileDragGesture | null>(null);
   const previewPlayerRef = useRef<PreviewPlayerHandle>(null);
@@ -1101,7 +190,7 @@ export default function App() {
   const persistWorkspaceFocus = useCallback(async (workspacePath: string, videoPath: string) => {
     if (workspaceFocusByPath.current[workspacePath]?.videoPath === videoPath) {
       writeClientLog("debug", `工作区焦点无需保存：工作区 ${workspacePath}，视频 ${videoPath}`);
-      await workspaceFocusPersistence.current;
+      await workspaceStatePersistence.current;
       return;
     }
     workspaceFocusByPath.current = {
@@ -1116,7 +205,7 @@ export default function App() {
       },
     }));
     writeClientLog("debug", `开始保存工作区焦点：工作区 ${workspacePath}，视频 ${videoPath}`);
-    const pending = workspaceFocusPersistence.current.then(async () => {
+    const pending = workspaceStatePersistence.current.then(async () => {
       try {
         await invoke("set_workspace_focus", { workspacePath, videoPath });
         writeClientLog("debug", `工作区焦点已写入配置：工作区 ${workspacePath}，视频 ${videoPath}`);
@@ -1124,7 +213,37 @@ export default function App() {
         writeClientLog("warn", `保存工作区视频焦点失败：工作区 ${workspacePath}，视频 ${videoPath}，${errorMessage(error)}`);
       }
     });
-    workspaceFocusPersistence.current = pending;
+    workspaceStatePersistence.current = pending;
+    await pending;
+  }, []);
+  const persistWorkspaceSort = useCallback(async (workspacePath: string, key: SortKey, ascending: boolean) => {
+    const previous = workspaceSortByPath.current[workspacePath];
+    if (previous?.key === key && previous.ascending === ascending) {
+      await workspaceStatePersistence.current;
+      return;
+    }
+    const sort = { key, ascending };
+    workspaceSortByPath.current = {
+      ...workspaceSortByPath.current,
+      [workspacePath]: sort,
+    };
+    setConfig((current) => ({
+      ...current,
+      workspaceSort: {
+        ...current.workspaceSort,
+        [workspacePath]: sort,
+      },
+    }));
+    writeClientLog("debug", `开始保存工作区排序：工作区 ${workspacePath}，字段 ${key}，升序 ${ascending}`);
+    const pending = workspaceStatePersistence.current.then(async () => {
+      try {
+        await invoke("set_workspace_sort", { workspacePath, sortKey: key, sortAscending: ascending });
+        writeClientLog("debug", `工作区排序已写入配置：工作区 ${workspacePath}，字段 ${key}，升序 ${ascending}`);
+      } catch (error) {
+        writeClientLog("warn", `保存工作区排序失败：工作区 ${workspacePath}，${errorMessage(error)}`);
+      }
+    });
+    workspaceStatePersistence.current = pending;
     await pending;
   }, []);
   const setGridScrollRef = useCallback((element: HTMLDivElement | null) => {
@@ -1282,6 +401,17 @@ export default function App() {
         return;
       }
     }
+    if (
+      (sortKey === "duration" || sortKey === "resolution") &&
+      workspace.videos.some(
+        (video) =>
+          (video.duration === null || video.width === null || video.height === null) &&
+          !probedMetadataPaths.current.has(video.path),
+      )
+    ) {
+      writeClientLog("debug", `等待媒体信息完成后恢复工作区焦点：${workspace.path}`);
+      return;
+    }
     const focusPath = workspaceFocusRestorePath.current;
     const videoIndex = focusPath ? visibleVideos.findIndex((video) => video.path === focusPath) : -1;
     if (focusPath && videoIndex < 0) {
@@ -1330,7 +460,7 @@ export default function App() {
     };
     const frame = window.requestAnimationFrame(restoreScroll);
     return () => window.cancelAnimationFrame(frame);
-  }, [gridColumns, gridRowVirtualizer, gridViewport, listRowVirtualizer, viewMode, visibleVideos, workspace]);
+  }, [gridColumns, gridRowVirtualizer, gridViewport, listRowVirtualizer, sortKey, viewMode, visibleVideos, workspace]);
 
   useEffect(
     () => () => {
@@ -1345,7 +475,7 @@ export default function App() {
     if (!workspaceVideoPaths.current.has(thumbnail.path)) {
       return;
     }
-    thumbnailDataUrls.delete(thumbnail.thumbnailPath);
+    invalidateThumbnailData(thumbnail.thumbnailPath);
     thumbnailPathOverrideRef.current.set(thumbnail.path, thumbnail.thumbnailPath);
     startTransition(() => {
       setThumbnailPathOverrides(new Map(thumbnailPathOverrideRef.current));
@@ -1566,11 +696,18 @@ export default function App() {
   const activateWorkspace = async (
     requestedPath: string,
     persist = true,
-    focusMemoryEnabled = config.settings.rememberWorkspaceFocus,
+    workspaceMemoryEnabled = config.settings.rememberWorkspaceFocus,
   ) => {
-    if (focusMemoryEnabled && workspace && selectionAnchor && selectedVideos.has(selectionAnchor)) {
-      writeClientLog("debug", `切换工作区前保存当前焦点：工作区 ${workspace.path}，视频 ${selectionAnchor}`);
-      await persistWorkspaceFocus(workspace.path, selectionAnchor);
+    if (workspaceMemoryEnabled && workspace) {
+      if (selectionAnchor && selectedVideos.has(selectionAnchor)) {
+        writeClientLog("debug", `切换工作区前保存当前焦点：工作区 ${workspace.path}，视频 ${selectionAnchor}`);
+        await persistWorkspaceFocus(workspace.path, selectionAnchor);
+      }
+      await persistWorkspaceSort(
+        workspace.path,
+        activeWorkspaceSort.current.key,
+        activeWorkspaceSort.current.ascending,
+      );
     }
     const requestId = ++workspaceRequest.current;
     metadataRequest.current += 1;
@@ -1590,7 +727,22 @@ export default function App() {
       thumbnailPathOverrideRef.current.clear();
       setThumbnailPathOverrides(new Map());
       workspaceVideoPaths.current = new Set(listing.videos.map((video) => video.path));
-      const rememberedPath = focusMemoryEnabled ? workspaceFocusByPath.current[listing.path]?.videoPath : undefined;
+      const rememberedSort = workspaceMemoryEnabled ? workspaceSortByPath.current[listing.path] : undefined;
+      if (workspaceMemoryEnabled) {
+        const restoredSort = rememberedSort ?? { key: "createdAt" as const, ascending: false };
+        activeWorkspaceSort.current = restoredSort;
+        setSortKey(restoredSort.key);
+        setSortAscending(restoredSort.ascending);
+      }
+      if (rememberedSort) {
+        writeClientLog(
+          "debug",
+          `工作区排序命中：工作区 ${listing.path}，字段 ${rememberedSort.key}，升序 ${rememberedSort.ascending}`,
+        );
+      } else if (workspaceMemoryEnabled) {
+        writeClientLog("debug", `工作区没有已保存排序，使用创建日期降序：${listing.path}`);
+      }
+      const rememberedPath = workspaceMemoryEnabled ? workspaceFocusByPath.current[listing.path]?.videoPath : undefined;
       const rememberedVideo = rememberedPath ? listing.videos.find((video) => video.path === rememberedPath) : null;
       workspaceFocusRestorePath.current = rememberedVideo?.path ?? null;
       workspaceFocusRestorePending.current = true;
@@ -1605,10 +757,10 @@ export default function App() {
           "warn",
           `工作区焦点未命中：工作区 ${listing.path}，已记录 ${rememberedPath}，当前视频 ${listing.videos.length} 个`,
         );
-      } else if (focusMemoryEnabled) {
+      } else if (workspaceMemoryEnabled) {
         writeClientLog("debug", `工作区没有已保存焦点：${listing.path}`);
       } else {
-        writeClientLog("debug", `工作区焦点记忆已关闭，滚动位置将从顶部开始：${listing.path}`);
+        writeClientLog("debug", `工作区排序与焦点记忆已关闭，滚动位置将从顶部开始：${listing.path}`);
       }
       setWorkspace(listing);
       setSelectedPath(listing.path);
@@ -1726,6 +878,12 @@ export default function App() {
       }
     }
   };
+
+  useEffect(() => {
+    if (workspace && (sortKey === "duration" || sortKey === "resolution")) {
+      void loadWorkspaceMetadata();
+    }
+  }, [sortKey, workspace?.path]);
 
   useEffect(() => {
     const requestId = ++selectedMetadataRequest.current;
@@ -2415,14 +1573,14 @@ export default function App() {
     const thumbnailPositionChanged =
       config.settings.thumbnailCapturePosition !== settingsDraft.thumbnailCapturePosition;
     try {
+      await workspaceStatePersistence.current;
       const nextConfig = await invoke<AppConfig>("save_configuration", {
         config: { ...config, settings: settingsDraft },
       });
       setConfig(nextConfig);
       setIsSettingsOpen(false);
       if (thumbnailPositionChanged && workspace) {
-        thumbnailDataUrls.clear();
-        thumbnailDataRequests.clear();
+        clearThumbnailDataCache();
         thumbnailQueue.current = [];
         queuedThumbnailPaths.current.clear();
         thumbnailFailures.current.clear();
@@ -2822,9 +1980,10 @@ export default function App() {
           return;
         }
         workspaceFocusByPath.current = state.config.workspaceFocus ?? {};
+        workspaceSortByPath.current = state.config.workspaceSort ?? {};
         writeClientLog(
           "debug",
-          `加载工作区焦点配置：共 ${Object.keys(workspaceFocusByPath.current).length} 个工作区记录`,
+          `加载工作区记忆配置：焦点 ${Object.keys(workspaceFocusByPath.current).length} 个，排序 ${Object.keys(workspaceSortByPath.current).length} 个工作区记录`,
         );
         setConfig(state.config);
         setRoots(state.roots);
@@ -2834,7 +1993,11 @@ export default function App() {
           writeClientLog("warn", "检测到管理员权限：普通资源管理器的文件拖入会被 Windows 阻止");
         }
         if (state.config.lastWorkspace) {
-          await activateWorkspace(state.config.lastWorkspace, false);
+          await activateWorkspace(
+            state.config.lastWorkspace,
+            false,
+            state.config.settings.rememberWorkspaceFocus,
+          );
         } else {
           setWorkspaceLoading(false);
         }
@@ -3001,9 +2164,10 @@ export default function App() {
               value={sortKey}
               onChange={(event) => {
                 const nextSortKey = event.target.value as SortKey;
+                activeWorkspaceSort.current = { key: nextSortKey, ascending: sortAscending };
                 setSortKey(nextSortKey);
-                if (nextSortKey === "duration" || nextSortKey === "resolution") {
-                  void loadWorkspaceMetadata();
+                if (workspace && config.settings.rememberWorkspaceFocus) {
+                  void persistWorkspaceSort(workspace.path, nextSortKey, sortAscending);
                 }
               }}
               disabled={!workspace || metadataLoading}
@@ -3021,7 +2185,14 @@ export default function App() {
             disabled={!workspace}
             aria-label={sortAscending ? "改为降序" : "改为升序"}
             title={sortAscending ? "降序" : "升序"}
-            onClick={() => setSortAscending((ascending) => !ascending)}
+            onClick={() => {
+              const nextAscending = !sortAscending;
+              activeWorkspaceSort.current = { key: sortKey, ascending: nextAscending };
+              setSortAscending(nextAscending);
+              if (workspace && config.settings.rememberWorkspaceFocus) {
+                void persistWorkspaceSort(workspace.path, sortKey, nextAscending);
+              }
+            }}
           >
             <ChevronDown size={16} className={sortAscending ? "sort-ascending" : ""} />
           </button>
@@ -3750,13 +2921,13 @@ export default function App() {
                   </button>
                 </div>
                 <div className="setting-row">
-                  <span>记忆工作区视频焦点</span>
+                  <span>记忆工作区排序与视频焦点</span>
                   <button
                     className={`switch ${settingsDraft.rememberWorkspaceFocus ? "on" : ""}`}
                     type="button"
                     role="switch"
                     aria-checked={settingsDraft.rememberWorkspaceFocus}
-                    aria-label="记忆工作区视频焦点"
+                    aria-label="记忆工作区排序与视频焦点"
                     onClick={() =>
                       setSettingsDraft((draft) => ({
                         ...draft,

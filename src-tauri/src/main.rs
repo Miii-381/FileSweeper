@@ -1,5 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config_store;
+mod domain;
+mod file_operations;
+mod media_processing;
+mod media_stream;
+mod menus;
+mod sidecar;
+mod windows_shell;
+mod workspace;
+
+use media_processing::MetadataBatchResult;
+
 use axum::{
     body::{Body, Bytes},
     extract::{Query, Request, State},
@@ -210,12 +222,21 @@ struct WorkspaceFocus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceSort {
+    key: String,
+    ascending: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AppConfig {
     version: u32,
     favorites: Vec<FavoriteFolder>,
     last_workspace: Option<String>,
     #[serde(default)]
     workspace_focus: HashMap<String, WorkspaceFocus>,
+    #[serde(default)]
+    workspace_sort: HashMap<String, WorkspaceSort>,
     settings: Preferences,
 }
 
@@ -226,6 +247,7 @@ impl Default for AppConfig {
             favorites: Vec::new(),
             last_workspace: None,
             workspace_focus: HashMap::new(),
+            workspace_sort: HashMap::new(),
             settings: Preferences::default(),
         }
     }
@@ -550,12 +572,7 @@ fn thumbnail_cache_dir() -> Result<PathBuf, String> {
 }
 
 fn fnv1a_hash(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    domain::fnv1a_64(bytes)
 }
 
 fn thumbnail_source_key(path: &Path) -> String {
@@ -714,458 +731,26 @@ fn remove_thumbnail_cache_entry(
     Ok(())
 }
 
-fn sidecar_filename(name: &str) -> String {
-    if cfg!(target_os = "windows") {
-        format!("{name}-x86_64-pc-windows-msvc.exe")
-    } else {
-        name.to_string()
-    }
-}
-
-fn add_sidecar_candidates(base: &Path, name: &str, candidates: &mut Vec<PathBuf>) {
-    let sidecar = sidecar_filename(name);
-    candidates.push(base.join(&sidecar));
-    candidates.push(base.join("sidecars").join(&sidecar));
-    candidates.push(base.join("..").join("sidecars").join(&sidecar));
-    if cfg!(target_os = "windows") {
-        candidates.push(base.join(format!("{name}.exe")));
-        candidates.push(base.join("bin").join(format!("{name}.exe")));
-    }
-}
-
-static SIDECAR_PATH_CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
-
 fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
-    let cache = SIDECAR_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(entries) = cache.lock() {
-        if let Some(path) = entries.get(name) {
-            return Ok(path.clone());
-        }
-    }
-
-    let mut candidates = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        let mut cursor = Some(current_dir.as_path());
-        while let Some(directory) = cursor {
-            add_sidecar_candidates(directory, name, &mut candidates);
-            cursor = directory.parent();
-        }
-    }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(executable_dir) = executable.parent() {
-            let mut cursor = Some(executable_dir);
-            while let Some(directory) = cursor {
-                add_sidecar_candidates(directory, name, &mut candidates);
-                cursor = directory.parent();
-            }
-        }
-    }
-
-    let resolved = candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .map(|candidate| fs::canonicalize(&candidate).unwrap_or(candidate));
-    match resolved {
-        Some(path) => {
-            if let Ok(mut entries) = cache.lock() {
-                entries.insert(name.to_string(), path.clone());
-            }
-            log::debug!("Resolved {name} sidecar at {}", path_string(&path));
-            Ok(path)
-        }
-        None => {
-            log::error!("Unable to locate the {name} sidecar.");
-            Err(format!("Unable to locate the {name} sidecar."))
-        }
-    }
+    sidecar::resolve_sidecar(name)
 }
 
 fn configure_sidecar_command(command: &mut Command) {
-    #[cfg(target_os = "windows")]
-    {
-        // Keep background media helpers behind the interactive GUI in the Windows scheduler.
-        command.creation_flags(0x0000_4000); // BELOW_NORMAL_PRIORITY_CLASS
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = command;
-}
-
-fn read_child_stderr(child: &mut Child) -> String {
-    let Some(mut stderr) = child.stderr.take() else {
-        return String::new();
-    };
-    let mut output = String::new();
-    let _ = stderr.read_to_string(&mut output);
-    output.trim().to_string()
+    sidecar::configure_sidecar_command(command)
 }
 
 fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<(), String> {
-    let start = Instant::now();
-    loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("Unable to wait for the media sidecar: {error}"))?
-        {
-            Some(status) if status.success() => return Ok(()),
-            Some(status) => {
-                let stderr = read_child_stderr(child);
-                if stderr.is_empty() {
-                    return Err(format!("The media sidecar exited with status {status}."));
-                }
-                return Err(format!(
-                    "The media sidecar exited with status {status}: {stderr}"
-                ));
-            }
-            None if start.elapsed() >= timeout => {
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = Command::new("taskkill")
-                        .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("The media sidecar timed out.".to_string());
-            }
-            None => thread::sleep(Duration::from_millis(100)),
-        }
-    }
+    sidecar::wait_for_child(child, timeout)
 }
-
-fn thumbnail_capture_time(position: &str) -> &str {
-    match position {
-        "opening" => "00:00:01",
-        "early" => "25%",
-        "late" => "75%",
-        "ending" => "90%",
-        _ => "50%",
-    }
-}
-
-fn thumbnail_capture_fraction(position: &str) -> f64 {
-    match position {
-        "early" => 0.25,
-        "late" => 0.75,
-        "ending" => 0.90,
-        _ => 0.50,
-    }
-}
-
 fn thumbnail_capture_cache_key(position: &str) -> &str {
-    match position {
-        // The generator is part of the cache identity so old ffmpeg frames are regenerated.
-        "opening" => "opening-1s-thumbnailer-v1",
-        "early" => "early-thumbnailer-v1",
-        "late" => "late-thumbnailer-v1",
-        "ending" => "ending-thumbnailer-v1",
-        _ => "middle-thumbnailer-v1",
-    }
-}
-
-fn render_thumbnail(
-    thumbnailer: &Path,
-    video_path: &Path,
-    output_path: &Path,
-    capture_time: &str,
-) -> Result<bool, String> {
-    let _ = fs::remove_file(output_path);
-    let mut command = Command::new(thumbnailer);
-    configure_sidecar_command(&mut command);
-    let mut child = command
-        .args(["-i"])
-        .arg(video_path)
-        .args(["-o"])
-        .arg(output_path)
-        .args(["-s", "480", "-t", capture_time, "-q", "7", "-c", "jpeg"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Unable to start ffmpegthumbnailer: {error}"))?;
-
-    wait_for_child(&mut child, Duration::from_secs(30))?;
-    Ok(output_path.is_file())
-}
-
-fn probe_duration(video_path: &Path) -> Option<f64> {
-    let ffprobe = resolve_sidecar("ffprobe").ok()?;
-    let mut command = Command::new(ffprobe);
-    configure_sidecar_command(&mut command);
-    let output = command
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(video_path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        log::warn!(
-            "ffprobe failed for {}: {}",
-            path_string(video_path),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VideoMetadata {
-    path: String,
-    duration: Option<f64>,
-    width: Option<u32>,
-    height: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MetadataBatchResult {
-    metadata: Vec<VideoMetadata>,
-    failed_paths: Vec<String>,
-}
-
-fn probe_video_metadata(video_path: &Path) -> Result<VideoMetadata, String> {
-    let ffprobe = resolve_sidecar("ffprobe")?;
-    let mut command = Command::new(ffprobe);
-    configure_sidecar_command(&mut command);
-    let output = command
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "format=duration:stream=width,height",
-            "-of",
-            "json",
-        ])
-        .arg(video_path)
-        .output()
-        .map_err(|error| format!("Unable to start ffprobe: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "ffprobe failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let document: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Unable to read ffprobe metadata: {error}"))?;
-    let duration = document
-        .get("format")
-        .and_then(|format| format.get("duration"))
-        .and_then(|duration| duration.as_str())
-        .and_then(|duration| duration.parse::<f64>().ok())
-        .filter(|duration| duration.is_finite() && *duration > 0.0);
-    let stream = document
-        .get("streams")
-        .and_then(|streams| streams.as_array())
-        .and_then(|streams| streams.first());
-    let width = stream
-        .and_then(|stream| stream.get("width"))
-        .and_then(|width| width.as_u64())
-        .and_then(|width| u32::try_from(width).ok())
-        .filter(|width| *width > 0);
-    let height = stream
-        .and_then(|stream| stream.get("height"))
-        .and_then(|height| height.as_u64())
-        .and_then(|height| u32::try_from(height).ok())
-        .filter(|height| *height > 0);
-    Ok(VideoMetadata {
-        path: path_string(video_path),
-        duration,
-        width,
-        height,
-    })
+    media_processing::thumbnail_capture_cache_key(position)
 }
 
 fn probe_video_metadata_batch(
     paths: Vec<String>,
     media_sidecar_pool: Arc<MediaSidecarPermits>,
 ) -> MetadataBatchResult {
-    let workers = paths
-        .into_iter()
-        .map(|path| {
-            let media_sidecar_pool = Arc::clone(&media_sidecar_pool);
-            thread::spawn(move || {
-                let source_path = path.clone();
-                let result = (|| {
-                    let _permit = media_sidecar_pool.acquire()?;
-                    let video_path = fs::canonicalize(&path)
-                        .map_err(|error| format!("Unable to access this video: {error}"))?;
-                    probe_video_metadata(&video_path)
-                })();
-                (source_path, result)
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut metadata = Vec::new();
-    let mut failed_paths = Vec::new();
-    for worker in workers {
-        match worker.join() {
-            Ok((_, Ok(result))) => metadata.push(result),
-            Ok((path, Err(error))) => {
-                log::warn!("Unable to probe video metadata for {path}: {error}");
-                failed_paths.push(path);
-            }
-            Err(_) => failed_paths.push("<unknown>".to_string()),
-        }
-    }
-    MetadataBatchResult {
-        metadata,
-        failed_paths,
-    }
-}
-
-fn render_thumbnail_with_ffmpeg(
-    video_path: &Path,
-    output_path: &Path,
-    capture_position: &str,
-) -> Result<bool, String> {
-    let ffmpeg = resolve_sidecar("ffmpeg")?;
-    let timestamp = if capture_position == "opening" {
-        1.0
-    } else {
-        probe_duration(video_path)
-            .map(|duration| {
-                (duration * thumbnail_capture_fraction(capture_position))
-                    .min((duration - 0.05).max(0.0))
-            })
-            .unwrap_or(2.0)
-    };
-    let timestamp = format!("{timestamp:.3}");
-    let _ = fs::remove_file(output_path);
-    let mut command = Command::new(ffmpeg);
-    configure_sidecar_command(&mut command);
-    let mut child = command
-        .args([
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            &timestamp,
-            "-i",
-        ])
-        .arg(video_path)
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2",
-            "-q:v",
-            "7",
-        ])
-        .arg(output_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Unable to start FFmpeg fallback: {error}"))?;
-
-    wait_for_child(&mut child, Duration::from_secs(30))?;
-    Ok(output_path.is_file())
-}
-
-fn generate_thumbnail_impl(
-    path: &Path,
-    thumbnail_index: &Arc<Mutex<ThumbnailIndex>>,
-    thumbnail_cache_dir: &Path,
-    capture_position: &str,
-    persist_immediately: bool,
-) -> Result<PathBuf, String> {
-    let video_path =
-        fs::canonicalize(path).map_err(|error| format!("Unable to access this video: {error}"))?;
-    let metadata = fs::metadata(&video_path)
-        .map_err(|error| format!("Unable to inspect this video: {error}"))?;
-    if !metadata.is_file() {
-        return Err("The selected path is not a video file.".to_string());
-    }
-
-    if let Some(thumbnail_path) = cached_thumbnail_path(
-        &video_path,
-        &metadata,
-        thumbnail_index,
-        thumbnail_cache_dir,
-        capture_position,
-    ) {
-        log::debug!(
-            "Thumbnail cache hit for {} -> {}",
-            path_string(&video_path),
-            thumbnail_path
-        );
-        return Ok(PathBuf::from(thumbnail_path));
-    }
-    let thumbnail_path = thumbnail_path_for(&video_path)?;
-
-    log::info!(
-        "Generating thumbnail for {} -> {}",
-        path_string(&video_path),
-        path_string(&thumbnail_path)
-    );
-    let thumbnailer = resolve_sidecar("ffmpegthumbnailer")?;
-    let capture_time = thumbnail_capture_time(capture_position);
-    let temporary_path = thumbnail_path.with_extension("tmp.jpg");
-    let generated = match render_thumbnail(&thumbnailer, &video_path, &temporary_path, capture_time)
-    {
-        Ok(true) => true,
-        Ok(false) => {
-            log::warn!(
-                "ffmpegthumbnailer produced no image for {}; using FFmpeg fallback.",
-                path_string(&video_path)
-            );
-            render_thumbnail_with_ffmpeg(&video_path, &temporary_path, capture_position)?
-        }
-        Err(error) => {
-            log::warn!(
-                "ffmpegthumbnailer failed for {}; using FFmpeg fallback: {}",
-                path_string(&video_path),
-                error
-            );
-            render_thumbnail_with_ffmpeg(&video_path, &temporary_path, capture_position)?
-        }
-    };
-    if !generated {
-        let error =
-            "Neither ffmpegthumbnailer nor the FFmpeg fallback created a thumbnail.".to_string();
-        log::error!(
-            "Thumbnail generation failed for {}: {}",
-            path_string(&video_path),
-            error
-        );
-        return Err(error);
-    }
-    if thumbnail_path.exists() {
-        fs::remove_file(&thumbnail_path)
-            .map_err(|error| format!("Unable to replace the cached thumbnail: {error}"))?;
-    }
-    fs::rename(&temporary_path, &thumbnail_path)
-        .map_err(|error| format!("Unable to store the cached thumbnail: {error}"))?;
-    record_thumbnail_cache(
-        &video_path,
-        &metadata,
-        &thumbnail_path,
-        thumbnail_index,
-        capture_position,
-        persist_immediately,
-    )?;
-    log::info!(
-        "Thumbnail generated for {} -> {}",
-        path_string(&video_path),
-        path_string(&thumbnail_path)
-    );
-    Ok(thumbnail_path)
+    media_processing::probe_video_metadata_batch(paths, media_sidecar_pool)
 }
 
 fn generate_thumbnail_batch_impl(
@@ -1176,71 +761,14 @@ fn generate_thumbnail_batch_impl(
     capture_position: String,
     app_handle: tauri::AppHandle,
 ) -> Result<ThumbnailBatchResult, String> {
-    if paths.len() > MAX_PARALLEL_THUMBNAIL_TASKS {
-        return Err(format!(
-            "A thumbnail batch may contain at most {MAX_PARALLEL_THUMBNAIL_TASKS} videos."
-        ));
-    }
-
-    let workers = paths
-        .into_iter()
-        .map(|path| {
-            let media_sidecar_pool = Arc::clone(&media_sidecar_pool);
-            let thumbnail_index = Arc::clone(&thumbnail_index);
-            let thumbnail_cache_dir = thumbnail_cache_dir.clone();
-            let capture_position = capture_position.clone();
-            let app_handle = app_handle.clone();
-            thread::spawn(move || {
-                let source_path = path.clone();
-                let result = (|| {
-                    let _permit = media_sidecar_pool.acquire()?;
-                    let video_path = fs::canonicalize(&path)
-                        .map_err(|error| format!("Unable to access this video: {error}"))?;
-                    let thumbnail_path = generate_thumbnail_impl(
-                        &video_path,
-                        &thumbnail_index,
-                        &thumbnail_cache_dir,
-                        &capture_position,
-                        false,
-                    )?;
-                    Ok(ThumbnailResult {
-                        path: path_string(&video_path),
-                        thumbnail_path: path_string(&thumbnail_path),
-                    })
-                })();
-                if let Ok(thumbnail) = &result {
-                    // The JPEG and in-memory index are ready now; persist the index once after the batch.
-                    let _ = app_handle.emit("thumbnail-generated", thumbnail.clone());
-                }
-                (source_path, result)
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let mut thumbnails = Vec::new();
-    let mut failures = Vec::new();
-    for worker in workers {
-        match worker.join() {
-            Ok((_, Ok(result))) => thumbnails.push(result),
-            Ok((path, Err(error))) => failures.push(ThumbnailFailure { path, error }),
-            Err(_) => failures.push(ThumbnailFailure {
-                path: "<unknown>".to_string(),
-                error: "The thumbnail worker panicked.".to_string(),
-            }),
-        }
-    }
-
-    if !thumbnails.is_empty() {
-        let index = thumbnail_index
-            .lock()
-            .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
-        persist_thumbnail_index(&index)?;
-    }
-
-    Ok(ThumbnailBatchResult {
-        thumbnails,
-        failures,
-    })
+    media_processing::generate_thumbnail_batch_impl(
+        paths,
+        media_sidecar_pool,
+        thumbnail_index,
+        thumbnail_cache_dir,
+        capture_position,
+        app_handle,
+    )
 }
 
 fn thumbnail_data_impl(
@@ -1249,581 +777,51 @@ fn thumbnail_data_impl(
     thumbnail_cache_dir: &Path,
     capture_position: &str,
 ) -> Result<ThumbnailData, String> {
-    let video_path =
-        fs::canonicalize(path).map_err(|error| format!("Unable to access this video: {error}"))?;
-    let metadata = fs::metadata(&video_path)
-        .map_err(|error| format!("Unable to inspect this video: {error}"))?;
-    let thumbnail_path = cached_thumbnail_path(
-        &video_path,
-        &metadata,
+    media_processing::thumbnail_data_impl(
+        path,
         thumbnail_index,
         thumbnail_cache_dir,
         capture_position,
     )
-    .map(PathBuf::from)
-    .ok_or_else(|| "No valid cached thumbnail is available for this video.".to_string())?;
-    let bytes = match fs::read(&thumbnail_path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let _ = remove_thumbnail_cache_entry(&video_path, thumbnail_index);
-            return Err(format!(
-                "Unable to read the cached thumbnail {}: {error}",
-                path_string(&thumbnail_path)
-            ));
-        }
-    };
-
-    Ok(ThumbnailData {
-        path: path_string(&video_path),
-        thumbnail_path: path_string(&thumbnail_path),
-        data_url: format!("data:image/jpeg;base64,{}", BASE64_STANDARD.encode(bytes)),
-    })
 }
-
 fn folder_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| path_string(path))
-}
-
-fn backup_corrupt_config(path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let backup_dir = app_data_dir()?.join("backups");
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let backup_path = backup_dir.join(format!("config-corrupt-{timestamp}.json"));
-    fs::copy(path, backup_path)
-        .map_err(|error| format!("Unable to back up the invalid configuration: {error}"))?;
-    Ok(())
+    config_store::folder_name(path)
 }
 
 fn validate_config(config: &mut AppConfig) -> Result<(), String> {
-    if !matches!(
-        config.settings.appearance.as_str(),
-        "system" | "dark" | "light"
-    ) {
-        return Err("Appearance must be system, dark, or light.".to_string());
-    }
-    if !matches!(
-        config.settings.accent_theme.as_str(),
-        "teal" | "sky" | "amber" | "coral" | "lime"
-    ) {
-        return Err("The selected accent theme is not supported.".to_string());
-    }
-    if !(0.25..=100.0).contains(&config.settings.thumbnail_cache_gb) {
-        return Err("Thumbnail cache size must be between 0.25 and 100 GB.".to_string());
-    }
-    if !matches!(
-        config.settings.thumbnail_capture_position.as_str(),
-        "opening" | "early" | "middle" | "late" | "ending"
-    ) {
-        return Err("Thumbnail capture position is not supported.".to_string());
-    }
-
-    config.settings.volume = config.settings.volume.min(100);
-    let normalize_extensions = |extensions: &mut Vec<String>| {
-        *extensions = extensions
-            .iter()
-            .map(|extension| extension.trim().to_ascii_lowercase())
-            .filter(|extension| !extension.is_empty())
-            .map(|extension| {
-                if extension.starts_with('.') {
-                    extension
-                } else {
-                    format!(".{extension}")
-                }
-            })
-            .collect();
-        extensions.sort();
-        extensions.dedup();
-    };
-    normalize_extensions(&mut config.settings.video_extensions);
-    normalize_extensions(&mut config.settings.managed_video_extensions);
-
-    if config.settings.video_extensions.is_empty() {
-        return Err("At least one supported video extension is required.".to_string());
-    }
-    for extension in &config.settings.video_extensions {
-        if !config.settings.managed_video_extensions.contains(extension) {
-            config
-                .settings
-                .managed_video_extensions
-                .push(extension.clone());
-        }
-    }
-    config.settings.managed_video_extensions.sort();
-    config.settings.managed_video_extensions.dedup();
-
-    // The filename is always the first visible column; other metadata columns may be rearranged.
-    let defaults = default_list_columns();
-    let allowed_columns: HashSet<&str> = defaults.iter().map(|column| column.id.as_str()).collect();
-    let mut seen_columns = HashSet::new();
-    let mut list_columns: Vec<ListColumn> = config
-        .settings
-        .list_columns
-        .drain(..)
-        .filter_map(|mut column| {
-            if !allowed_columns.contains(column.id.as_str())
-                || !seen_columns.insert(column.id.clone())
-            {
-                return None;
-            }
-            column.width = column.width.clamp(80, 520);
-            if column.id == "name" {
-                column.visible = true;
-            }
-            Some(column)
-        })
-        .collect();
-    for column in defaults {
-        if !seen_columns.contains(&column.id) {
-            list_columns.push(column);
-        }
-    }
-    if let Some(name_index) = list_columns.iter().position(|column| column.id == "name") {
-        let name_column = list_columns.remove(name_index);
-        list_columns.insert(0, name_column);
-    }
-    config.settings.list_columns = list_columns;
-
-    // Normalize and de-duplicate favorites before writing so a path has one stable identity.
-    let mut known_paths = HashSet::new();
-    config.favorites.retain_mut(|favorite| {
-        let normalized_path = path_string(&PathBuf::from(&favorite.path));
-        if !known_paths.insert(normalized_path.to_ascii_lowercase()) {
-            return false;
-        }
-        favorite.path = normalized_path;
-        if favorite.name.trim().is_empty() {
-            favorite.name = folder_name(Path::new(&favorite.path));
-        }
-        true
-    });
-    config
-        .favorites
-        .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
-    config.version = CONFIG_VERSION;
-    Ok(())
+    config_store::validate_config(config)
 }
 
 fn write_config(config: &AppConfig) -> Result<(), String> {
-    let path = config_path()?;
-    let temporary_path = path.with_extension("json.tmp");
-    let serialized = serde_json::to_string_pretty(config)
-        .map_err(|error| format!("Unable to serialize the configuration: {error}"))?;
-
-    fs::write(&temporary_path, serialized)
-        .map_err(|error| format!("Unable to stage the configuration: {error}"))?;
-    if path.exists() {
-        fs::remove_file(&path)
-            .map_err(|error| format!("Unable to replace the previous configuration: {error}"))?;
-    }
-    fs::rename(&temporary_path, &path)
-        .map_err(|error| format!("Unable to commit the configuration: {error}"))?;
-    Ok(())
+    config_store::write_config(config)
 }
 
 fn load_config() -> Result<AppConfig, String> {
-    let path = config_path()?;
-    if !path.exists() {
-        let config = AppConfig::default();
-        write_config(&config)?;
-        return Ok(config);
-    }
-
-    let source = fs::read_to_string(&path)
-        .map_err(|error| format!("Unable to read the configuration: {error}"))?;
-    let mut config = match serde_json::from_str::<AppConfig>(&source) {
-        Ok(config) => config,
-        Err(_) => {
-            backup_corrupt_config(&path)?;
-            let config = AppConfig::default();
-            write_config(&config)?;
-            return Ok(config);
-        }
-    };
-
-    if validate_config(&mut config).is_err() {
-        backup_corrupt_config(&path)?;
-        let config = AppConfig::default();
-        write_config(&config)?;
-        return Ok(config);
-    }
-
-    Ok(config)
+    config_store::load_config()
 }
 
 fn is_supported_video_path(path: &Path, settings: &Preferences) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-        .unwrap_or_default();
-    settings
-        .video_extensions
-        .iter()
-        .any(|configured| configured == &extension)
+    config_store::is_supported_video_path(path, settings)
 }
 
 fn resolve_stream_video_path(path: &str) -> Result<PathBuf, String> {
-    if !Path::new(path).is_absolute() {
-        return Err("The requested video path must be absolute.".to_string());
-    }
-    let video_path = fs::canonicalize(path)
-        .map_err(|error| format!("Unable to access the requested video: {error}"))?;
-    let metadata = fs::metadata(&video_path)
-        .map_err(|error| format!("Unable to inspect the requested video: {error}"))?;
-    if !metadata.is_file() {
-        return Err("The requested path is not a regular file.".to_string());
-    }
-    if !is_supported_video_path(&video_path, &load_config()?.settings) {
-        return Err("The requested file type is not enabled for video preview.".to_string());
-    }
-    Ok(video_path)
+    media_stream::resolve_stream_video_path(path)
 }
 
 fn probe_preview_duration(video_path: &Path) -> Result<Option<f64>, String> {
-    let ffprobe = resolve_sidecar("ffprobe")?;
-    let mut command = Command::new(ffprobe);
-    configure_sidecar_command(&mut command);
-    let output = command
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "json",
-        ])
-        .arg(video_path)
-        .output()
-        .map_err(|error| format!("Unable to inspect the preview codec: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "FFprobe could not inspect the preview codec: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let duration = serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .ok()
-        .and_then(|document| {
-            document
-                .get("format")?
-                .get("duration")?
-                .as_str()?
-                .parse::<f64>()
-                .ok()
-        })
-        .filter(|duration| duration.is_finite() && *duration > 0.0);
-    Ok(duration)
+    media_stream::probe_preview_duration(video_path)
 }
 
 fn encode_query_component(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-    }
-    encoded
-}
-
-async fn serve_video_stream(
-    State(transcode_generation): State<Arc<AtomicU64>>,
-    Query(query): Query<VideoStreamQuery>,
-    request: Request,
-) -> Response {
-    let video_path = match resolve_stream_video_path(&query.path) {
-        Ok(path) => path,
-        Err(error) => {
-            log::warn!("Rejected local video stream request: {error}");
-            return (
-                StatusCode::BAD_REQUEST,
-                "A valid enabled video file is required.",
-            )
-                .into_response();
-        }
-    };
-
-    if query.mode == VideoStreamMode::Transcode {
-        return serve_transcoded_video_stream(
-            video_path,
-            query.start,
-            request,
-            State(transcode_generation),
-        )
-        .await;
-    }
-
-    match ServeFile::new(video_path).oneshot(request).await {
-        Ok(response) => response.into_response(),
-        Err(error) => {
-            log::error!("Unable to serve local video stream: {error}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unable to read the requested video.",
-            )
-                .into_response()
-        }
-    }
-}
-
-async fn serve_transcoded_video_stream(
-    video_path: PathBuf,
-    start: Option<f64>,
-    request: Request,
-    State(transcode_generation): State<Arc<AtomicU64>>,
-) -> Response {
-    if request.method() == Method::HEAD {
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "video/mp4")
-            .header("accept-ranges", "none")
-            .header("cache-control", "no-store")
-            .body(Body::empty())
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-    }
-
-    let ffmpeg = match resolve_sidecar("ffmpeg") {
-        Ok(path) => path,
-        Err(error) => {
-            log::error!("Unable to start transcode preview: {error}");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "FFmpeg is unavailable for this preview.",
-            )
-                .into_response();
-        }
-    };
-    let mut command = tokio::process::Command::new(ffmpeg);
-    #[cfg(target_os = "windows")]
-    command.as_std_mut().creation_flags(0x0000_4000); // BELOW_NORMAL_PRIORITY_CLASS
-    let mut child = match {
-        let start = start.filter(|start| start.is_finite() && *start > 0.0);
-        command.args(["-hide_banner", "-loglevel", "error"]);
-        if let Some(start) = start {
-            // Input seeking keeps startup responsive; while transcoding, FFmpeg's default
-            // accurate seek decodes and discards frames up to the requested timestamp.
-            command.arg("-ss").arg(format!("{start:.3}"));
-        }
-        command.arg("-i").arg(&video_path);
-        command
-    }
-    .args([
-        "-map",
-        "0:v:0?",
-        "-map",
-        "0:a:0?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-tune",
-        "zerolatency",
-        "-pix_fmt",
-        "yuv420p",
-        "-g",
-        "30",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-movflags",
-        "frag_keyframe+empty_moov+default_base_moof",
-        "-f",
-        "mp4",
-        "pipe:1",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null())
-    .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            log::error!("Unable to spawn FFmpeg transcode preview: {error}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unable to start the FFmpeg preview.",
-            )
-                .into_response();
-        }
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            let _ = child.start_kill();
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "FFmpeg preview output is unavailable.",
-            )
-                .into_response();
-        }
-    };
-
-    // A new live preview replaces the previous FFmpeg process. Dropping this body also kills the
-    // child when the browser changes selection or closes the request.
-    let generation = transcode_generation.fetch_add(1, Ordering::SeqCst) + 1;
-    let stream = async_stream::stream! {
-        use tokio::io::AsyncReadExt;
-
-        let mut stdout = tokio::io::BufReader::new(stdout);
-        let mut buffer = vec![0_u8; 64 * 1024];
-        loop {
-            if transcode_generation.load(Ordering::SeqCst) != generation {
-                break;
-            }
-            match stdout.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(read) => yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
-                Err(error) => {
-                    log::warn!("FFmpeg preview stream read failed: {error}");
-                    yield Err::<Bytes, std::io::Error>(error);
-                    break;
-                }
-            }
-        }
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-    };
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "video/mp4")
-        .header("accept-ranges", "none")
-        .header("cache-control", "no-store")
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    media_stream::encode_query_component(value)
 }
 
 fn start_video_stream_server() -> Result<String, String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| format!("Unable to bind the local video stream server: {error}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| format!("Unable to configure the local video stream server: {error}"))?;
-    let address = listener
-        .local_addr()
-        .map_err(|error| format!("Unable to read the local video stream address: {error}"))?;
-
-    thread::Builder::new()
-        .name("video-stream-server".to_string())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    log::error!("Unable to start the local video stream runtime: {error}");
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                let listener = match tokio::net::TcpListener::from_std(listener) {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        log::error!("Unable to adopt the local video stream socket: {error}");
-                        return;
-                    }
-                };
-                let app = Router::new()
-                    .route("/video", get(serve_video_stream).head(serve_video_stream))
-                    .with_state(Arc::new(AtomicU64::new(0)));
-                if let Err(error) = axum::serve(listener, app).await {
-                    log::error!("The local video stream server stopped unexpectedly: {error}");
-                }
-            });
-        })
-        .map_err(|error| format!("Unable to start the local video stream server: {error}"))?;
-
-    Ok(format!("http://{address}/video"))
-}
-
-#[cfg(target_os = "windows")]
-fn is_hidden_or_system(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
-    metadata.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_hidden_or_system(_metadata: &fs::Metadata) -> bool {
-    false
-}
-
-fn has_visible_child_directories(directory: &Path, settings: &Preferences) -> bool {
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(_) => return false,
-    };
-
-    entries.flatten().any(|entry| {
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => return false,
-        };
-        metadata.is_dir() && (settings.show_hidden_items || !is_hidden_or_system(&metadata))
-    })
-}
-
-fn cleanup_interrupted_copy_files(directory: &Path) {
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
-        if name.starts_with('.') && name.contains(".videosweeper-copy-") && name.ends_with(".tmp") {
-            if let Err(error) = fs::remove_file(entry.path()) {
-                log::warn!(
-                    "Unable to remove interrupted copy file {}: {error}",
-                    entry.path().display()
-                );
-            }
-        }
-    }
+    media_stream::start_video_stream_server()
 }
 
 fn available_roots(settings: &Preferences) -> Vec<DirectoryEntry> {
-    #[cfg(target_os = "windows")]
-    {
-        ('A'..='Z')
-            .filter_map(|letter| {
-                let path = PathBuf::from(format!("{letter}:\\"));
-                path.exists().then(|| DirectoryEntry {
-                    path: path_string(&path),
-                    name: path_string(&path),
-                    has_children: has_visible_child_directories(&path, settings),
-                })
-            })
-            .collect()
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let path = PathBuf::from("/");
-        vec![DirectoryEntry {
-            path: path_string(&path),
-            name: path_string(&path),
-            has_children: has_visible_child_directories(&path, settings),
-        }]
-    }
+    workspace::available_roots(settings)
 }
 
 fn list_directory_impl(
@@ -1832,91 +830,8 @@ fn list_directory_impl(
     thumbnail_index: &Arc<Mutex<ThumbnailIndex>>,
     thumbnail_cache_dir: &Path,
 ) -> Result<DirectoryListing, String> {
-    let directory =
-        fs::canonicalize(path).map_err(|error| format!("Unable to open this folder: {error}"))?;
-    if !directory.is_dir() {
-        return Err("The selected location is not a folder.".to_string());
-    }
-    cleanup_interrupted_copy_files(&directory);
-
-    let media_suppressed = directory.join(".nomedia").is_file() && !settings.show_nomedia_media;
-    let extensions: HashSet<&str> = settings
-        .video_extensions
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let mut folders = Vec::new();
-    let mut videos = Vec::new();
-
-    // Workspaces intentionally scan only immediate children; the tree navigates deeper on demand.
-    for entry in fs::read_dir(&directory)
-        .map_err(|error| format!("Unable to enumerate this folder: {error}"))?
-    {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        if !settings.show_hidden_items && is_hidden_or_system(&metadata) {
-            continue;
-        }
-
-        let entry_path = entry.path();
-        if metadata.is_dir() {
-            folders.push(DirectoryEntry {
-                path: path_string(&entry_path),
-                name: folder_name(&entry_path),
-                has_children: has_visible_child_directories(&entry_path, settings),
-            });
-            continue;
-        }
-
-        if media_suppressed || !metadata.is_file() {
-            continue;
-        }
-        let extension = entry_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-            .unwrap_or_default();
-        if !extensions.contains(extension.as_str()) {
-            continue;
-        }
-
-        videos.push(VideoEntry {
-            path: path_string(&entry_path),
-            name: folder_name(&entry_path),
-            extension,
-            size: metadata.len(),
-            created_at: unix_millis(metadata.created()),
-            modified_at: unix_millis(metadata.modified()),
-            duration: None,
-            width: None,
-            height: None,
-            thumbnail_path: cached_thumbnail_path(
-                &entry_path,
-                &metadata,
-                thumbnail_index,
-                thumbnail_cache_dir,
-                &settings.thumbnail_capture_position,
-            ),
-        });
-    }
-
-    folders.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
-    videos.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
-
-    Ok(DirectoryListing {
-        path: path_string(&directory),
-        folders,
-        videos,
-        media_suppressed,
-    })
+    workspace::list_directory_impl(path, settings, thumbnail_index, thumbnail_cache_dir)
 }
-
 #[tauri::command]
 fn load_application_state() -> Result<ApplicationState, String> {
     log::info!("Loading application state");
@@ -2072,6 +987,40 @@ fn set_workspace_focus(workspace_path: String, video_path: String) -> Result<(),
 }
 
 #[tauri::command]
+fn set_workspace_sort(
+    workspace_path: String,
+    sort_key: String,
+    sort_ascending: bool,
+) -> Result<(), String> {
+    if !domain::is_supported_sort_key(&sort_key) {
+        return Err("The workspace sort key is not supported.".to_string());
+    }
+    let workspace = fs::canonicalize(workspace_path)
+        .map_err(|error| format!("Unable to access the workspace for sort persistence: {error}"))?;
+    if !workspace.is_dir() {
+        return Err("The sort workspace is not a folder.".to_string());
+    }
+
+    let normalized_workspace = path_string(&workspace);
+    let mut config = load_config()?;
+    config.workspace_sort.insert(
+        normalized_workspace.clone(),
+        WorkspaceSort {
+            key: sort_key.clone(),
+            ascending: sort_ascending,
+        },
+    );
+    write_config(&config)?;
+    log::debug!(
+        "Persisted workspace sort: workspace={}, key={}, ascending={}",
+        normalized_workspace,
+        sort_key,
+        sort_ascending
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn toggle_favorite(path: String) -> Result<AppConfig, String> {
     let mut config = load_config()?;
     let directory = fs::canonicalize(path)
@@ -2098,391 +1047,18 @@ fn toggle_favorite(path: String) -> Result<AppConfig, String> {
 }
 
 fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
-    let config = load_config()?;
-    let extensions: HashSet<&str> = config
-        .settings
-        .video_extensions
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let mut seen_paths = HashSet::new();
-    let mut normalized_paths = Vec::new();
-
-    for path in paths {
-        let normalized = fs::canonicalize(path)
-            .map_err(|error| format!("Unable to access the selected video: {error}"))?;
-        let metadata = fs::metadata(&normalized)
-            .map_err(|error| format!("Unable to inspect the selected video: {error}"))?;
-        if !metadata.is_file() {
-            return Err("Only video files can be moved to the Recycle Bin.".to_string());
-        }
-        let extension = normalized
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-            .unwrap_or_default();
-        if !extensions.contains(extension.as_str()) {
-            return Err("Only supported video files can be moved to the Recycle Bin.".to_string());
-        }
-        if seen_paths.insert(path_string(&normalized).to_ascii_lowercase()) {
-            normalized_paths.push(normalized);
-        }
-    }
-
-    if normalized_paths.is_empty() {
-        return Err("Select at least one video to move to the Recycle Bin.".to_string());
-    }
-    Ok(normalized_paths)
-}
-
-fn validate_file_stem(new_stem: &str) -> Result<String, String> {
-    let stem = new_stem.trim();
-    if stem.is_empty() || stem.ends_with('.') || stem.ends_with(' ') {
-        return Err("The new file name cannot be empty or end with a dot or space.".to_string());
-    }
-    if stem.len() > 240
-        || stem.chars().any(|character| {
-            matches!(
-                character,
-                '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-            )
-        })
-    {
-        return Err(
-            "The new file name contains characters that Windows does not allow.".to_string(),
-        );
-    }
-    let reserved = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
-    if reserved.iter().any(|name| stem.eq_ignore_ascii_case(name)) {
-        return Err("The new file name is reserved by Windows.".to_string());
-    }
-    Ok(stem.to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn shell_item(path: &Path) -> Result<IShellItem, String> {
-    unsafe {
-        SHCreateItemFromParsingName(&HSTRING::from(path_string(path)), None)
-            .map_err(|error| format!("Unable to prepare the selected video: {error}"))
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn shell_file_operation() -> Result<IFileOperation, String> {
-    unsafe {
-        let operation: IFileOperation =
-            CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)
-                .map_err(|error| format!("Unable to start the file operation: {error}"))?;
-        operation
-            .SetOperationFlags(FOF_NOCONFIRMATION)
-            .map_err(|error| format!("Unable to configure the file operation: {error}"))?;
-        Ok(operation)
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn ensure_shell_operation_completed(operation: &IFileOperation) -> Result<(), String> {
-    unsafe {
-        if operation
-            .GetAnyOperationsAborted()
-            .map_err(|error| format!("Unable to inspect the file operation: {error}"))?
-            .as_bool()
-        {
-            return Err("The file operation was cancelled.".to_string());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn rename_path_with_shell(path: &Path, new_name: &str) -> Result<(), String> {
-    unsafe {
-        let operation = shell_file_operation()?;
-        let item = shell_item(path)?;
-        let name = HSTRING::from(new_name);
-        operation
-            .RenameItem(&item, PCWSTR(name.as_ptr()), None)
-            .map_err(|error| format!("Unable to queue the video rename: {error}"))?;
-        operation
-            .PerformOperations()
-            .map_err(|error| format!("Unable to rename the selected video: {error}"))?;
-        ensure_shell_operation_completed(&operation)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn rename_path_with_shell(path: &Path, new_name: &str) -> Result<(), String> {
-    fs::rename(path, path.with_file_name(new_name))
-        .map_err(|error| format!("Unable to rename the selected video: {error}"))
-}
-
-#[cfg(target_os = "windows")]
-fn copy_path_with_shell(
-    source: &Path,
-    destination_directory: &Path,
-    destination_name: &str,
-) -> Result<(), String> {
-    unsafe {
-        let operation = shell_file_operation()?;
-        let source_item = shell_item(source)?;
-        let destination_item = shell_item(destination_directory)?;
-        let name = HSTRING::from(destination_name);
-        operation
-            .CopyItem(&source_item, &destination_item, PCWSTR(name.as_ptr()), None)
-            .map_err(|error| format!("Unable to queue the video copy: {error}"))?;
-        operation
-            .PerformOperations()
-            .map_err(|error| format!("Unable to copy the selected video: {error}"))?;
-        ensure_shell_operation_completed(&operation)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn copy_path_with_shell(
-    source: &Path,
-    destination_directory: &Path,
-    destination_name: &str,
-) -> Result<(), String> {
-    fs::copy(source, destination_directory.join(destination_name))
-        .map(|_| ())
-        .map_err(|error| format!("Unable to copy the selected video: {error}"))
-}
-
-fn rename_video_path(path: PathBuf, new_stem: String) -> Result<RenameResult, String> {
-    let stem = validate_file_stem(&new_stem)?;
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{extension}"))
-        .unwrap_or_default();
-    let new_name = format!("{stem}{extension}");
-    let destination = path.with_file_name(&new_name);
-    if destination != path && destination.exists() {
-        return Err("A file with the new name already exists in this folder.".to_string());
-    }
-    rename_path_with_shell(&path, &new_name)?;
-    Ok(RenameResult {
-        old_path: path_string(&path),
-        new_path: path_string(&destination),
-        name: new_name,
-    })
-}
-
-fn unique_copy_destination(source: &Path, destination_directory: &Path) -> Result<PathBuf, String> {
-    let file_name = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "Unable to determine the source file name.".to_string())?;
-    let stem = source
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "Unable to determine the source file stem.".to_string())?;
-    let extension = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{extension}"))
-        .unwrap_or_default();
-    let first = destination_directory.join(file_name);
-    if !first.exists() {
-        return Ok(first);
-    }
-    for index in 1..10_000 {
-        let candidate = destination_directory.join(format!("{stem} ({index}){extension}"));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err("Unable to find an available destination file name.".to_string())
-}
-
-fn copy_videos_to_directory(paths: Vec<String>, destination: PathBuf) -> CopyResult {
-    let config = match load_config() {
-        Ok(config) => config,
-        Err(_) => {
-            return CopyResult {
-                copied_paths: Vec::new(),
-                skipped_paths: Vec::new(),
-                failed_paths: paths,
-            }
-        }
-    };
-    let mut copied_paths = Vec::new();
-    let mut skipped_paths = Vec::new();
-    let mut failed_paths = Vec::new();
-    for source in paths {
-        let source_path = match fs::canonicalize(&source) {
-            Ok(path) => path,
-            Err(_) => {
-                failed_paths.push(source);
-                continue;
-            }
-        };
-        let metadata = match fs::metadata(&source_path) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && is_supported_video_path(&source_path, &config.settings) =>
-            {
-                metadata
-            }
-            _ => {
-                skipped_paths.push(path_string(&source_path));
-                continue;
-            }
-        };
-        if source_path.parent() == Some(destination.as_path()) {
-            skipped_paths.push(path_string(&source_path));
-            continue;
-        }
-        let target = match unique_copy_destination(&source_path, &destination) {
-            Ok(target) => target,
-            Err(_) => {
-                failed_paths.push(path_string(&source_path));
-                continue;
-            }
-        };
-        let temporary = target.with_file_name(format!(
-            ".{}.videosweeper-copy-{}.tmp",
-            target
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("video"),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0),
-        ));
-        let temporary_name = temporary
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("videosweeper-copy.tmp");
-        let target_name = target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("video");
-        let copied = copy_path_with_shell(&source_path, &destination, temporary_name)
-            .and_then(|_| fs::metadata(&temporary).map_err(|error| error.to_string()))
-            .and_then(|temporary_metadata| {
-                (temporary_metadata.len() == metadata.len())
-                    .then_some(())
-                    .ok_or_else(|| "The copied byte count does not match the source.".to_string())
-            })
-            .and_then(|_| rename_path_with_shell(&temporary, target_name));
-        if copied.is_ok() {
-            copied_paths.push(path_string(&target));
-        } else {
-            let _ = fs::remove_file(&temporary);
-            failed_paths.push(path_string(&source_path));
-        }
-    }
-    CopyResult {
-        copied_paths,
-        skipped_paths,
-        failed_paths,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn recycle_path(path: &Path) -> Result<(), String> {
-    unsafe {
-        let operation: IFileOperation =
-            CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)
-                .map_err(|error| format!("Unable to start the Recycle Bin operation: {error}"))?;
-        operation
-            .SetOperationFlags(FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION)
-            .map_err(|error| format!("Unable to configure the Recycle Bin operation: {error}"))?;
-        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path_string(path)), None)
-            .map_err(|error| format!("Unable to prepare the selected video: {error}"))?;
-        operation
-            .DeleteItem(&item, None)
-            .map_err(|error| format!("Unable to queue the selected video for deletion: {error}"))?;
-        operation.PerformOperations().map_err(|error| {
-            format!("Unable to move the selected video to the Recycle Bin: {error}")
-        })?;
-        if operation
-            .GetAnyOperationsAborted()
-            .map_err(|error| format!("Unable to inspect the Recycle Bin operation: {error}"))?
-            .as_bool()
-        {
-            return Err("The Recycle Bin operation was cancelled.".to_string());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn recycle_path(_path: &Path) -> Result<(), String> {
-    Err("Moving files to the Recycle Bin is only supported on Windows.".to_string())
-}
-
-fn recycle_paths(paths: Vec<PathBuf>) -> RecycleResult {
-    let mut recycled_paths = Vec::new();
-    let mut failed_paths = Vec::new();
-    for path in paths {
-        match recycle_path(&path) {
-            Ok(()) => recycled_paths.push(path_string(&path)),
-            Err(_) => failed_paths.push(path_string(&path)),
-        }
-    }
-    RecycleResult {
-        recycled_paths,
-        failed_paths,
-    }
+    file_operations::normalize_video_paths(paths)
 }
 
 fn start_file_operation_queue() -> FileOperationQueue {
-    let (sender, receiver) = mpsc::channel::<FileOperationTask>();
-    thread::spawn(move || {
-        #[cfg(target_os = "windows")]
-        let com_initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
-
-        while let Ok(task) = receiver.recv() {
-            match task {
-                FileOperationTask::Recycle { paths, response } => {
-                    let _ = response.send(recycle_paths(paths));
-                }
-                FileOperationTask::Rename {
-                    path,
-                    new_stem,
-                    response,
-                } => {
-                    let _ = response.send(rename_video_path(path, new_stem));
-                }
-                FileOperationTask::Copy {
-                    paths,
-                    destination,
-                    response,
-                } => {
-                    let _ = response.send(copy_videos_to_directory(paths, destination));
-                }
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        if com_initialized {
-            unsafe { CoUninitialize() };
-        }
-    });
-    FileOperationQueue(sender)
+    file_operations::start_file_operation_queue()
 }
 
 fn enqueue_recycle(
     paths: Vec<PathBuf>,
     queue: &FileOperationQueue,
 ) -> Result<RecycleResult, String> {
-    let (response_sender, response_receiver) = mpsc::channel();
-    queue
-        .0
-        .send(FileOperationTask::Recycle {
-            paths,
-            response: response_sender,
-        })
-        .map_err(|_| "The file operation queue is unavailable.".to_string())?;
-    response_receiver
-        .recv()
-        .map_err(|_| "The file operation did not return a result.".to_string())
+    file_operations::enqueue_recycle(paths, queue)
 }
 
 fn enqueue_rename(
@@ -2490,18 +1066,7 @@ fn enqueue_rename(
     new_stem: String,
     queue: &FileOperationQueue,
 ) -> Result<RenameResult, String> {
-    let (response_sender, response_receiver) = mpsc::channel();
-    queue
-        .0
-        .send(FileOperationTask::Rename {
-            path,
-            new_stem,
-            response: response_sender,
-        })
-        .map_err(|_| "The file operation queue is unavailable.".to_string())?;
-    response_receiver
-        .recv()
-        .map_err(|_| "The file operation did not return a result.".to_string())?
+    file_operations::enqueue_rename(path, new_stem, queue)
 }
 
 fn enqueue_copy(
@@ -2509,20 +1074,8 @@ fn enqueue_copy(
     destination: PathBuf,
     queue: &FileOperationQueue,
 ) -> Result<CopyResult, String> {
-    let (response_sender, response_receiver) = mpsc::channel();
-    queue
-        .0
-        .send(FileOperationTask::Copy {
-            paths,
-            destination,
-            response: response_sender,
-        })
-        .map_err(|_| "The file operation queue is unavailable.".to_string())?;
-    response_receiver
-        .recv()
-        .map_err(|_| "The file operation did not return a result.".to_string())
+    file_operations::enqueue_copy(paths, destination, queue)
 }
-
 #[tauri::command]
 fn recycle_videos(
     paths: Vec<String>,
@@ -2713,89 +1266,8 @@ fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn parse_shell_item_id_list(path: &Path) -> Result<*mut ITEMIDLIST, String> {
-    unsafe {
-        let mut item_id_list = std::ptr::null_mut();
-        log::debug!(
-            "Preparing Shell item ID list for file drag: {}",
-            path_string(path)
-        );
-        SHParseDisplayName(
-            &HSTRING::from(path_string(path)),
-            None::<&IBindCtx>,
-            &mut item_id_list,
-            0,
-            None,
-        )
-        .map_err(|error| format!("Unable to prepare the dragged video: {error}"))?;
-        if item_id_list.is_null() {
-            return Err("Unable to prepare the dragged video.".to_string());
-        }
-        log::debug!(
-            "Prepared Shell item ID list for file drag: {}",
-            path_string(path)
-        );
-        Ok(item_id_list)
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn start_windows_file_drag(paths: Vec<PathBuf>) -> Result<(), String> {
-    unsafe {
-        log::debug!("Initializing OLE file drag for {} video(s)", paths.len());
-        OleInitialize(None)
-            .map_err(|error| format!("Unable to initialize Windows drag-and-drop: {error}"))?;
-        log::debug!("OLE initialization succeeded for file drag");
-        let mut item_id_lists = Vec::with_capacity(paths.len());
-        let result = (|| {
-            for path in &paths {
-                item_id_lists.push(parse_shell_item_id_list(path)?);
-            }
-            let raw_item_id_lists = item_id_lists
-                .iter()
-                .map(|item_id_list| *item_id_list as *const ITEMIDLIST)
-                .collect::<Vec<_>>();
-            log::debug!(
-                "Creating Shell item array for {} dragged video(s)",
-                raw_item_id_lists.len()
-            );
-            let shell_items = SHCreateShellItemArrayFromIDLists(&raw_item_id_lists)
-                .map_err(|error| format!("Unable to prepare the dragged videos: {error}"))?;
-            log::debug!("Shell item array created; requesting IDataObject for file drag");
-            let data_object: IDataObject = shell_items
-                .BindToHandler(None::<&IBindCtx>, &BHID_DataObject)
-                .map_err(|error| format!("Unable to create the drag data object: {error}"))?;
-            log::debug!("File-drag IDataObject created; entering DoDragDrop with COPY effect");
-            let drag_source: IDropSource = WindowsFileDragSource::new().into();
-            let mut effect = DROPEFFECT(0);
-            DoDragDrop(&data_object, &drag_source, DROPEFFECT_COPY, &mut effect)
-                .ok()
-                .map_err(|error| format!("Windows drag-and-drop failed: {error}"))?;
-            log::debug!(
-                "DoDragDrop returned successfully with effect 0x{:X}",
-                effect.0
-            );
-            Ok(())
-        })();
-        for item_id_list in item_id_lists {
-            CoTaskMemFree(Some(item_id_list.cast()));
-        }
-        OleUninitialize();
-        match &result {
-            Ok(()) => log::debug!("OLE file drag session finished successfully"),
-            Err(error) => log::warn!("OLE file drag session failed: {error}"),
-        }
-        result
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn start_windows_file_drag(_paths: Vec<PathBuf>) -> Result<(), String> {
-    Err(
-        "Dragging files to the system file manager is currently available only on Windows."
-            .to_string(),
-    )
+    windows_shell::start_windows_file_drag(paths)
 }
 
 #[tauri::command]
@@ -2841,98 +1313,16 @@ fn show_file_context_menu(
     is_directory: bool,
     state: tauri::State<ContextMenuState>,
 ) -> Result<(), String> {
-    let target = fs::canonicalize(path)
-        .map_err(|error| format!("Unable to access the selected item: {error}"))?;
-    let metadata = fs::metadata(&target)
-        .map_err(|error| format!("Unable to inspect the selected item: {error}"))?;
-    if metadata.is_dir() != is_directory {
-        return Err("The selected item type has changed.".to_string());
-    }
-    let operation_paths = if is_directory {
-        vec![target.clone()]
-    } else {
-        normalize_video_paths(paths.unwrap_or_else(|| vec![path_string(&target)]))?
-    };
-
-    let open = MenuItem::with_id(
-        &window,
-        "context-menu-open",
-        if is_directory {
-            "打开文件夹"
-        } else {
-            "打开"
-        },
-        true,
-        None::<&str>,
-    )
-    .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-    let reveal = MenuItem::with_id(
-        &window,
-        "context-menu-reveal",
-        "在资源管理器中显示",
-        true,
-        None::<&str>,
-    )
-    .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-    let refresh = MenuItem::with_id(&window, "context-menu-refresh", "刷新", true, None::<&str>)
-        .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-    let menu = if is_directory {
-        Menu::with_items(&window, &[&open, &reveal, &refresh])
-    } else {
-        let copy_to = MenuItem::with_id(
-            &window,
-            "context-menu-copy-to",
-            "复制到…",
-            true,
-            None::<&str>,
-        )
-        .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-        let delete = MenuItem::with_id(
-            &window,
-            "context-menu-delete",
-            "移到回收站",
-            true,
-            None::<&str>,
-        )
-        .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-        Menu::with_items(&window, &[&open, &reveal, &refresh, &copy_to, &delete])
-    }
-    .map_err(|error| format!("Unable to create the context menu: {error}"))?;
-
-    // The menu event does not carry arbitrary payloads, so retain only the latest checked target.
-    *state
-        .0
-        .lock()
-        .map_err(|_| "Unable to access the context menu state.".to_string())? =
-        Some(ContextMenuTarget {
-            path: target,
-            operation_paths,
-            is_directory,
-        });
-    menu.popup_at(window.as_ref().window(), LogicalPosition::new(x, y))
-        .map_err(|error| format!("Unable to show the context menu: {error}"))
+    menus::show_file_context_menu(window, path, paths, x, y, is_directory, state)
 }
 
 fn open_context_target(target: &ContextMenuTarget) -> Result<(), String> {
-    Command::new("explorer.exe")
-        .arg(&target.path)
-        .spawn()
-        .map_err(|error| format!("Unable to open the selected item: {error}"))?;
-    Ok(())
+    menus::open_context_target(target)
 }
 
 fn reveal_context_target(target: &ContextMenuTarget) -> Result<(), String> {
-    if target.is_directory {
-        return open_context_target(target);
-    }
-
-    Command::new("explorer.exe")
-        .arg(format!("/select,{}", path_string(&target.path)))
-        .spawn()
-        .map_err(|error| format!("Unable to show the selected item: {error}"))?;
-    Ok(())
+    menus::reveal_context_target(target)
 }
-
 fn main() {
     let log_directory = log_dir().expect("failed to create VideoSweeper log directory");
     let thumbnail_cache_directory =
@@ -2978,8 +1368,6 @@ fn main() {
                 ])
                 .build(),
         )
-        .plugin(tauri_plugin_sql::Builder::default().build())
-        .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             // A second launch should surface the existing main window instead of opening another one.
             if let Some(window) = app.get_webview_window("main") {
@@ -3059,6 +1447,7 @@ fn main() {
             save_configuration,
             set_last_workspace,
             set_workspace_focus,
+            set_workspace_sort,
             toggle_favorite,
             show_file_context_menu,
             generate_thumbnails,
