@@ -64,11 +64,16 @@ export type FileDragGesture = {
   started: boolean;
 };
 
-export type DirectoryListing = {
+export type DirectoryChildren = {
   path: string;
   folders: DirectoryEntry[];
+};
+
+export type WorkspaceListing = {
+  path: string;
   videos: VideoEntry[];
   mediaSuppressed: boolean;
+  isAvailable: boolean;
 };
 
 export type RecycleResult = {
@@ -206,7 +211,7 @@ export type TreeStatus = "idle" | "loading" | "loaded" | "error";
 export type TreeState = Record<string, { status: TreeStatus; folders: DirectoryEntry[] }>;
 
 export const fallbackConfig: AppConfig = {
-  version: 1,
+  version: 2,
   favorites: [],
   lastWorkspace: null,
   workspaceFocus: {},

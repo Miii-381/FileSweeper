@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { watch } from "@tauri-apps/plugin-fs";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { attachLogger, LogLevel } from "@tauri-apps/plugin-log";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -26,7 +25,7 @@ import {
   type ColorMode,
   type CopyResult,
   type DirectoryEntry,
-  type DirectoryListing,
+  type DirectoryChildren,
   type FileDragGesture,
   type ListColumn,
   type ListColumnId,
@@ -47,6 +46,7 @@ import {
   type ViewMode,
   type WorkspaceContextMenu,
   type WorkspaceFocus,
+  type WorkspaceListing,
   type WorkspaceSort,
   type WorkspaceSelectionBox,
   type WorkspaceSelectionGesture,
@@ -113,7 +113,7 @@ export default function App() {
   const [roots, setRoots] = useState<DirectoryEntry[]>([]);
   const [treeState, setTreeState] = useState<TreeState>({});
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [workspace, setWorkspace] = useState<DirectoryListing | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceListing | null>(null);
   const [thumbnailPathOverrides, setThumbnailPathOverrides] = useState<Map<string, string>>(() => new Map());
   const [thumbnailVisibilityRevision, setThumbnailVisibilityRevision] = useState(0);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -152,6 +152,7 @@ export default function App() {
   const [listColumnDropPosition, setListColumnDropPosition] = useState<"before" | "after" | null>(null);
   // A later folder click supersedes earlier scans that are still waiting for the Rust command.
   const workspaceRequest = useRef(0);
+  const workspaceScanRequest = useRef(0);
   const metadataRequest = useRef(0);
   const selectedMetadataRequest = useRef(0);
   const probedMetadataPaths = useRef<Set<string>>(new Set());
@@ -185,7 +186,7 @@ export default function App() {
   const thumbnailFailures = useRef<Set<string>>(new Set());
   const liveLogCounter = useRef(0);
   const audioPreferenceTimer = useRef<number | null>(null);
-  const pendingAudioConfig = useRef<AppConfig | null>(null);
+  const pendingAudioConfig = useRef<{ volume: number; muted: boolean } | null>(null);
 
   const persistWorkspaceFocus = useCallback(async (workspacePath: string, videoPath: string) => {
     if (workspaceFocusByPath.current[workspacePath]?.videoPath === videoPath) {
@@ -208,7 +209,7 @@ export default function App() {
     const pending = workspaceStatePersistence.current.then(async () => {
       try {
         await invoke("set_workspace_focus", { workspacePath, videoPath });
-        writeClientLog("debug", `工作区焦点已写入配置：工作区 ${workspacePath}，视频 ${videoPath}`);
+        writeClientLog("debug", `工作区焦点已写入独立状态文件：工作区 ${workspacePath}，视频 ${videoPath}`);
       } catch (error) {
         writeClientLog("warn", `保存工作区视频焦点失败：工作区 ${workspacePath}，视频 ${videoPath}，${errorMessage(error)}`);
       }
@@ -238,7 +239,7 @@ export default function App() {
     const pending = workspaceStatePersistence.current.then(async () => {
       try {
         await invoke("set_workspace_sort", { workspacePath, sortKey: key, sortAscending: ascending });
-        writeClientLog("debug", `工作区排序已写入配置：工作区 ${workspacePath}，字段 ${key}，升序 ${ascending}`);
+        writeClientLog("debug", `工作区排序已写入独立状态文件：工作区 ${workspacePath}，字段 ${key}，升序 ${ascending}`);
       } catch (error) {
         writeClientLog("warn", `保存工作区排序失败：工作区 ${workspacePath}，${errorMessage(error)}`);
       }
@@ -564,16 +565,19 @@ export default function App() {
 
   const updateAudioPreferences = useCallback(
     (volume: number, muted: boolean, persistImmediately = false) => {
-      const nextConfig: AppConfig = {
-        ...config,
+      const nextVolume = Math.round(Math.min(100, Math.max(0, volume)));
+      pendingAudioConfig.current = {
+        volume: nextVolume,
+        muted,
+      };
+      setConfig((current) => ({
+        ...current,
         settings: {
-          ...config.settings,
-          volume: Math.round(Math.min(100, Math.max(0, volume))),
+          ...current.settings,
+          volume: nextVolume,
           muted,
         },
-      };
-      pendingAudioConfig.current = nextConfig;
-      setConfig(nextConfig);
+      }));
 
       const persist = () => {
         const pending = pendingAudioConfig.current;
@@ -581,8 +585,18 @@ export default function App() {
         if (!pending) {
           return;
         }
-        void invoke<AppConfig>("save_configuration", { config: pending })
-          .then((saved) => setConfig(saved))
+        void invoke<AppConfig>("set_audio_preferences", pending)
+          .then((saved) => {
+            setConfig((current) => ({
+              ...current,
+              version: saved.version,
+              settings: {
+                ...current.settings,
+                volume: saved.settings.volume,
+                muted: saved.settings.muted,
+              },
+            }));
+          })
           .catch((error) => {
             writeClientLog("error", `保存播放器音量失败：${errorMessage(error)}`);
           });
@@ -601,7 +615,7 @@ export default function App() {
         }, 400);
       }
     },
-    [config],
+    [],
   );
 
   const notify = (message: string) => {
@@ -678,7 +692,7 @@ export default function App() {
       [path]: { status: "loading", folders: current[path]?.folders ?? [] },
     }));
     try {
-      const listing = await invoke<DirectoryListing>("list_directory", { path });
+      const listing = await invoke<DirectoryChildren>("list_subdirectories", { path });
       setTreeState((current) => ({
         ...current,
         [path]: { status: "loaded", folders: listing.folders },
@@ -710,14 +724,18 @@ export default function App() {
       );
     }
     const requestId = ++workspaceRequest.current;
+    const scanRequestId = ++workspaceScanRequest.current;
     metadataRequest.current += 1;
     probedMetadataPaths.current.clear();
     setMetadataLoading(false);
     setWorkspaceLoading(true);
     writeClientLog("info", `打开工作区：${requestedPath}`);
     try {
-      const listing = await invoke<DirectoryListing>("list_directory", { path: requestedPath });
-      if (requestId !== workspaceRequest.current) {
+      const listing = await invoke<WorkspaceListing>("scan_workspace", {
+        path: requestedPath,
+        requestId: scanRequestId,
+      });
+      if (requestId !== workspaceRequest.current || scanRequestId !== workspaceScanRequest.current) {
         // Ignore stale responses so rapid directory navigation cannot overwrite the latest workspace.
         return;
       }
@@ -771,14 +789,28 @@ export default function App() {
       if (persist) {
         const nextConfig = await invoke<AppConfig>("set_last_workspace", { path: listing.path });
         if (requestId === workspaceRequest.current) {
-          setConfig(nextConfig);
+          setConfig((current) => ({
+            ...current,
+            version: nextConfig.version,
+            lastWorkspace: nextConfig.lastWorkspace,
+          }));
         }
       }
     } catch (error) {
-      if (requestId === workspaceRequest.current) {
+      if (requestId === workspaceRequest.current && scanRequestId === workspaceScanRequest.current) {
         const message = errorMessage(error);
+        workspaceVideoPaths.current.clear();
+        setWorkspace({
+          path: requestedPath,
+          videos: [],
+          mediaSuppressed: false,
+          isAvailable: false,
+        });
+        setSelectedPath(requestedPath);
+        setSelectedVideos(new Set());
+        setSelectionAnchor(null);
         notify(message);
-        writeClientLog("error", `工作区读取失败：${requestedPath}，${message}`);
+        writeClientLog("warn", `工作区暂不可用，已保留位置等待恢复：${requestedPath}，${message}`);
       }
     } finally {
       if (requestId === workspaceRequest.current) {
@@ -787,12 +819,28 @@ export default function App() {
     }
   };
 
+  const markWorkspaceUnavailable = (path: string, reason: string) => {
+    workspaceVideoPaths.current.clear();
+    setWorkspace((current) =>
+      current && current.path.toLocaleLowerCase() === path.toLocaleLowerCase()
+        ? { ...current, videos: [], mediaSuppressed: false, isAvailable: false }
+        : current,
+    );
+    setSelectedVideos(new Set());
+    setSelectionAnchor(null);
+    writeClientLog("warn", `工作区连接中断，已停止预览并等待恢复：${reason}`);
+  };
+
   const refreshWorkspace = async (path: string, reason = "目录变更") => {
+    const scanRequestId = ++workspaceScanRequest.current;
     try {
-      const listing = await invoke<DirectoryListing>("list_directory", { path });
+      const listing = await invoke<WorkspaceListing>("scan_workspace", { path, requestId: scanRequestId });
+      if (scanRequestId !== workspaceScanRequest.current) {
+        return;
+      }
       workspaceVideoPaths.current = new Set(listing.videos.map((video) => video.path));
       setWorkspace((current) => {
-        if (!current || current.path !== listing.path) {
+        if (!current || current.path.toLocaleLowerCase() !== path.toLocaleLowerCase()) {
           return current;
         }
         const previousByPath = new Map(current.videos.map((video) => [video.path, video]));
@@ -816,7 +864,10 @@ export default function App() {
       setSelectionAnchor((current) => (current && nextPaths.has(current) ? current : null));
       writeClientLog("debug", `工作区已刷新：${reason}，视频 ${listing.videos.length} 个`);
     } catch (error) {
-      writeClientLog("warn", `刷新工作区失败：${errorMessage(error)}`);
+      if (scanRequestId !== workspaceScanRequest.current) {
+        return;
+      }
+      markWorkspaceUnavailable(path, errorMessage(error));
     }
   };
 
@@ -973,7 +1024,11 @@ export default function App() {
       }
       if (target === "favorite") {
         const nextConfig = await invoke<AppConfig>("toggle_favorite", { path: selected });
-        setConfig(nextConfig);
+        setConfig((current) => ({
+          ...current,
+          version: nextConfig.version,
+          favorites: nextConfig.favorites,
+        }));
         await activateWorkspace(selected);
       } else {
         await activateWorkspace(selected);
@@ -986,12 +1041,16 @@ export default function App() {
   };
 
   const toggleFavorite = async () => {
-    if (!workspace) {
+    if (!workspace?.isAvailable) {
       return;
     }
     try {
       const nextConfig = await invoke<AppConfig>("toggle_favorite", { path: workspace.path });
-      setConfig(nextConfig);
+      setConfig((current) => ({
+        ...current,
+        version: nextConfig.version,
+        favorites: nextConfig.favorites,
+      }));
     } catch (error) {
       const message = errorMessage(error);
       notify(message);
@@ -1309,7 +1368,13 @@ export default function App() {
       return;
     }
     try {
-      const result = await invoke<RecycleResult>("recycle_videos", { paths });
+      const focusedVideoPath = selectedVideo && paths.includes(selectedVideo.path) ? selectedVideo.path : null;
+      if (focusedVideoPath) {
+        previewPlayerRef.current?.stopPlayback();
+        await invoke("stop_transcoded_preview", { path: focusedVideoPath });
+        previewPlayerRef.current?.releasePlayback();
+      }
+      const result = await invoke<RecycleResult>("recycle_videos", { paths, focusedVideoPath });
       applyRecycleResult(result);
     } catch (error) {
       const message = errorMessage(error);
@@ -1573,11 +1638,14 @@ export default function App() {
     const thumbnailPositionChanged =
       config.settings.thumbnailCapturePosition !== settingsDraft.thumbnailCapturePosition;
     try {
-      await workspaceStatePersistence.current;
       const nextConfig = await invoke<AppConfig>("save_configuration", {
-        config: { ...config, settings: settingsDraft },
+        settings: settingsDraft,
       });
-      setConfig(nextConfig);
+      setConfig((current) => ({
+        ...current,
+        version: nextConfig.version,
+        settings: nextConfig.settings,
+      }));
       setIsSettingsOpen(false);
       if (thumbnailPositionChanged && workspace) {
         clearThumbnailDataCache();
@@ -1622,10 +1690,15 @@ export default function App() {
 
   const persistListColumns = async (listColumns: ListColumn[]) => {
     try {
-      const nextConfig = await invoke<AppConfig>("save_configuration", {
-        config: { ...config, settings: { ...config.settings, listColumns } },
-      });
-      setConfig(nextConfig);
+      const nextConfig = await invoke<AppConfig>("set_list_columns", { listColumns });
+      setConfig((current) => ({
+        ...current,
+        version: nextConfig.version,
+        settings: {
+          ...current.settings,
+          listColumns: nextConfig.settings.listColumns,
+        },
+      }));
     } catch (error) {
       const message = errorMessage(error);
       notify(message);
@@ -1875,7 +1948,7 @@ export default function App() {
   }, [workspace?.path]);
 
   useEffect(() => {
-    if (!workspace) {
+    if (!workspace?.isAvailable) {
       return;
     }
     let unlisten: (() => void) | undefined;
@@ -1901,46 +1974,81 @@ export default function App() {
       setIsExternalDropActive(false);
       unlisten?.();
     };
-  }, [workspace?.path]);
+  }, [workspace?.isAvailable, workspace?.path]);
 
   useEffect(() => {
-    if (!workspace) {
+    if (!workspace?.isAvailable) {
       return;
     }
-    let unwatch: (() => void) | undefined;
+    let unlisten: (() => void) | undefined;
     let refreshTimer: number | undefined;
     let active = true;
-    void watch(
-      workspace.path,
-      () => {
-        if (refreshTimer) {
-          window.clearTimeout(refreshTimer);
+    void listen<string>("workspace-file-event", (event) => {
+      if (event.payload.toLocaleLowerCase() !== workspace.path.toLocaleLowerCase()) {
+        return;
+      }
+      if (refreshTimer) {
+        window.clearTimeout(refreshTimer);
+      }
+      refreshTimer = window.setTimeout(() => {
+        if (active) {
+          void refreshWorkspace(workspace.path);
         }
-        refreshTimer = window.setTimeout(() => {
-          if (active) {
-            void refreshWorkspace(workspace.path);
-          }
-        }, 300);
-      },
-      { recursive: false },
-    )
+      }, 300);
+    })
       .then((cleanup) => {
         if (active) {
-          unwatch = cleanup;
-          writeClientLog("debug", `工作区监听已启动：${workspace.path}`);
+          unlisten = cleanup;
+          writeClientLog("debug", `工作区后端监听已启动：${workspace.path}`);
         } else {
           cleanup();
         }
       })
-      .catch((error: unknown) => writeClientLog("warn", `工作区监听不可用：${errorMessage(error)}`));
+      .catch((error: unknown) => writeClientLog("warn", `工作区监听事件不可用：${errorMessage(error)}`));
     return () => {
       active = false;
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
       }
-      unwatch?.();
+      unlisten?.();
     };
-  }, [workspace?.path]);
+  }, [workspace?.isAvailable, workspace?.path]);
+
+  useEffect(() => {
+    if (!workspace) {
+      return;
+    }
+    const path = workspace.path;
+    const expectedAvailability = workspace.isAvailable;
+    let checking = false;
+    let active = true;
+    const recoveryTimer = window.setInterval(() => {
+      if (checking) {
+        return;
+      }
+      checking = true;
+      void invoke<boolean>("workspace_is_accessible", { path })
+        .then((accessible) => {
+          if (!active) {
+            return;
+          }
+          if (accessible && !expectedAvailability) {
+            void refreshWorkspace(path, "目录恢复探测");
+          } else if (!accessible && expectedAvailability) {
+            markWorkspaceUnavailable(path, "目录已无法访问");
+            void refreshWorkspace(path, "目录断连确认");
+          }
+        })
+        .catch((error: unknown) => writeClientLog("warn", `工作区可访问性探测失败：${errorMessage(error)}`))
+        .finally(() => {
+          checking = false;
+        });
+    }, 2500);
+    return () => {
+      active = false;
+      window.clearInterval(recoveryTimer);
+    };
+  }, [workspace?.isAvailable, workspace?.path]);
 
   useEffect(() => {
     // Native menus are provided for selectable file-system items; suppress WebView's browser menu elsewhere.
@@ -2250,13 +2358,13 @@ export default function App() {
               <Video size={28} />
             </div>
             <h1>
-              {workspace.mediaSuppressed
+              {!workspace.isAvailable
+                ? "此位置暂不可用，正在等待设备或网络位置恢复"
+                : workspace.mediaSuppressed
                 ? "此目录的媒体已被 .nomedia 隐藏"
                 : searchQuery
                   ? "没有匹配的视频"
-                  : workspace.folders.length > 0
-                    ? "此目录未直接包含视频，请选择下级文件夹浏览"
-                    : "此目录没有受支持的视频"}
+                  : "此目录没有受支持的视频"}
             </h1>
           </div>
         ) : viewMode === "grid" ? (

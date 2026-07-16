@@ -9,6 +9,8 @@ import { loadThumbnailData } from "./VideoThumbnail";
 export type PreviewPlayerHandle = {
   togglePlayback: () => void;
   skipPlayback: (seconds: number) => void;
+  stopPlayback: () => void;
+  releasePlayback: () => void;
 };
 
 type PreviewPlayerProps = {
@@ -212,11 +214,32 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     seek(currentTime + seconds);
   };
 
+  const stopPlayback = () => {
+    streamRequest.current += 1;
+    const element = videoElement.current;
+    if (element) {
+      element.pause();
+    }
+    setIsPlaying(false);
+  };
+
+  const releasePlayback = () => {
+    const element = videoElement.current;
+    if (element) {
+      element.removeAttribute("src");
+      element.load();
+    }
+    setStreamUrl(null);
+    setPlayerState("idle");
+  };
+
   useImperativeHandle(
     ref,
     () => ({
       togglePlayback,
       skipPlayback,
+      stopPlayback,
+      releasePlayback,
     }),
     [currentTime, duration, isTranscoded, playerState, video],
   );

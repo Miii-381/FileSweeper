@@ -69,7 +69,7 @@ pub(super) fn encode_query_component(value: &str) -> String {
 }
 
 async fn serve_video_stream(
-    State(transcode_generation): State<Arc<AtomicU64>>,
+    State(transcode_controller): State<Arc<TranscodeController>>,
     Query(query): Query<VideoStreamQuery>,
     request: Request,
 ) -> Response {
@@ -90,7 +90,7 @@ async fn serve_video_stream(
             video_path,
             query.start,
             request,
-            State(transcode_generation),
+            State(transcode_controller),
         )
         .await;
     }
@@ -112,7 +112,7 @@ async fn serve_transcoded_video_stream(
     video_path: PathBuf,
     start: Option<f64>,
     request: Request,
-    State(transcode_generation): State<Arc<AtomicU64>>,
+    State(transcode_controller): State<Arc<TranscodeController>>,
 ) -> Response {
     if request.method() == Method::HEAD {
         return Response::builder()
@@ -136,6 +136,7 @@ async fn serve_transcoded_video_stream(
         }
     };
     let mut command = tokio::process::Command::new(ffmpeg);
+    command.kill_on_drop(true);
     #[cfg(target_os = "windows")]
     command
         .as_std_mut()
@@ -202,17 +203,33 @@ async fn serve_transcoded_video_stream(
                 .into_response();
         }
     };
+    let process_id = match child.id() {
+        Some(process_id) => process_id,
+        None => {
+            let _ = child.start_kill();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "FFmpeg preview process identity is unavailable.",
+            )
+                .into_response();
+        }
+    };
 
     // A new live preview replaces the previous FFmpeg process. Dropping this body also kills the
     // child when the browser changes selection or closes the request.
-    let generation = transcode_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = transcode_controller
+        .generation
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    let registration = transcode_controller.register(process_id, &video_path);
     let stream = async_stream::stream! {
         use tokio::io::AsyncReadExt;
 
+        let _registration = registration;
         let mut stdout = tokio::io::BufReader::new(stdout);
         let mut buffer = vec![0_u8; 64 * 1024];
         loop {
-            if transcode_generation.load(Ordering::SeqCst) != generation {
+            if transcode_controller.generation.load(Ordering::SeqCst) != generation {
                 break;
             }
             match stdout.read(&mut buffer).await {
@@ -238,7 +255,9 @@ async fn serve_transcoded_video_stream(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub(super) fn start_video_stream_server() -> Result<String, String> {
+pub(super) fn start_video_stream_server(
+    transcode_controller: Arc<TranscodeController>,
+) -> Result<String, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Unable to bind the local video stream server: {error}"))?;
     listener
@@ -271,7 +290,7 @@ pub(super) fn start_video_stream_server() -> Result<String, String> {
                 };
                 let app = Router::new()
                     .route("/video", get(serve_video_stream).head(serve_video_stream))
-                    .with_state(Arc::new(AtomicU64::new(0)));
+                    .with_state(transcode_controller);
                 if let Err(error) = axum::serve(listener, app).await {
                     log::error!("The local video stream server stopped unexpectedly: {error}");
                 }

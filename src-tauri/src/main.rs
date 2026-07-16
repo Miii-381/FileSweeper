@@ -21,6 +21,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::os::windows::{ffi::OsStrExt, process::CommandExt};
@@ -42,7 +43,6 @@ use tauri::{
     menu::{ContextMenu, Menu, MenuItem},
     Emitter, LogicalPosition, Manager,
 };
-use tauri_plugin_fs::FsExt;
 use tauri_plugin_log::{Target, TargetKind};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -103,11 +103,13 @@ impl IDropSource_Impl for WindowsFileDragSource_Impl {
     }
 }
 
-const CONFIG_VERSION: u32 = 1;
+const CONFIG_VERSION: u32 = 2;
 const DEFAULT_EXTENSIONS: [&str; 14] = [
     ".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg", ".3gp",
     ".rm", ".rmvb", ".ts",
 ];
+
+static CONFIG_STORE: OnceLock<config_store::ConfigStore> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,11 +280,18 @@ struct VideoEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DirectoryListing {
+struct DirectoryChildren {
     path: String,
     folders: Vec<DirectoryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceListing {
+    path: String,
     videos: Vec<VideoEntry>,
     media_suppressed: bool,
+    is_available: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,6 +309,90 @@ struct ContextMenuTarget {
 }
 
 struct ContextMenuState(Mutex<Option<ContextMenuTarget>>);
+
+struct ActiveWorkspaceWatcher {
+    path: PathBuf,
+    _watcher: notify::RecommendedWatcher,
+}
+
+struct WorkspaceWatchState {
+    latest_request: AtomicU64,
+    active: Mutex<Option<ActiveWorkspaceWatcher>>,
+}
+
+impl WorkspaceWatchState {
+    fn new() -> Self {
+        Self {
+            latest_request: AtomicU64::new(0),
+            active: Mutex::new(None),
+        }
+    }
+
+    fn begin(&self, request_id: u64) {
+        self.latest_request.fetch_max(request_id, Ordering::SeqCst);
+    }
+
+    fn clear_if_latest(&self, request_id: u64) {
+        if self.latest_request.load(Ordering::SeqCst) == request_id {
+            if let Ok(mut active) = self.active.lock() {
+                *active = None;
+            }
+        }
+    }
+
+    fn clear_path(&self, path: &Path) {
+        if let Ok(mut active) = self.active.lock() {
+            let matches = active.as_ref().is_some_and(|watcher| {
+                path_string(&watcher.path).eq_ignore_ascii_case(&path_string(path))
+            });
+            if matches {
+                *active = None;
+            }
+        }
+    }
+
+    fn watch_if_latest(
+        &self,
+        request_id: u64,
+        path: &Path,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        if self.latest_request.load(Ordering::SeqCst) != request_id {
+            return Ok(());
+        }
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Unable to access the workspace watcher.".to_string())?;
+        if active.as_ref().is_some_and(|watcher| watcher.path == path) {
+            return Ok(());
+        }
+
+        let event_app = app_handle.clone();
+        let watched_path = path.to_path_buf();
+        let event_path = path_string(path);
+        let mut watcher = notify::recommended_watcher(
+            move |result: notify::Result<notify::Event>| match result {
+                Ok(_) => {
+                    let _ = event_app.emit("workspace-file-event", &event_path);
+                }
+                Err(error) => {
+                    log::warn!("Workspace watcher error for {event_path}: {error}");
+                    let _ = event_app.emit("workspace-file-event", &event_path);
+                }
+            },
+        )
+        .map_err(|error| format!("Unable to create the workspace watcher: {error}"))?;
+        watcher
+            .watch(&watched_path, RecursiveMode::NonRecursive)
+            .map_err(|error| format!("Unable to watch the workspace: {error}"))?;
+        *active = Some(ActiveWorkspaceWatcher {
+            path: watched_path,
+            _watcher: watcher,
+        });
+        Ok(())
+    }
+}
 
 const MAX_PARALLEL_THUMBNAIL_TASKS: usize = 10;
 const MAX_PARALLEL_THUMBNAIL_READS: usize = 4;
@@ -410,6 +503,126 @@ struct ThumbnailCacheDirectory(PathBuf);
 /// The player only receives a loopback URL; the request handler validates the file again.
 struct VideoStreamServer {
     base_url: Option<String>,
+    transcode_controller: Arc<TranscodeController>,
+}
+
+struct TranscodeController {
+    generation: AtomicU64,
+    active_processes: Mutex<HashMap<u32, String>>,
+    processes_changed: Condvar,
+}
+
+struct TranscodeRegistration {
+    controller: Arc<TranscodeController>,
+    process_id: u32,
+}
+
+impl TranscodeController {
+    fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            active_processes: Mutex::new(HashMap::new()),
+            processes_changed: Condvar::new(),
+        }
+    }
+
+    fn register(self: &Arc<Self>, process_id: u32, video_path: &Path) -> TranscodeRegistration {
+        if let Ok(mut active) = self.active_processes.lock() {
+            active.insert(process_id, path_string(video_path));
+        }
+        TranscodeRegistration {
+            controller: Arc::clone(self),
+            process_id,
+        }
+    }
+
+    fn stop_video(&self, video_path: &Path) -> Result<bool, String> {
+        let normalized_path = path_string(video_path);
+        let process_ids = self
+            .active_processes
+            .lock()
+            .map_err(|_| "Unable to access the FFmpeg preview process list.".to_string())?
+            .iter()
+            .filter_map(|(process_id, active_path)| {
+                active_path
+                    .eq_ignore_ascii_case(&normalized_path)
+                    .then_some(*process_id)
+            })
+            .collect::<Vec<_>>();
+        if process_ids.is_empty() {
+            return Ok(false);
+        }
+
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        for process_id in &process_ids {
+            terminate_process_tree(*process_id)?;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut active = self
+            .active_processes
+            .lock()
+            .map_err(|_| "Unable to access the FFmpeg preview process list.".to_string())?;
+        while process_ids
+            .iter()
+            .any(|process_id| active.contains_key(process_id))
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(
+                    "FFmpeg did not exit before the delete operation timed out.".to_string()
+                );
+            }
+            let (next, wait_result) = self
+                .processes_changed
+                .wait_timeout(active, remaining)
+                .map_err(|_| "Unable to wait for the FFmpeg preview process.".to_string())?;
+            active = next;
+            if wait_result.timed_out()
+                && process_ids
+                    .iter()
+                    .any(|process_id| active.contains_key(process_id))
+            {
+                return Err(
+                    "FFmpeg did not exit before the delete operation timed out.".to_string()
+                );
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl Drop for TranscodeRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.controller.active_processes.lock() {
+            active.remove(&self.process_id);
+            self.controller.processes_changed.notify_all();
+        }
+    }
+}
+
+#[cfg(test)]
+mod transcode_controller_tests {
+    use super::*;
+
+    #[test]
+    fn registration_tracks_video_until_the_process_owner_is_dropped() {
+        let controller = Arc::new(TranscodeController::new());
+        let path = Path::new(r"D:\Videos\focused.mp4");
+        let registration = controller.register(42, path);
+        assert_eq!(
+            controller
+                .active_processes
+                .lock()
+                .unwrap()
+                .get(&42)
+                .map(String::as_str),
+            Some(r"D:\Videos\focused.mp4")
+        );
+        drop(registration);
+        assert!(controller.active_processes.lock().unwrap().is_empty());
+        assert!(!controller.stop_video(path).unwrap());
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -618,7 +831,7 @@ fn load_thumbnail_index() -> ThumbnailIndex {
 }
 
 #[cfg(target_os = "windows")]
-fn replace_thumbnail_index_file(temporary_path: &Path, path: &Path) -> Result<(), String> {
+fn atomic_replace_file(temporary_path: &Path, path: &Path, label: &str) -> Result<(), String> {
     let temporary_wide: Vec<u16> = temporary_path
         .as_os_str()
         .encode_wide()
@@ -636,13 +849,13 @@ fn replace_thumbnail_index_file(temporary_path: &Path, path: &Path) -> Result<()
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     }
-    .map_err(|error| format!("Unable to atomically replace the thumbnail index: {error}"))
+    .map_err(|error| format!("Unable to atomically replace the {label}: {error}"))
 }
 
 #[cfg(not(target_os = "windows"))]
-fn replace_thumbnail_index_file(temporary_path: &Path, path: &Path) -> Result<(), String> {
+fn atomic_replace_file(temporary_path: &Path, path: &Path, label: &str) -> Result<(), String> {
     fs::rename(temporary_path, path)
-        .map_err(|error| format!("Unable to atomically replace the thumbnail index: {error}"))
+        .map_err(|error| format!("Unable to atomically replace the {label}: {error}"))
 }
 
 fn persist_thumbnail_index(index: &ThumbnailIndex) -> Result<(), String> {
@@ -652,7 +865,7 @@ fn persist_thumbnail_index(index: &ThumbnailIndex) -> Result<(), String> {
         .map_err(|error| format!("Unable to serialize the thumbnail index: {error}"))?;
     fs::write(&temporary_path, bytes)
         .map_err(|error| format!("Unable to write the thumbnail index: {error}"))?;
-    replace_thumbnail_index_file(&temporary_path, &path)
+    atomic_replace_file(&temporary_path, &path, "thumbnail index")
 }
 
 fn cached_thumbnail_path(
@@ -788,16 +1001,31 @@ fn folder_name(path: &Path) -> String {
     config_store::folder_name(path)
 }
 
-fn validate_config(config: &mut AppConfig) -> Result<(), String> {
-    config_store::validate_config(config)
-}
-
-fn write_config(config: &AppConfig) -> Result<(), String> {
-    config_store::write_config(config)
-}
-
 fn load_config() -> Result<AppConfig, String> {
-    config_store::load_config()
+    CONFIG_STORE
+        .get()
+        .ok_or_else(|| "The configuration store is not initialized.".to_string())?
+        .snapshot()
+}
+
+fn update_config<F>(update: F) -> Result<AppConfig, String>
+where
+    F: FnOnce(&mut AppConfig) -> Result<(), String>,
+{
+    CONFIG_STORE
+        .get()
+        .ok_or_else(|| "The configuration store is not initialized.".to_string())?
+        .update_config(update)
+}
+
+fn update_workspace_state<F>(update: F) -> Result<AppConfig, String>
+where
+    F: FnOnce(&mut AppConfig) -> Result<(), String>,
+{
+    CONFIG_STORE
+        .get()
+        .ok_or_else(|| "The configuration store is not initialized.".to_string())?
+        .update_workspace_state(update)
 }
 
 fn is_supported_video_path(path: &Path, settings: &Preferences) -> bool {
@@ -816,21 +1044,50 @@ fn encode_query_component(value: &str) -> String {
     media_stream::encode_query_component(value)
 }
 
-fn start_video_stream_server() -> Result<String, String> {
-    media_stream::start_video_stream_server()
+fn start_video_stream_server(controller: Arc<TranscodeController>) -> Result<String, String> {
+    media_stream::start_video_stream_server(controller)
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_process_tree(process_id: u32) -> Result<(), String> {
+    let mut command = Command::new("taskkill");
+    configure_sidecar_command(&mut command);
+    command
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to stop the FFmpeg preview process: {error}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_process_tree(process_id: u32) -> Result<(), String> {
+    Command::new("kill")
+        .args(["-TERM", &process_id.to_string()])
+        .status()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to stop the FFmpeg preview process: {error}"))
 }
 
 fn available_roots(settings: &Preferences) -> Vec<DirectoryEntry> {
     workspace::available_roots(settings)
 }
 
-fn list_directory_impl(
+fn list_subdirectories_impl(
+    path: &str,
+    settings: &Preferences,
+) -> Result<DirectoryChildren, String> {
+    workspace::list_subdirectories_impl(path, settings)
+}
+
+fn scan_workspace_impl(
     path: &str,
     settings: &Preferences,
     thumbnail_index: &Arc<Mutex<ThumbnailIndex>>,
     thumbnail_cache_dir: &Path,
-) -> Result<DirectoryListing, String> {
-    workspace::list_directory_impl(path, settings, thumbnail_index, thumbnail_cache_dir)
+) -> Result<WorkspaceListing, String> {
+    workspace::scan_workspace_impl(path, settings, thumbnail_index, thumbnail_cache_dir)
 }
 #[tauri::command]
 fn load_application_state() -> Result<ApplicationState, String> {
@@ -855,63 +1112,119 @@ fn is_running_as_administrator() -> bool {
 }
 
 #[tauri::command]
-async fn list_directory(
+async fn list_subdirectories(path: String) -> Result<DirectoryChildren, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        log::debug!("Listing directory tree children: {path}");
+        let config = load_config()?;
+        list_subdirectories_impl(&path, &config.settings)
+    })
+    .await
+    .map_err(|error| format!("The directory tree worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn workspace_is_accessible(
     path: String,
+    watch_state: tauri::State<'_, WorkspaceWatchState>,
+) -> Result<bool, String> {
+    let checked_path = PathBuf::from(&path);
+    let worker_path = checked_path.clone();
+    let accessible = tauri::async_runtime::spawn_blocking(move || {
+        fs::metadata(&worker_path).is_ok_and(|metadata| metadata.is_dir())
+            && fs::read_dir(&worker_path).is_ok()
+    })
+    .await
+    .map_err(|error| format!("The workspace availability worker failed: {error}"))?;
+    if !accessible {
+        watch_state.clear_path(&checked_path);
+    }
+    Ok(accessible)
+}
+
+#[tauri::command]
+async fn scan_workspace(
+    path: String,
+    request_id: u64,
     thumbnail_index: tauri::State<'_, ThumbnailIndexState>,
     thumbnail_cache_directory: tauri::State<'_, ThumbnailCacheDirectory>,
+    watch_state: tauri::State<'_, WorkspaceWatchState>,
     app_handle: tauri::AppHandle,
-) -> Result<DirectoryListing, String> {
+) -> Result<WorkspaceListing, String> {
+    watch_state.begin(request_id);
     let thumbnail_index = Arc::clone(&thumbnail_index.0);
     let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
-    let listing = tauri::async_runtime::spawn_blocking(move || {
-        log::info!("Listing directory: {path}");
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        log::info!("Scanning workspace: {path}");
         let config = load_config()?;
-        let listing = list_directory_impl(
+        let listing = scan_workspace_impl(
             &path,
             &config.settings,
             &thumbnail_index,
             &thumbnail_cache_dir,
         )?;
         log::info!(
-            "Listed directory: {} folders={}, videos={}, media_suppressed={}",
+            "Scanned workspace: {} videos={}, media_suppressed={}",
             listing.path,
-            listing.folders.len(),
             listing.videos.len(),
             listing.media_suppressed
         );
-        Ok::<DirectoryListing, String>(listing)
+        Ok::<WorkspaceListing, String>(listing)
     })
     .await
-    .map_err(|error| format!("The directory worker failed: {error}"))??;
-    app_handle
-        .fs_scope()
-        .allow_directory(Path::new(&listing.path), false)
-        .map_err(|error| format!("Unable to allow workspace file watching: {error}"))?;
-    Ok(listing)
+    .map_err(|error| format!("The workspace worker failed: {error}"))?;
+    match result {
+        Ok(listing) => {
+            watch_state.watch_if_latest(request_id, Path::new(&listing.path), &app_handle)?;
+            Ok(listing)
+        }
+        Err(error) => {
+            watch_state.clear_if_latest(request_id);
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
-fn save_configuration(mut config: AppConfig) -> Result<AppConfig, String> {
-    validate_config(&mut config)?;
-    write_config(&config)?;
-    Ok(config)
+fn save_configuration(settings: Preferences) -> Result<AppConfig, String> {
+    update_config(move |config| {
+        config.settings = settings;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn set_audio_preferences(volume: u8, muted: bool) -> Result<AppConfig, String> {
+    update_config(move |config| {
+        config.settings.volume = volume;
+        config.settings.muted = muted;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn set_list_columns(list_columns: Vec<ListColumn>) -> Result<AppConfig, String> {
+    update_config(move |config| {
+        config.settings.list_columns = list_columns;
+        Ok(())
+    })
 }
 
 #[tauri::command]
 fn set_last_workspace(path: Option<String>) -> Result<AppConfig, String> {
-    let mut config = load_config()?;
-    if let Some(path) = path {
+    let normalized = if let Some(path) = path {
         let directory = fs::canonicalize(path)
             .map_err(|error| format!("Unable to use this folder as a workspace: {error}"))?;
         if !directory.is_dir() {
             return Err("The selected workspace is not a folder.".to_string());
         }
-        config.last_workspace = Some(path_string(&directory));
+        Some(path_string(&directory))
     } else {
-        config.last_workspace = None;
-    }
-    write_config(&config)?;
-    Ok(config)
+        None
+    };
+    update_config(move |config| {
+        config.last_workspace = normalized;
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -962,26 +1275,23 @@ fn set_workspace_focus(workspace_path: String, video_path: String) -> Result<(),
         return Err("The focused video is not a direct item of the workspace.".to_string());
     }
 
-    let mut config = load_config()?;
     let normalized_workspace = path_string(&workspace);
     let normalized_video = path_string(&video);
-    let previous_focus = config
-        .workspace_focus
-        .get(&normalized_workspace)
-        .map(|focus| focus.video_path.clone())
-        .unwrap_or_else(|| "<none>".to_string());
-    config.workspace_focus.insert(
-        normalized_workspace.clone(),
-        WorkspaceFocus {
-            video_path: normalized_video.clone(),
-        },
-    );
-    write_config(&config)?;
+    let log_workspace = normalized_workspace.clone();
+    let log_video = normalized_video.clone();
+    update_workspace_state(move |config| {
+        config.workspace_focus.insert(
+            normalized_workspace,
+            WorkspaceFocus {
+                video_path: normalized_video,
+            },
+        );
+        Ok(())
+    })?;
     log::debug!(
-        "Persisted workspace focus: workspace={}, previous={}, current={}",
-        normalized_workspace,
-        previous_focus,
-        normalized_video
+        "Persisted workspace focus: workspace={}, current={}",
+        log_workspace,
+        log_video
     );
     Ok(())
 }
@@ -1002,19 +1312,22 @@ fn set_workspace_sort(
     }
 
     let normalized_workspace = path_string(&workspace);
-    let mut config = load_config()?;
-    config.workspace_sort.insert(
-        normalized_workspace.clone(),
-        WorkspaceSort {
-            key: sort_key.clone(),
-            ascending: sort_ascending,
-        },
-    );
-    write_config(&config)?;
+    let log_workspace = normalized_workspace.clone();
+    let log_sort_key = sort_key.clone();
+    update_workspace_state(move |config| {
+        config.workspace_sort.insert(
+            normalized_workspace,
+            WorkspaceSort {
+                key: sort_key,
+                ascending: sort_ascending,
+            },
+        );
+        Ok(())
+    })?;
     log::debug!(
         "Persisted workspace sort: workspace={}, key={}, ascending={}",
-        normalized_workspace,
-        sort_key,
+        log_workspace,
+        log_sort_key,
         sort_ascending
     );
     Ok(())
@@ -1022,28 +1335,28 @@ fn set_workspace_sort(
 
 #[tauri::command]
 fn toggle_favorite(path: String) -> Result<AppConfig, String> {
-    let mut config = load_config()?;
     let directory = fs::canonicalize(path)
         .map_err(|error| format!("Unable to update the favorite folder: {error}"))?;
     if !directory.is_dir() {
         return Err("Favorites must be folders.".to_string());
     }
     let normalized_path = path_string(&directory);
-    if let Some(index) = config
-        .favorites
-        .iter()
-        .position(|favorite| favorite.path.eq_ignore_ascii_case(&normalized_path))
-    {
-        config.favorites.remove(index);
-    } else {
-        config.favorites.push(FavoriteFolder {
-            name: folder_name(&directory),
-            path: normalized_path,
-        });
-    }
-    validate_config(&mut config)?;
-    write_config(&config)?;
-    Ok(config)
+    let name = folder_name(&directory);
+    update_config(move |config| {
+        if let Some(index) = config
+            .favorites
+            .iter()
+            .position(|favorite| favorite.path.eq_ignore_ascii_case(&normalized_path))
+        {
+            config.favorites.remove(index);
+        } else {
+            config.favorites.push(FavoriteFolder {
+                name,
+                path: normalized_path,
+            });
+        }
+        Ok(())
+    })
 }
 
 fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
@@ -1079,10 +1392,29 @@ fn enqueue_copy(
 #[tauri::command]
 fn recycle_videos(
     paths: Vec<String>,
+    focused_video_path: Option<String>,
     queue: tauri::State<FileOperationQueue>,
+    video_stream_server: tauri::State<VideoStreamServer>,
 ) -> Result<RecycleResult, String> {
     log::info!("Recycling {} video(s)", paths.len());
-    enqueue_recycle(normalize_video_paths(paths)?, &queue)
+    let normalized_paths = normalize_video_paths(paths)?;
+    if let Some(focused_video_path) = focused_video_path {
+        let focused_path = fs::canonicalize(focused_video_path).map_err(|error| {
+            format!("Unable to access the focused video before deletion: {error}")
+        })?;
+        if normalized_paths.iter().any(|path| path == &focused_path) {
+            let stopped = video_stream_server
+                .transcode_controller
+                .stop_video(&focused_path)?;
+            if stopped {
+                log::info!(
+                    "Stopped the focused FFmpeg preview before recycling: {}",
+                    path_string(&focused_path)
+                );
+            }
+        }
+    }
+    enqueue_recycle(normalized_paths, &queue)
 }
 
 #[tauri::command]
@@ -1239,6 +1571,20 @@ fn get_video_stream_url(
 }
 
 #[tauri::command]
+async fn stop_transcoded_preview(
+    path: String,
+    video_stream_server: tauri::State<'_, VideoStreamServer>,
+) -> Result<bool, String> {
+    let controller = Arc::clone(&video_stream_server.transcode_controller);
+    tauri::async_runtime::spawn_blocking(move || {
+        let video_path = fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(path));
+        controller.stop_video(&video_path)
+    })
+    .await
+    .map_err(|error| format!("The FFmpeg shutdown worker failed: {error}"))?
+}
+
+#[tauri::command]
 fn open_video_externally(path: String) -> Result<(), String> {
     let video_path = resolve_stream_video_path(&path)?;
     Command::new("explorer.exe")
@@ -1324,20 +1670,33 @@ fn reveal_context_target(target: &ContextMenuTarget) -> Result<(), String> {
     menus::reveal_context_target(target)
 }
 fn main() {
+    let configuration = config_store::ConfigStore::open(
+        config_path().expect("failed to resolve VideoSweeper configuration path"),
+    )
+    .expect("failed to initialize VideoSweeper configuration");
+    CONFIG_STORE
+        .set(configuration)
+        .unwrap_or_else(|_| panic!("VideoSweeper configuration was initialized more than once"));
     let log_directory = log_dir().expect("failed to create VideoSweeper log directory");
     let thumbnail_cache_directory =
         thumbnail_cache_dir().expect("failed to create VideoSweeper thumbnail cache directory");
-    let video_stream_server = match start_video_stream_server() {
+    let transcode_controller = Arc::new(TranscodeController::new());
+    let video_stream_server = match start_video_stream_server(Arc::clone(&transcode_controller)) {
         Ok(base_url) => VideoStreamServer {
             base_url: Some(base_url),
+            transcode_controller,
         },
         Err(error) => {
             eprintln!("Unable to start the local video stream server: {error}");
-            VideoStreamServer { base_url: None }
+            VideoStreamServer {
+                base_url: None,
+                transcode_controller,
+            }
         }
     };
     tauri::Builder::default()
         .manage(ContextMenuState(Mutex::new(None)))
+        .manage(WorkspaceWatchState::new())
         .manage(MediaSidecarPool(Arc::new(MediaSidecarPermits::new(
             MAX_PARALLEL_THUMBNAIL_TASKS,
         ))))
@@ -1352,7 +1711,6 @@ fn main() {
         .manage(start_file_operation_queue())
         // Plugins are registered here so their native capabilities are available to the webview.
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .clear_targets()
@@ -1398,6 +1756,15 @@ fn main() {
                             })
                         }
                         Some(target) if event.id().as_ref() == "context-menu-delete" => {
+                            let controller =
+                                Arc::clone(&app.state::<VideoStreamServer>().transcode_controller);
+                            let stop_result = target
+                                .operation_paths
+                                .iter()
+                                .try_for_each(|path| controller.stop_video(path).map(|_| ()));
+                            if let Err(error) = stop_result {
+                                return eprintln!("{error}");
+                            }
                             let queue = app.state::<FileOperationQueue>().0.clone();
                             let (response_sender, response_receiver) = mpsc::channel();
                             match queue.send(FileOperationTask::Recycle {
@@ -1443,8 +1810,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             load_application_state,
             is_running_as_administrator,
-            list_directory,
+            list_subdirectories,
+            workspace_is_accessible,
+            scan_workspace,
             save_configuration,
+            set_audio_preferences,
+            set_list_columns,
             set_last_workspace,
             set_workspace_focus,
             set_workspace_sort,
@@ -1454,6 +1825,7 @@ fn main() {
             probe_video_metadata_batch_command,
             read_thumbnail,
             get_video_stream_url,
+            stop_transcoded_preview,
             open_video_externally,
             start_file_drag,
             read_recent_logs,
