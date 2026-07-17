@@ -218,7 +218,7 @@ impl Default for Preferences {
         Self {
             appearance: "dark".to_string(),
             accent_theme: "teal".to_string(),
-            thumbnail_cache_gb: 2.0,
+            thumbnail_cache_gb: 0.5,
             thumbnail_capture_position: default_thumbnail_capture_position(),
             autoplay: true,
             volume: 100,
@@ -412,48 +412,137 @@ impl WorkspaceWatchState {
     }
 }
 
-const MAX_PARALLEL_THUMBNAIL_TASKS: usize = 10;
+const MAX_THUMBNAIL_BATCH_SIZE: usize = 12;
 const MAX_PARALLEL_THUMBNAIL_READS: usize = 4;
+
+const MEBIBYTE: u64 = 1024 * 1024;
+const GIBIBYTE: u64 = 1024 * MEBIBYTE;
+
+fn recommended_media_sidecar_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().saturating_sub(1).clamp(1, 6))
+        .unwrap_or(2)
+}
 
 struct MediaSidecarPool(Arc<MediaSidecarPermits>);
 
 struct MediaSidecarPermits {
-    available: Mutex<usize>,
+    state: Mutex<MediaSidecarPoolState>,
     available_changed: Condvar,
 }
 
-struct MediaSidecarPermit(Arc<MediaSidecarPermits>);
+struct MediaSidecarPoolState {
+    in_flight: usize,
+    limit: usize,
+    minimum: usize,
+    maximum: usize,
+    consecutive_failures: usize,
+    consecutive_slow_tasks: usize,
+    consecutive_fast_tasks: usize,
+}
+
+struct MediaSidecarPermit {
+    pool: Arc<MediaSidecarPermits>,
+    started_at: Instant,
+    failed: bool,
+}
 
 impl MediaSidecarPermits {
-    fn new(capacity: usize) -> Self {
+    fn new(maximum: usize) -> Self {
+        let maximum = maximum.max(1);
         Self {
-            available: Mutex::new(capacity),
+            state: Mutex::new(MediaSidecarPoolState {
+                in_flight: 0,
+                limit: maximum,
+                minimum: 1,
+                maximum,
+                consecutive_failures: 0,
+                consecutive_slow_tasks: 0,
+                consecutive_fast_tasks: 0,
+            }),
             available_changed: Condvar::new(),
         }
     }
 
     fn acquire(self: &Arc<Self>) -> Result<MediaSidecarPermit, String> {
-        let mut available = self
-            .available
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| "Unable to access the media sidecar queue.".to_string())?;
-        while *available == 0 {
-            available = self
+        while state.in_flight >= state.limit {
+            state = self
                 .available_changed
-                .wait(available)
+                .wait(state)
                 .map_err(|_| "Unable to access the media sidecar queue.".to_string())?;
         }
-        *available -= 1;
-        Ok(MediaSidecarPermit(Arc::clone(self)))
+        state.in_flight += 1;
+        Ok(MediaSidecarPermit {
+            pool: Arc::clone(self),
+            started_at: Instant::now(),
+            failed: false,
+        })
+    }
+
+    fn release(&self, failed: bool, elapsed: Duration) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.in_flight = state.in_flight.saturating_sub(1);
+        if failed {
+            state.consecutive_failures += 1;
+            state.consecutive_fast_tasks = 0;
+            if state.consecutive_failures >= 2 && state.limit > state.minimum {
+                state.limit -= 1;
+                state.consecutive_failures = 0;
+                state.consecutive_slow_tasks = 0;
+                log::warn!(
+                    "Reducing media sidecar concurrency to {} after repeated failures.",
+                    state.limit
+                );
+            }
+        } else {
+            state.consecutive_failures = 0;
+            if elapsed >= Duration::from_secs(12) {
+                state.consecutive_slow_tasks += 1;
+                state.consecutive_fast_tasks = 0;
+                if state.consecutive_slow_tasks >= state.limit.max(2) && state.limit > state.minimum
+                {
+                    state.limit -= 1;
+                    state.consecutive_slow_tasks = 0;
+                    log::info!(
+                        "Reducing media sidecar concurrency to {} after sustained slow work.",
+                        state.limit
+                    );
+                }
+            } else if elapsed <= Duration::from_secs(3) {
+                state.consecutive_fast_tasks += 1;
+                state.consecutive_slow_tasks = 0;
+                if state.consecutive_fast_tasks >= 12 && state.limit < state.maximum {
+                    state.limit += 1;
+                    state.consecutive_fast_tasks = 0;
+                    log::info!(
+                        "Increasing media sidecar concurrency to {} after sustained fast work.",
+                        state.limit
+                    );
+                }
+            } else {
+                state.consecutive_fast_tasks = 0;
+                state.consecutive_slow_tasks = 0;
+            }
+        }
+        self.available_changed.notify_all();
+    }
+}
+
+impl MediaSidecarPermit {
+    fn mark_failed(&mut self) {
+        self.failed = true;
     }
 }
 
 impl Drop for MediaSidecarPermit {
     fn drop(&mut self) {
-        if let Ok(mut available) = self.0.available.lock() {
-            *available += 1;
-            self.0.available_changed.notify_one();
-        }
+        self.pool.release(self.failed, self.started_at.elapsed());
     }
 }
 
@@ -507,6 +596,8 @@ struct ThumbnailIndexEntry {
     #[serde(default = "default_thumbnail_capture_position")]
     capture_position: String,
     thumbnail_file: String,
+    #[serde(default)]
+    last_accessed_at: u128,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -640,6 +731,92 @@ mod transcode_controller_tests {
         drop(registration);
         assert!(controller.active_processes.lock().unwrap().is_empty());
         assert!(!controller.stop_video(path).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_cache_tests {
+    use super::*;
+
+    fn test_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "video-sweeper-thumbnail-cache-{name}-{}-{}",
+            std::process::id(),
+            current_unix_millis()
+        ));
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        directory
+    }
+
+    fn cache_entry(
+        source: &Path,
+        thumbnail_file: &str,
+        last_accessed_at: u128,
+    ) -> ThumbnailIndexEntry {
+        let metadata = fs::metadata(source).expect("source metadata should be readable");
+        ThumbnailIndexEntry {
+            size: metadata.len(),
+            modified_at: unix_millis(metadata.modified()).unwrap_or(0),
+            capture_position: thumbnail_capture_cache_key("middle").to_string(),
+            thumbnail_file: thumbnail_file.to_string(),
+            last_accessed_at,
+        }
+    }
+
+    #[test]
+    fn cache_maintenance_removes_orphans_and_evicts_least_recently_used_entries() {
+        let directory = test_directory("maintenance");
+        let first_source = directory.join("first.mp4");
+        let second_source = directory.join("second.mp4");
+        fs::write(&first_source, b"first").unwrap();
+        fs::write(&second_source, b"second").unwrap();
+        fs::write(directory.join("old.jpg"), [1_u8; 8]).unwrap();
+        fs::write(directory.join("new.jpg"), [2_u8; 8]).unwrap();
+        fs::write(directory.join("orphan.jpg"), [3_u8; 8]).unwrap();
+
+        let mut index = ThumbnailIndex::default();
+        let first_access = current_unix_millis().saturating_add(1);
+        index.entries.insert(
+            path_string(&first_source),
+            cache_entry(&first_source, "old.jpg", first_access),
+        );
+        index.entries.insert(
+            path_string(&second_source),
+            cache_entry(&second_source, "new.jpg", first_access.saturating_add(1)),
+        );
+        maintain_thumbnail_cache(&directory, &mut index, 8).unwrap();
+
+        assert!(!directory.join("old.jpg").exists());
+        assert!(!directory.join("orphan.jpg").exists());
+        assert!(directory.join("new.jpg").exists());
+        assert_eq!(index.entries.len(), 1);
+        assert!(index.entries.contains_key(&path_string(&second_source)));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn corrupt_thumbnail_index_is_backed_up_and_rebuilt() {
+        let directory = test_directory("corrupt-index");
+        let index_path = thumbnail_index_path_for(&directory);
+        fs::write(&index_path, b"not valid json").unwrap();
+
+        let index = load_thumbnail_index_from(&directory);
+        assert!(index.entries.is_empty());
+        assert!(fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("index-corrupt-")));
+        serde_json::from_slice::<ThumbnailIndex>(&fs::read(index_path).unwrap()).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn default_thumbnail_cache_limit_is_512_mebibytes() {
+        assert_eq!(Preferences::default().thumbnail_cache_gb, 0.5);
+        assert_eq!(thumbnail_cache_limit_bytes(0.5), 512 * MEBIBYTE);
     }
 }
 
@@ -864,6 +1041,13 @@ fn unix_millis(time: Result<SystemTime, std::io::Error>) -> Option<u128> {
         .map(|duration| duration.as_millis())
 }
 
+fn current_unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
 fn path_string(path: &Path) -> String {
     let value = path.to_string_lossy();
     #[cfg(target_os = "windows")]
@@ -904,14 +1088,23 @@ fn thumbnail_path_for(path: &Path) -> Result<PathBuf, String> {
     )))
 }
 
-fn thumbnail_index_path() -> Result<PathBuf, String> {
-    Ok(thumbnail_cache_dir()?.join("index.json"))
+fn thumbnail_index_path_for(thumbnail_cache_dir: &Path) -> PathBuf {
+    thumbnail_cache_dir.join("index.json")
 }
 
-fn load_thumbnail_index() -> ThumbnailIndex {
-    let Ok(path) = thumbnail_index_path() else {
-        return ThumbnailIndex::default();
-    };
+fn backup_corrupt_thumbnail_index(path: &Path) -> Result<PathBuf, String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let backup_path = path.with_file_name(format!("index-corrupt-{timestamp}.json"));
+    fs::copy(path, &backup_path)
+        .map_err(|error| format!("Unable to back up the corrupt thumbnail index: {error}"))?;
+    Ok(backup_path)
+}
+
+fn load_thumbnail_index_from(thumbnail_cache_dir: &Path) -> ThumbnailIndex {
+    let path = thumbnail_index_path_for(thumbnail_cache_dir);
     if !path.is_file() {
         return ThumbnailIndex::default();
     }
@@ -922,11 +1115,26 @@ fn load_thumbnail_index() -> ThumbnailIndex {
     {
         Some(index) => index,
         None => {
+            match backup_corrupt_thumbnail_index(&path) {
+                Ok(backup_path) => log::warn!(
+                    "Thumbnail index {} is corrupt; backed it up to {} and will rebuild the cache index.",
+                    path_string(&path),
+                    path_string(&backup_path)
+                ),
+                Err(error) => log::warn!(
+                    "Thumbnail index {} is corrupt and could not be backed up: {error}",
+                    path_string(&path)
+                ),
+            }
             log::warn!(
                 "Unable to read thumbnail index {}; starting with an empty index.",
                 path_string(&path)
             );
-            ThumbnailIndex::default()
+            let index = ThumbnailIndex::default();
+            if let Err(error) = persist_thumbnail_index_at(thumbnail_cache_dir, &index) {
+                log::warn!("Unable to rebuild the thumbnail index: {error}");
+            }
+            index
         }
     }
 }
@@ -959,14 +1167,138 @@ fn atomic_replace_file(temporary_path: &Path, path: &Path, label: &str) -> Resul
         .map_err(|error| format!("Unable to atomically replace the {label}: {error}"))
 }
 
-fn persist_thumbnail_index(index: &ThumbnailIndex) -> Result<(), String> {
-    let path = thumbnail_index_path()?;
+fn persist_thumbnail_index_at(
+    thumbnail_cache_dir: &Path,
+    index: &ThumbnailIndex,
+) -> Result<(), String> {
+    let path = thumbnail_index_path_for(thumbnail_cache_dir);
     let temporary_path = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(index)
         .map_err(|error| format!("Unable to serialize the thumbnail index: {error}"))?;
     fs::write(&temporary_path, bytes)
         .map_err(|error| format!("Unable to write the thumbnail index: {error}"))?;
     atomic_replace_file(&temporary_path, &path, "thumbnail index")
+}
+
+fn persist_thumbnail_index(index: &ThumbnailIndex) -> Result<(), String> {
+    persist_thumbnail_index_at(&thumbnail_cache_dir()?, index)
+}
+
+fn thumbnail_cache_limit_bytes(cache_gb: f64) -> u64 {
+    (cache_gb * GIBIBYTE as f64)
+        .round()
+        .clamp(0.0, u64::MAX as f64) as u64
+}
+
+fn thumbnail_entry_path(
+    thumbnail_cache_dir: &Path,
+    entry: &ThumbnailIndexEntry,
+) -> Option<PathBuf> {
+    let file_name = Path::new(&entry.thumbnail_file).file_name()?.to_str()?;
+    if file_name != entry.thumbnail_file || !file_name.ends_with(".jpg") {
+        return None;
+    }
+    Some(thumbnail_cache_dir.join(file_name))
+}
+
+fn thumbnail_entry_is_current(
+    source_key: &str,
+    entry: &ThumbnailIndexEntry,
+    thumbnail_path: &Path,
+) -> bool {
+    let Ok(metadata) = fs::metadata(source_key) else {
+        return false;
+    };
+    metadata.is_file()
+        && metadata.len() == entry.size
+        && unix_millis(metadata.modified()).unwrap_or(0) == entry.modified_at
+        && thumbnail_path.is_file()
+}
+
+fn maintain_thumbnail_cache(
+    thumbnail_cache_dir: &Path,
+    index: &mut ThumbnailIndex,
+    cache_limit_bytes: u64,
+) -> Result<(), String> {
+    let mut changed = false;
+    let mut referenced_files = HashSet::new();
+    index.entries.retain(|source_key, entry| {
+        let Some(thumbnail_path) = thumbnail_entry_path(thumbnail_cache_dir, entry) else {
+            changed = true;
+            return false;
+        };
+        if !thumbnail_entry_is_current(source_key, entry, &thumbnail_path) {
+            changed = true;
+            return false;
+        }
+        referenced_files.insert(entry.thumbnail_file.clone());
+        true
+    });
+
+    for directory_entry in fs::read_dir(thumbnail_cache_dir)
+        .map_err(|error| format!("Unable to inspect the thumbnail cache: {error}"))?
+    {
+        let directory_entry = directory_entry
+            .map_err(|error| format!("Unable to inspect a thumbnail cache entry: {error}"))?;
+        let path = directory_entry.path();
+        let is_thumbnail = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"));
+        if is_thumbnail {
+            let file_name = directory_entry.file_name().to_string_lossy().to_string();
+            if !referenced_files.contains(&file_name) {
+                fs::remove_file(&path).map_err(|error| {
+                    format!(
+                        "Unable to remove orphan thumbnail {}: {error}",
+                        path_string(&path)
+                    )
+                })?;
+                changed = true;
+            }
+        }
+    }
+
+    let mut cached_entries = index
+        .entries
+        .iter()
+        .filter_map(|(source_key, entry)| {
+            thumbnail_entry_path(thumbnail_cache_dir, entry).and_then(|thumbnail_path| {
+                fs::metadata(&thumbnail_path).ok().map(|metadata| {
+                    (
+                        source_key.clone(),
+                        entry.last_accessed_at.max(entry.modified_at),
+                        metadata.len(),
+                        thumbnail_path,
+                    )
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut total_size = cached_entries
+        .iter()
+        .map(|(_, _, size, _)| *size)
+        .sum::<u64>();
+    cached_entries.sort_by_key(|(_, last_accessed_at, _, _)| *last_accessed_at);
+    for (source_key, _, size, thumbnail_path) in cached_entries {
+        if total_size <= cache_limit_bytes {
+            break;
+        }
+        fs::remove_file(&thumbnail_path).map_err(|error| {
+            format!(
+                "Unable to evict cached thumbnail {}: {error}",
+                path_string(&thumbnail_path)
+            )
+        })?;
+        index.entries.remove(&source_key);
+        total_size = total_size.saturating_sub(size);
+        changed = true;
+    }
+
+    if changed {
+        persist_thumbnail_index_at(thumbnail_cache_dir, index)?;
+    }
+    Ok(())
 }
 
 fn cached_thumbnail_path(
@@ -978,12 +1310,11 @@ fn cached_thumbnail_path(
 ) -> Option<String> {
     let source_key = thumbnail_source_key(path);
     let modified_at = unix_millis(metadata.modified()).unwrap_or(0);
-    let entry = thumbnail_index
-        .lock()
-        .ok()?
-        .entries
-        .get(&source_key)
-        .cloned();
+    let entry = thumbnail_index.lock().ok().and_then(|mut index| {
+        let entry = index.entries.get_mut(&source_key)?;
+        entry.last_accessed_at = current_unix_millis();
+        Some(entry.clone())
+    });
     if let Some(entry) = entry {
         if entry.size != metadata.len()
             || entry.modified_at != modified_at
@@ -1023,6 +1354,7 @@ fn record_thumbnail_cache(
             modified_at,
             capture_position: thumbnail_capture_cache_key(capture_position).to_string(),
             thumbnail_file,
+            last_accessed_at: current_unix_millis(),
         },
     );
     if persist_immediately {
@@ -1073,6 +1405,7 @@ fn generate_thumbnail_batch_impl(
     thumbnail_index: Arc<Mutex<ThumbnailIndex>>,
     thumbnail_cache_dir: PathBuf,
     capture_position: String,
+    cache_limit_bytes: u64,
     app_handle: tauri::AppHandle,
 ) -> Result<ThumbnailBatchResult, String> {
     media_processing::generate_thumbnail_batch_impl(
@@ -1081,6 +1414,7 @@ fn generate_thumbnail_batch_impl(
         thumbnail_index,
         thumbnail_cache_dir,
         capture_position,
+        cache_limit_bytes,
         app_handle,
     )
 }
@@ -1286,11 +1620,25 @@ async fn scan_workspace(
 }
 
 #[tauri::command]
-fn save_configuration(settings: Preferences) -> Result<AppConfig, String> {
-    update_config(move |config| {
+fn save_configuration(
+    settings: Preferences,
+    thumbnail_index: tauri::State<'_, ThumbnailIndexState>,
+    thumbnail_cache_directory: tauri::State<'_, ThumbnailCacheDirectory>,
+) -> Result<AppConfig, String> {
+    let configuration = update_config(move |config| {
         config.settings = settings;
         Ok(())
-    })
+    })?;
+    let mut index = thumbnail_index
+        .0
+        .lock()
+        .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
+    maintain_thumbnail_cache(
+        &thumbnail_cache_directory.0,
+        &mut index,
+        thumbnail_cache_limit_bytes(configuration.settings.thumbnail_cache_gb),
+    )?;
+    Ok(configuration)
 }
 
 #[tauri::command]
@@ -1649,13 +1997,14 @@ async fn generate_thumbnails(
     let thumbnail_index = Arc::clone(&thumbnail_index.0);
     let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let capture_position = load_config()?.settings.thumbnail_capture_position;
+        let settings = load_config()?.settings;
         generate_thumbnail_batch_impl(
             paths,
             media_sidecar_pool,
             thumbnail_index,
             thumbnail_cache_dir,
-            capture_position,
+            settings.thumbnail_capture_position,
+            thumbnail_cache_limit_bytes(settings.thumbnail_cache_gb),
             app_handle,
         )
     })
@@ -1668,9 +2017,9 @@ async fn probe_video_metadata_batch_command(
     paths: Vec<String>,
     media_sidecar_pool: tauri::State<'_, MediaSidecarPool>,
 ) -> Result<MetadataBatchResult, String> {
-    if paths.len() > MAX_PARALLEL_THUMBNAIL_TASKS {
+    if paths.len() > MAX_THUMBNAIL_BATCH_SIZE {
         return Err(format!(
-            "A metadata batch may contain at most {MAX_PARALLEL_THUMBNAIL_TASKS} videos."
+            "A metadata batch may contain at most {MAX_THUMBNAIL_BATCH_SIZE} videos."
         ));
     }
     let media_sidecar_pool = Arc::clone(&media_sidecar_pool.0);
@@ -1863,6 +2212,19 @@ fn main() {
     let log_directory = log_dir().expect("failed to create VideoSweeper log directory");
     let thumbnail_cache_directory =
         thumbnail_cache_dir().expect("failed to create VideoSweeper thumbnail cache directory");
+    let mut thumbnail_index = load_thumbnail_index_from(&thumbnail_cache_directory);
+    let cache_limit_bytes = thumbnail_cache_limit_bytes(
+        load_config()
+            .expect("failed to load VideoSweeper configuration")
+            .settings
+            .thumbnail_cache_gb,
+    );
+    maintain_thumbnail_cache(
+        &thumbnail_cache_directory,
+        &mut thumbnail_index,
+        cache_limit_bytes,
+    )
+    .unwrap_or_else(|error| eprintln!("Unable to maintain the thumbnail cache: {error}"));
     let transcode_controller = Arc::new(TranscodeController::new());
     let video_stream_server = match start_video_stream_server(Arc::clone(&transcode_controller)) {
         Ok(base_url) => VideoStreamServer {
@@ -1881,14 +2243,12 @@ fn main() {
         .manage(ContextMenuState(Mutex::new(None)))
         .manage(WorkspaceWatchState::new())
         .manage(MediaSidecarPool(Arc::new(MediaSidecarPermits::new(
-            MAX_PARALLEL_THUMBNAIL_TASKS,
+            recommended_media_sidecar_concurrency(),
         ))))
         .manage(ThumbnailReadPool(Arc::new(ThumbnailReadPermits::new(
             MAX_PARALLEL_THUMBNAIL_READS,
         ))))
-        .manage(ThumbnailIndexState(Arc::new(Mutex::new(
-            load_thumbnail_index(),
-        ))))
+        .manage(ThumbnailIndexState(Arc::new(Mutex::new(thumbnail_index))))
         .manage(ThumbnailCacheDirectory(thumbnail_cache_directory))
         .manage(video_stream_server)
         .manage(start_file_operation_queue())

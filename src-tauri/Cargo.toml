@@ -1,6 +1,6 @@
 [package]
 name = "video-sweeper"
-version = "0.5.0"
+version = "0.6.0"
 description = "A local video management application"
 authors = ["Ayanami"]
 edition = "2021"

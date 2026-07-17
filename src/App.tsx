@@ -19,7 +19,7 @@ import {
   GRID_ROW_HEIGHT,
   LIST_ROW_HEIGHT,
   listColumnLabels,
-  MAX_THUMBNAIL_CONCURRENCY,
+  MAX_THUMBNAIL_BATCH_SIZE,
   type AppConfig,
   type ApplicationState,
   type ColorMode,
@@ -71,6 +71,8 @@ import {
   ClipboardCopy,
   ClipboardPaste,
   ChevronDown,
+  ChevronsUp,
+  CircleDot,
   Folder,
   FolderOpen,
   Grid2X2,
@@ -110,6 +112,24 @@ import {
 
 
 
+
+function materialStandardEasing(progress: number) {
+  let lower = 0;
+  let upper = 1;
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const parameter = (lower + upper) / 2;
+    const inverse = 1 - parameter;
+    const x = 3 * inverse * inverse * parameter * 0.2 + 3 * inverse * parameter * parameter * 0;
+    if (x < progress) {
+      lower = parameter;
+    } else {
+      upper = parameter;
+    }
+  }
+  const parameter = (lower + upper) / 2;
+  const inverse = 1 - parameter;
+  return 3 * inverse * parameter * parameter + parameter * parameter * parameter;
+}
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(fallbackConfig);
@@ -191,6 +211,7 @@ export default function App() {
   const liveLogCounter = useRef(0);
   const audioPreferenceTimer = useRef<number | null>(null);
   const fileTaskDismissTimer = useRef<number | null>(null);
+  const workspaceScrollAnimation = useRef<number | null>(null);
   const completedFileTasks = useRef<Set<number>>(new Set());
   const pendingAudioConfig = useRef<{ volume: number; muted: boolean } | null>(null);
 
@@ -324,6 +345,60 @@ export default function App() {
     estimateSize: () => LIST_ROW_HEIGHT,
     overscan: 8,
   });
+
+  const animateWorkspaceScroll = useCallback((element: HTMLDivElement | null, targetOffset: number) => {
+    if (!element) {
+      return;
+    }
+    if (workspaceScrollAnimation.current !== null) {
+      window.cancelAnimationFrame(workspaceScrollAnimation.current);
+    }
+    const startOffset = element.scrollTop;
+    const distance = targetOffset - startOffset;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || Math.abs(distance) < 1) {
+      element.scrollTop = targetOffset;
+      return;
+    }
+    const duration = Math.min(560, Math.max(220, 180 + Math.abs(distance) * 0.08));
+    const startedAt = performance.now();
+    const update = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      element.scrollTop = startOffset + distance * materialStandardEasing(progress);
+      if (progress < 1) {
+        workspaceScrollAnimation.current = window.requestAnimationFrame(update);
+      } else {
+        workspaceScrollAnimation.current = null;
+      }
+    };
+    workspaceScrollAnimation.current = window.requestAnimationFrame(update);
+  }, []);
+
+  const scrollWorkspaceToStart = useCallback(() => {
+    if (viewMode === "grid") {
+      animateWorkspaceScroll(gridScrollElement.current, 0);
+    } else {
+      animateWorkspaceScroll(listScrollElement.current, 0);
+    }
+  }, [animateWorkspaceScroll, viewMode]);
+
+  const scrollWorkspaceToFocus = useCallback(() => {
+    const focusPath = selectedVideo?.path ?? (workspace ? config.workspaceFocus[workspace.path]?.videoPath : null);
+    const videoIndex = focusPath ? visibleVideos.findIndex((video) => video.path === focusPath) : -1;
+    if (videoIndex < 0) {
+      notify("当前筛选结果中没有可定位的焦点视频");
+      return;
+    }
+    if (viewMode === "grid") {
+      const rowIndex = Math.floor(videoIndex / gridColumns);
+      const viewportHeight = gridScrollElement.current?.clientHeight ?? 0;
+      const targetOffset = Math.max(0, rowIndex * GRID_ROW_HEIGHT - (viewportHeight - GRID_ROW_HEIGHT) / 2);
+      animateWorkspaceScroll(gridScrollElement.current, targetOffset);
+    } else {
+      const viewportHeight = listScrollElement.current?.clientHeight ?? 0;
+      const targetOffset = Math.max(0, videoIndex * LIST_ROW_HEIGHT - (viewportHeight - LIST_ROW_HEIGHT) / 2);
+      animateWorkspaceScroll(listScrollElement.current, targetOffset);
+    }
+  }, [animateWorkspaceScroll, config.workspaceFocus, gridColumns, selectedVideo, viewMode, visibleVideos, workspace]);
 
   const themeStyle = {
     ...colorModeTokens[effectiveColorMode],
@@ -474,6 +549,9 @@ export default function App() {
       if (thumbnailScrollTimer.current) {
         window.clearTimeout(thumbnailScrollTimer.current);
       }
+      if (workspaceScrollAnimation.current !== null) {
+        window.cancelAnimationFrame(workspaceScrollAnimation.current);
+      }
     },
     [],
   );
@@ -491,7 +569,7 @@ export default function App() {
 
   runThumbnailQueue.current = () => {
     const tasks: ThumbnailTask[] = [];
-    while (thumbnailRequests.current.size + tasks.length < MAX_THUMBNAIL_CONCURRENCY) {
+    while (thumbnailRequests.current.size + tasks.length < MAX_THUMBNAIL_BATCH_SIZE) {
       const task = thumbnailQueue.current.shift();
       if (!task) {
         break;
@@ -893,9 +971,9 @@ export default function App() {
     setMetadataLoading(true);
     writeClientLog("info", `开始读取媒体信息：${paths.length} 个视频`);
     try {
-      for (let start = 0; start < paths.length; start += MAX_THUMBNAIL_CONCURRENCY) {
+      for (let start = 0; start < paths.length; start += MAX_THUMBNAIL_BATCH_SIZE) {
         const result = await invoke<MetadataBatchResult>("probe_video_metadata_batch_command", {
-          paths: paths.slice(start, start + MAX_THUMBNAIL_CONCURRENCY),
+          paths: paths.slice(start, start + MAX_THUMBNAIL_BATCH_SIZE),
         });
         if (requestId !== metadataRequest.current) {
           return;
@@ -2728,6 +2806,28 @@ export default function App() {
             )}
           </div>
         )}
+        {workspace && visibleVideos.length > 0 && (
+          <div className="workspace-scroll-actions" aria-label="工作区快速滚动">
+            <button
+              className="workspace-scroll-action"
+              type="button"
+              data-tooltip="回到焦点"
+              aria-label="回到焦点"
+              onClick={scrollWorkspaceToFocus}
+            >
+              <CircleDot size={18} />
+            </button>
+            <button
+              className="workspace-scroll-action"
+              type="button"
+              data-tooltip="回到开头"
+              aria-label="回到开头"
+              onClick={scrollWorkspaceToStart}
+            >
+              <ChevronsUp size={18} />
+            </button>
+          </div>
+        )}
         {isExternalDropActive && workspace && (
           <div className="workspace-drop-indicator" aria-hidden="true">
             <FolderOpen size={26} />
@@ -3080,15 +3180,18 @@ export default function App() {
                   <span className="number-input">
                     <input
                       type="number"
-                      min="0.25"
-                      max="100"
-                      step="0.25"
-                      value={settingsDraft.thumbnailCacheGb}
+                      min="256"
+                      max="102400"
+                      step="256"
+                      value={Math.round(settingsDraft.thumbnailCacheGb * 1024)}
                       onChange={(event) =>
-                        setSettingsDraft((draft) => ({ ...draft, thumbnailCacheGb: Number(event.target.value) }))
+                        setSettingsDraft((draft) => ({
+                          ...draft,
+                          thumbnailCacheGb: Number(event.target.value) / 1024,
+                        }))
                       }
                     />
-                    <em>GB</em>
+                    <em>MB</em>
                   </span>
                 </label>
                 <label className="setting-row">

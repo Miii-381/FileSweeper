@@ -161,10 +161,14 @@ pub(super) fn probe_video_metadata_batch(
             thread::spawn(move || {
                 let source_path = path.clone();
                 let result = (|| {
-                    let _permit = media_sidecar_pool.acquire()?;
+                    let mut permit = media_sidecar_pool.acquire()?;
                     let video_path = fs::canonicalize(&path)
                         .map_err(|error| format!("Unable to access this video: {error}"))?;
-                    probe_video_metadata(&video_path)
+                    let result = probe_video_metadata(&video_path);
+                    if result.is_err() {
+                        permit.mark_failed();
+                    }
+                    result
                 })();
                 (source_path, result)
             })
@@ -334,11 +338,12 @@ pub(super) fn generate_thumbnail_batch_impl(
     thumbnail_index: Arc<Mutex<ThumbnailIndex>>,
     thumbnail_cache_dir: PathBuf,
     capture_position: String,
+    cache_limit_bytes: u64,
     app_handle: tauri::AppHandle,
 ) -> Result<ThumbnailBatchResult, String> {
-    if paths.len() > MAX_PARALLEL_THUMBNAIL_TASKS {
+    if paths.len() > MAX_THUMBNAIL_BATCH_SIZE {
         return Err(format!(
-            "A thumbnail batch may contain at most {MAX_PARALLEL_THUMBNAIL_TASKS} videos."
+            "A thumbnail batch may contain at most {MAX_THUMBNAIL_BATCH_SIZE} videos."
         ));
     }
 
@@ -353,7 +358,7 @@ pub(super) fn generate_thumbnail_batch_impl(
             thread::spawn(move || {
                 let source_path = path.clone();
                 let result = (|| {
-                    let _permit = media_sidecar_pool.acquire()?;
+                    let mut permit = media_sidecar_pool.acquire()?;
                     let video_path = fs::canonicalize(&path)
                         .map_err(|error| format!("Unable to access this video: {error}"))?;
                     let thumbnail_path = generate_thumbnail_impl(
@@ -362,7 +367,11 @@ pub(super) fn generate_thumbnail_batch_impl(
                         &thumbnail_cache_dir,
                         &capture_position,
                         false,
-                    )?;
+                    );
+                    if thumbnail_path.is_err() {
+                        permit.mark_failed();
+                    }
+                    let thumbnail_path = thumbnail_path?;
                     Ok(ThumbnailResult {
                         path: path_string(&video_path),
                         thumbnail_path: path_string(&thumbnail_path),
@@ -394,8 +403,13 @@ pub(super) fn generate_thumbnail_batch_impl(
         let index = thumbnail_index
             .lock()
             .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
-        persist_thumbnail_index(&index)?;
+        persist_thumbnail_index_at(&thumbnail_cache_dir, &index)?;
     }
+
+    let mut index = thumbnail_index
+        .lock()
+        .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
+    maintain_thumbnail_cache(&thumbnail_cache_dir, &mut index, cache_limit_bytes)?;
 
     Ok(ThumbnailBatchResult {
         thumbnails,

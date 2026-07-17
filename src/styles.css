@@ -521,8 +521,9 @@
     color: var(--text-primary);
     font-synthesis: none;
     text-rendering: optimizelegibility;
-    --motion-fast: .12s;
-    --motion-standard: .18s;
+    --motion-fast: .14s;
+    --motion-standard: .24s;
+    --motion-standard-easing: cubic-bezier(.2, 0, 0, 1);
     background: var(--surface-base);
     font-family: Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI, sans-serif
 }
@@ -595,7 +596,7 @@ select,
 .video-card,
 .video-list-row,
 .tree-row {
-    transition: background-color var(--motion-standard) ease, border-color var(--motion-standard) ease, color var(--motion-standard) ease, box-shadow var(--motion-standard) ease, opacity var(--motion-fast) ease, transform var(--motion-fast) ease
+    transition: background-color var(--motion-standard) var(--motion-standard-easing), border-color var(--motion-standard) var(--motion-standard-easing), color var(--motion-standard) var(--motion-standard-easing), box-shadow var(--motion-standard) var(--motion-standard-easing), opacity var(--motion-fast) var(--motion-standard-easing), transform var(--motion-fast) var(--motion-standard-easing)
 }
 
 button:not(:disabled):active {
@@ -626,7 +627,8 @@ select:focus-visible {
     width: 100%;
     height: 100%;
     display: grid;
-    overflow: hidden
+    overflow: hidden;
+    animation: app-shell-enter .48s var(--motion-standard-easing) both
 }
 
 .titlebar {
@@ -636,7 +638,8 @@ select:focus-visible {
     align-items: center;
     min-width: 0;
     padding: 0 16px 0 20px;
-    display: flex
+    display: flex;
+    animation: titlebar-enter .42s var(--motion-standard-easing) both
 }
 
 .application-panels {
@@ -990,6 +993,69 @@ select:focus-visible {
     inset: 56px 0 0
 }
 
+.workspace-scroll-actions {
+    z-index: 7;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    display: flex;
+    position: absolute;
+    right: 18px;
+    bottom: 50px
+}
+
+.workspace-scroll-action {
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--surface-raised) 92%, #000);
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    box-shadow: 0 7px 18px #0005;
+    cursor: pointer;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    display: grid;
+    position: relative;
+    animation: floating-card-enter .32s var(--motion-standard-easing) both
+}
+
+.workspace-scroll-action:nth-child(2) {
+    animation-delay: .06s
+}
+
+.workspace-scroll-action:hover,
+.workspace-scroll-action:focus-visible {
+    color: var(--accent);
+    background: var(--surface-control);
+    border-color: var(--accent-focus)
+}
+
+.workspace-scroll-action::after {
+    content: attr(data-tooltip);
+    color: var(--text-primary);
+    white-space: nowrap;
+    background: color-mix(in srgb, var(--surface-raised) 96%, #000);
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    box-shadow: 0 5px 14px #0006;
+    pointer-events: none;
+    opacity: 0;
+    font-size: 11px;
+    padding: 4px 7px;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    transform: translateY(-3px);
+    transition: opacity 120ms ease, transform 120ms ease
+}
+
+.workspace-scroll-action:hover::after,
+.workspace-scroll-action:focus-visible::after {
+    opacity: 1;
+    transform: translateY(0)
+}
+
 .workspace-toolbar {
     background: var(--surface-raised);
     border-bottom: 1px solid var(--border-subtle);
@@ -1142,7 +1208,8 @@ select:focus-visible {
     align-items: center;
     gap: 14px;
     padding: 40px;
-    display: flex
+    display: flex;
+    animation: workspace-content-enter .38s var(--motion-standard-easing) both
 }
 
 .compact-empty {
@@ -1182,7 +1249,8 @@ select:focus-visible {
 
 .video-grid-virtualizer {
     min-width: var(--video-card-width);
-    position: relative
+    position: relative;
+    animation: workspace-content-enter .32s var(--motion-standard-easing) both
 }
 
 .video-grid-row {
@@ -1346,7 +1414,7 @@ select:focus-visible {
     width: 240px;
     padding: 6px;
     position: fixed;
-    animation: context-menu-enter 120ms ease-out
+    animation: context-menu-enter .16s var(--motion-standard-easing)
 }
 
 .workspace-context-menu-title {
@@ -1406,11 +1474,77 @@ select:focus-visible {
 @keyframes context-menu-enter {
     from {
         opacity: 0;
-        transform: scale(.97) translateY(-3px)
+        transform: scale(.98) translateY(-6px)
     }
     to {
         opacity: 1;
         transform: none
+    }
+}
+
+@keyframes app-shell-enter {
+    from {
+        opacity: 0;
+        transform: scale(.985)
+    }
+}
+
+@keyframes titlebar-enter {
+    from {
+        opacity: 0;
+        transform: translateY(-12px)
+    }
+}
+
+@keyframes workspace-content-enter {
+    from {
+        opacity: 0;
+        transform: translateY(14px) scale(.99)
+    }
+}
+
+@keyframes scrim-enter {
+    from {
+        opacity: 0
+    }
+}
+
+@keyframes dialog-enter {
+    from {
+        opacity: 0;
+        transform: translateY(24px) scale(.96)
+    }
+}
+
+@keyframes toast-enter {
+    from {
+        opacity: 0;
+        transform: translateY(18px) scale(.96)
+    }
+}
+
+@keyframes floating-card-enter {
+    from {
+        opacity: 0;
+        transform: translateX(20px) scale(.97)
+    }
+}
+
+@keyframes preview-panel-enter {
+    from {
+        opacity: 0;
+        transform: translateX(24px)
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    :before,
+    :after {
+        scroll-behavior: auto !important;
+        transition-duration: 1ms !important;
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important
     }
 }
 
@@ -1436,7 +1570,8 @@ select:focus-visible {
 
 .video-list-virtualizer {
     min-width: max-content;
-    position: relative
+    position: relative;
+    animation: workspace-content-enter .32s var(--motion-standard-easing) both
 }
 
 .list-header-cell {
@@ -1574,7 +1709,8 @@ select:focus-visible {
     min-width: 0;
     height: 100%;
     display: grid;
-    overflow: hidden
+    overflow: hidden;
+    animation: preview-panel-enter .42s var(--motion-standard-easing) both
 }
 
 .player-placeholder {
@@ -1892,7 +2028,8 @@ select:focus-visible {
     position: fixed;
     bottom: 22px;
     right: 22px;
-    box-shadow: 0 12px 32px #0000005c
+    box-shadow: 0 12px 32px #0000005c;
+    animation: toast-enter .32s var(--motion-standard-easing) both
 }
 
 .file-task-card {
@@ -1907,7 +2044,8 @@ select:focus-visible {
     right: 22px;
     bottom: 78px;
     box-shadow: 0 14px 36px #00000066;
-    backdrop-filter: blur(12px)
+    backdrop-filter: blur(12px);
+    animation: floating-card-enter .38s var(--motion-standard-easing) both
 }
 
 .file-task-heading,
@@ -1967,7 +2105,8 @@ select:focus-visible {
     place-items: center;
     display: grid;
     position: fixed;
-    inset: 0
+    inset: 0;
+    animation: scrim-enter .2s var(--motion-standard-easing) both
 }
 
 .metadata-loading-dialog {
@@ -1980,7 +2119,8 @@ select:focus-visible {
     min-width: 270px;
     padding: 18px 20px;
     display: flex;
-    box-shadow: 0 20px 48px #00000070
+    box-shadow: 0 20px 48px #00000070;
+    animation: dialog-enter .34s var(--motion-standard-easing) both
 }
 
 .metadata-loading-dialog div {
@@ -2015,7 +2155,8 @@ select:focus-visible {
     padding: 28px;
     display: grid;
     position: fixed;
-    inset: 0
+    inset: 0;
+    animation: scrim-enter .2s var(--motion-standard-easing) both
 }
 
 .settings-dialog {
@@ -2028,7 +2169,8 @@ select:focus-visible {
     max-height: min(780px, 100%);
     display: grid;
     overflow: hidden;
-    box-shadow: 0 28px 60px #0000007a
+    box-shadow: 0 28px 60px #0000007a;
+    animation: dialog-enter .36s var(--motion-standard-easing) both
 }
 
 .logs-dialog {
@@ -2041,7 +2183,8 @@ select:focus-visible {
     max-height: min(820px, 100%);
     display: grid;
     overflow: hidden;
-    box-shadow: 0 28px 60px #0000007a
+    box-shadow: 0 28px 60px #0000007a;
+    animation: dialog-enter .36s var(--motion-standard-easing) both
 }
 
 .settings-header,

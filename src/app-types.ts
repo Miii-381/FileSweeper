@@ -7,7 +7,7 @@ export type SortKey = "createdAt" | "name" | "size" | "duration" | "resolution";
 export type ListColumnId = "name" | "size" | "duration" | "resolution" | "modifiedAt";
 export type ThumbnailCapturePosition = "opening" | "early" | "middle" | "late" | "ending";
 
-export const MAX_THUMBNAIL_CONCURRENCY = 10;
+export const MAX_THUMBNAIL_BATCH_SIZE = 12;
 export const GRID_CARD_WIDTH = 220;
 // 180px card height plus the 16px vertical track gap kept between virtual rows.
 export const GRID_ROW_HEIGHT = 196;
@@ -240,7 +240,7 @@ export const fallbackConfig: AppConfig = {
   settings: {
     appearance: "dark",
     accentTheme: "teal",
-    thumbnailCacheGb: 2,
+    thumbnailCacheGb: 0.5,
     thumbnailCapturePosition: "middle",
     autoplay: true,
     volume: 100,
