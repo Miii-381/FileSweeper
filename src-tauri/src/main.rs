@@ -33,7 +33,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Condvar, Mutex, OnceLock,
     },
     thread,
@@ -50,23 +50,41 @@ use tower_http::services::ServeFile;
 use windows::{
     core::{HRESULT, HSTRING, PCWSTR},
     Win32::{
-        Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK},
+        Foundation::{
+            GlobalFree, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, HGLOBAL,
+            HWND, LPARAM, S_OK, WPARAM,
+        },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IDataObject,
-            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, DATADIR_GET, DVASPECT_CONTENT,
+            FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+        },
+        System::DataExchange::{
+            CloseClipboard, GetClipboardData, GetClipboardSequenceNumber,
+            IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+        },
+        System::Memory::{
+            GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
         },
         System::{
             Ole::{
-                DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize,
-                DROPEFFECT, DROPEFFECT_COPY,
+                DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleSetClipboard,
+                OleUninitialize, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE,
             },
             SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS},
+            Threading::GetCurrentThreadId,
         },
         UI::Shell::{
-            BHID_DataObject, Common::ITEMIDLIST, FileOperation, IFileOperation, IShellItem,
-            IsUserAnAdmin, SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists,
-            SHParseDisplayName, FOFX_RECYCLEONDELETE, FOF_NOCONFIRMATION,
+            BHID_DataObject, Common::ITEMIDLIST, DragQueryFileW, FileOperation, IFileOperation,
+            IShellFolder, IShellItem, IsUserAnAdmin, SHBindToParent, SHCreateDataObject,
+            SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists,
+            SHOpenFolderAndSelectItems, SHParseDisplayName, FOFX_RECYCLEONDELETE,
+            FOF_NOCONFIRMATION, HDROP,
+        },
+        UI::WindowsAndMessaging::{
+            DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, TranslateMessage, MSG,
+            PM_NOREMOVE, WM_APP,
         },
     },
 };
@@ -672,6 +690,63 @@ struct CopyResult {
     failed_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum FileTaskOperation {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum FileTaskState {
+    Queued,
+    Running,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum FileTaskItemStatus {
+    Completed,
+    Skipped,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FileTaskItemResult {
+    source_path: String,
+    destination_path: Option<String>,
+    status: FileTaskItemStatus,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileTaskSnapshot {
+    id: u64,
+    operation: FileTaskOperation,
+    state: FileTaskState,
+    destination_path: String,
+    total_items: usize,
+    completed_items: usize,
+    results: Vec<FileTaskItemResult>,
+}
+
+#[derive(Clone)]
+struct FileTaskControl {
+    snapshot: Arc<Mutex<FileTaskSnapshot>>,
+    cancel: Arc<AtomicBool>,
+}
+
+struct ClipboardFiles {
+    paths: Vec<String>,
+    operation: FileTaskOperation,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ThumbnailResult {
@@ -724,9 +799,35 @@ enum FileOperationTask {
         destination: PathBuf,
         response: mpsc::Sender<CopyResult>,
     },
+    Transfer {
+        control: FileTaskControl,
+        paths: Vec<String>,
+        destination: PathBuf,
+        operation: FileTaskOperation,
+        app_handle: tauri::AppHandle,
+    },
 }
 
-struct FileOperationQueue(mpsc::Sender<FileOperationTask>);
+enum ClipboardOperationTask {
+    WriteClipboard {
+        paths: Vec<PathBuf>,
+        operation: FileTaskOperation,
+        owner: Option<isize>,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    ReadClipboard {
+        response: mpsc::Sender<Result<ClipboardFiles, String>>,
+    },
+}
+
+struct FileOperationQueue {
+    sender: mpsc::Sender<FileOperationTask>,
+    clipboard_sender: mpsc::Sender<ClipboardOperationTask>,
+    #[cfg(target_os = "windows")]
+    clipboard_thread_id: u32,
+    tasks: Arc<Mutex<HashMap<u64, FileTaskControl>>>,
+    next_task_id: AtomicU64,
+}
 
 fn app_data_dir() -> Result<PathBuf, String> {
     let executable = std::env::current_exe()
@@ -1448,6 +1549,88 @@ fn copy_videos_to_workspace(
     enqueue_copy(paths, destination, &queue)
 }
 
+fn normalize_transfer_destination(path: String) -> Result<PathBuf, String> {
+    let destination = fs::canonicalize(path)
+        .map_err(|error| format!("Unable to access the destination folder: {error}"))?;
+    if !destination.is_dir() {
+        return Err("The transfer destination is not a folder.".to_string());
+    }
+    Ok(destination)
+}
+
+#[tauri::command]
+fn start_file_task(
+    paths: Vec<String>,
+    destination_path: String,
+    operation: FileTaskOperation,
+    app_handle: tauri::AppHandle,
+    queue: tauri::State<FileOperationQueue>,
+) -> Result<FileTaskSnapshot, String> {
+    let destination = normalize_transfer_destination(destination_path)?;
+    file_operations::start_transfer_task(paths, destination, operation, app_handle, &queue)
+}
+
+#[tauri::command]
+fn get_file_task(
+    task_id: u64,
+    queue: tauri::State<FileOperationQueue>,
+) -> Result<FileTaskSnapshot, String> {
+    file_operations::get_file_task(task_id, &queue)
+}
+
+#[tauri::command]
+fn cancel_file_task(task_id: u64, queue: tauri::State<FileOperationQueue>) -> Result<bool, String> {
+    file_operations::cancel_file_task(task_id, &queue)
+}
+
+#[tauri::command]
+fn write_files_to_clipboard(
+    paths: Vec<String>,
+    operation: FileTaskOperation,
+    window: tauri::WebviewWindow,
+    queue: tauri::State<FileOperationQueue>,
+) -> Result<(), String> {
+    log::info!(
+        "Received file clipboard write request: operation={operation:?}, requested_paths={}",
+        paths.len()
+    );
+    let paths = normalize_video_paths(paths)?;
+    #[cfg(target_os = "windows")]
+    let owner = Some(
+        window
+            .hwnd()
+            .map_err(|error| format!("Unable to resolve the clipboard owner window: {error}"))?
+            .0 as isize,
+    );
+    #[cfg(not(target_os = "windows"))]
+    let owner = None;
+    file_operations::enqueue_write_clipboard(paths, operation, owner, &queue)
+}
+
+#[tauri::command]
+fn paste_files_from_clipboard(
+    destination_path: String,
+    app_handle: tauri::AppHandle,
+    queue: tauri::State<FileOperationQueue>,
+) -> Result<FileTaskSnapshot, String> {
+    log::info!("Received file clipboard paste request: destination={destination_path}");
+    let destination = normalize_transfer_destination(destination_path)?;
+    let clipboard = file_operations::enqueue_read_clipboard(&queue)?;
+    log::info!(
+        "Creating file task from clipboard: operation={:?}, files={}, destination={}",
+        clipboard.operation,
+        clipboard.paths.len(),
+        path_string(&destination)
+    );
+    file_operations::start_transfer_task(
+        clipboard.paths,
+        destination,
+        clipboard.operation,
+        app_handle,
+        &queue,
+    )
+}
+
 #[tauri::command]
 async fn generate_thumbnails(
     paths: Vec<String>,
@@ -1604,7 +1787,7 @@ fn reveal_path(path: String) -> Result<(), String> {
     if metadata.is_dir() {
         explorer.arg(&target);
     } else {
-        explorer.arg(format!("/select,{}", path_string(&target)));
+        return windows_shell::reveal_windows_path(&target);
     }
     explorer
         .spawn()
@@ -1765,7 +1948,7 @@ fn main() {
                             if let Err(error) = stop_result {
                                 return eprintln!("{error}");
                             }
-                            let queue = app.state::<FileOperationQueue>().0.clone();
+                            let queue = app.state::<FileOperationQueue>().sender.clone();
                             let (response_sender, response_receiver) = mpsc::channel();
                             match queue.send(FileOperationTask::Recycle {
                                 paths: target.operation_paths,
@@ -1832,6 +2015,11 @@ fn main() {
             recycle_videos,
             rename_video,
             copy_videos_to_workspace,
+            start_file_task,
+            get_file_task,
+            cancel_file_task,
+            write_files_to_clipboard,
+            paste_files_from_clipboard,
             reveal_path
         ])
         .run(tauri::generate_context!())

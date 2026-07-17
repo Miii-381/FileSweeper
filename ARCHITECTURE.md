@@ -68,7 +68,9 @@ VideoSweeper 是 Windows 本地视频文件管理器。它只枚举当前工作�
 
 ### 文件操作
 
-复制、重命名和回收站删除走单一 STA 线程中的 Windows `IFileOperation`。拖入复制使用临时文件、长度校验和最终改名；同名文件递增命名。拖出使用 Shell `IDataObject` 与 `DoDragDrop`，仅协商 COPY 效果。
+复制、移动、重命名和回收站删除走文件操作 STA 线程；系统文件剪贴板使用单独的 STA/OLE 线程，避免与大文件任务互相阻塞。复制与移动任务具有任务 ID、逐文件结果、项目级进度和未开始项目取消；写入目标先使用临时文件和长度校验，再以不覆盖的原子改名提交。移动仅在目标提交成功后删除源文件，删除失败会回滚目标；同名文件递增命名。剪贴板写入使用共同父目录的绝对 PIDL 和各文件的一层相对子 PIDL，通过 `SHCreateDataObject` 创建 Shell `IDataObject`，附加标准 COPY 或 MOVE Preferred DropEffect 后经 `OleSetClipboard` 发布。数据对象由剪贴板 STA 线程持续持有，线程通过 `GetMessage`/`DispatchMessage` 常驻消息循环调度 Explorer 的跨进程 COM 请求；应用运行期间不立即调用 `OleFlushClipboard`，也不在发布后同步打开剪贴板自读。剪贴板读取继续兼容资源管理器的宽字符 `CF_HDROP`。拖出仍使用 Shell Item Array 的 `BHID_DataObject` 与 `DoDragDrop`，仅协商 COPY 效果。
+
+右栏播放器的全屏根节点包含媒体画面和控制条。全屏时控制条改为底部渐变悬浮层，播放期间无指针活动会自动隐藏，移动指针后恢复；普通右栏模式仍使用固定控制条。
 
 普通权限资源管理器无法向管理员权限应用拖入文件，这是 Windows UIPI 限制；应用会检测管理员运行状态并提示。
 

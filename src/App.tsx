@@ -23,10 +23,11 @@ import {
   type AppConfig,
   type ApplicationState,
   type ColorMode,
-  type CopyResult,
   type DirectoryEntry,
   type DirectoryChildren,
   type FileDragGesture,
+  type FileTaskOperation,
+  type FileTaskSnapshot,
   type ListColumn,
   type ListColumnId,
   type LiveLogEntry,
@@ -68,6 +69,7 @@ import {
   ArrowDown,
   ArrowUp,
   ClipboardCopy,
+  ClipboardPaste,
   ChevronDown,
   Folder,
   FolderOpen,
@@ -82,6 +84,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Scissors,
   Settings,
   SlidersHorizontal,
   ScrollText,
@@ -143,6 +146,7 @@ export default function App() {
   const [isExternalDropActive, setIsExternalDropActive] = useState(false);
   const [workspaceSelectionBox, setWorkspaceSelectionBox] = useState<WorkspaceSelectionBox | null>(null);
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenu | null>(null);
+  const [activeFileTask, setActiveFileTask] = useState<FileTaskSnapshot | null>(null);
   const [gridColumns, setGridColumns] = useState(1);
   const [gridViewport, setGridViewport] = useState<HTMLDivElement | null>(null);
   const [suppressPreviewAutoplay, setSuppressPreviewAutoplay] = useState(false);
@@ -186,6 +190,8 @@ export default function App() {
   const thumbnailFailures = useRef<Set<string>>(new Set());
   const liveLogCounter = useRef(0);
   const audioPreferenceTimer = useRef<number | null>(null);
+  const fileTaskDismissTimer = useRef<number | null>(null);
+  const completedFileTasks = useRef<Set<number>>(new Set());
   const pendingAudioConfig = useRef<{ volume: number; muted: boolean } | null>(null);
 
   const persistWorkspaceFocus = useCallback(async (workspacePath: string, videoPath: string) => {
@@ -1444,26 +1450,34 @@ export default function App() {
     }
   };
 
-  const copyDroppedVideos = async (paths: string[], workspacePath: string) => {
+  const startTransferTask = async (
+    paths: string[],
+    destinationPath: string,
+    operation: FileTaskOperation = "copy",
+  ) => {
+    if (paths.length === 0) {
+      return null;
+    }
     try {
-      const result = await invoke<CopyResult>("copy_videos_to_workspace", { paths, workspacePath });
-      if (result.copiedPaths.length > 0) {
-        await refreshWorkspace(workspacePath, "拖入复制");
+      if (fileTaskDismissTimer.current !== null) {
+        window.clearTimeout(fileTaskDismissTimer.current);
+        fileTaskDismissTimer.current = null;
       }
-      if (result.failedPaths.length > 0 || result.skippedPaths.length > 0) {
-        notify(`已复制 ${result.copiedPaths.length} 个视频，跳过 ${result.skippedPaths.length} 个，失败 ${result.failedPaths.length} 个`);
-      } else {
-        notify(`已复制 ${result.copiedPaths.length} 个视频`);
-      }
-      writeClientLog(
-        result.failedPaths.length > 0 ? "warn" : "info",
-        `拖入复制完成：成功 ${result.copiedPaths.length}，跳过 ${result.skippedPaths.length}，失败 ${result.failedPaths.length}`,
-      );
+      const task = await invoke<FileTaskSnapshot>("start_file_task", { paths, destinationPath, operation });
+      setActiveFileTask(task);
+      notify(`${operation === "move" ? "移动" : "复制"}任务 #${task.id} 已加入队列`);
+      writeClientLog("info", `文件任务 #${task.id} 已创建：${operation} ${paths.length} 个项目到 ${destinationPath}`);
+      return task;
     } catch (error) {
       const message = errorMessage(error);
       notify(message);
-      writeClientLog("error", `拖入复制失败：${message}`);
+      writeClientLog("error", `创建文件任务失败：${message}`);
+      return null;
     }
+  };
+
+  const copyDroppedVideos = async (paths: string[], workspacePath: string) => {
+    await startTransferTask(paths, workspacePath, "copy");
   };
 
   const copyVideosToDirectory = async (paths: string[]) => {
@@ -1475,19 +1489,61 @@ export default function App() {
       if (typeof destination !== "string") {
         return;
       }
-      const result = await invoke<CopyResult>("copy_videos_to_workspace", { paths, workspacePath: destination });
-      if (result.copiedPaths.length > 0 && workspace?.path === destination) {
-        await refreshWorkspace(destination, "复制到当前工作区");
-      }
-      notify(`已复制 ${result.copiedPaths.length} 个视频，跳过 ${result.skippedPaths.length} 个，失败 ${result.failedPaths.length} 个`);
-      writeClientLog(
-        result.failedPaths.length > 0 ? "warn" : "info",
-        `复制到目录完成：成功 ${result.copiedPaths.length}，跳过 ${result.skippedPaths.length}，失败 ${result.failedPaths.length}`,
-      );
+      await startTransferTask(paths, destination, "copy");
     } catch (error) {
       const message = errorMessage(error);
       notify(message);
       writeClientLog("error", `复制到目录失败：${message}`);
+    }
+  };
+
+  const writeSelectionToFileClipboard = async (operation: FileTaskOperation) => {
+    const paths = [...selectedVideos];
+    if (paths.length === 0) {
+      return;
+    }
+    try {
+      await invoke("write_files_to_clipboard", { paths, operation });
+      notify(`已${operation === "move" ? "剪切" : "复制"} ${paths.length} 个视频，可粘贴到本应用或资源管理器`);
+      writeClientLog("info", `写入系统文件剪贴板：${operation} ${paths.length} 个视频`);
+    } catch (error) {
+      const message = errorMessage(error);
+      notify(message);
+      writeClientLog("error", `写入系统文件剪贴板失败：${message}`);
+    }
+  };
+
+  const pasteFileClipboard = async () => {
+    if (!workspace?.isAvailable) {
+      return;
+    }
+    try {
+      if (fileTaskDismissTimer.current !== null) {
+        window.clearTimeout(fileTaskDismissTimer.current);
+        fileTaskDismissTimer.current = null;
+      }
+      const task = await invoke<FileTaskSnapshot>("paste_files_from_clipboard", {
+        destinationPath: workspace.path,
+      });
+      setActiveFileTask(task);
+      notify(`${task.operation === "move" ? "移动" : "复制"}任务 #${task.id} 已加入队列`);
+      writeClientLog("info", `从系统文件剪贴板创建任务 #${task.id}，目标 ${workspace.path}`);
+    } catch (error) {
+      const message = errorMessage(error);
+      notify(message);
+      writeClientLog("error", `粘贴系统文件剪贴板失败：${message}`);
+    }
+  };
+
+  const cancelActiveFileTask = async () => {
+    if (!activeFileTask || !["queued", "running"].includes(activeFileTask.state)) {
+      return;
+    }
+    try {
+      const accepted = await invoke<boolean>("cancel_file_task", { taskId: activeFileTask.id });
+      notify(accepted ? `正在取消任务 #${activeFileTask.id} 的未开始项目` : `任务 #${activeFileTask.id} 已无法取消`);
+    } catch (error) {
+      notify(errorMessage(error));
     }
   };
 
@@ -1520,14 +1576,16 @@ export default function App() {
     const primaryPath = paths[0] ?? null;
     setWorkspaceContextMenu({
       x: Math.max(12, Math.min(event.clientX, window.innerWidth - 252)),
-      y: Math.max(12, Math.min(event.clientY, window.innerHeight - (paths.length > 0 ? 252 : 146))),
+      y: Math.max(12, Math.min(event.clientY, window.innerHeight - (paths.length > 0 ? 342 : 190))),
       workspacePath: workspace.path,
       paths,
       primaryPath,
     });
   };
 
-  const runWorkspaceContextMenuAction = async (action: "open" | "reveal" | "copy" | "delete" | "refresh") => {
+  const runWorkspaceContextMenuAction = async (
+    action: "open" | "reveal" | "copyTo" | "clipboardCopy" | "clipboardCut" | "paste" | "delete" | "refresh",
+  ) => {
     const menu = workspaceContextMenu;
     setWorkspaceContextMenu(null);
     if (!menu) {
@@ -1540,8 +1598,16 @@ export default function App() {
         await invoke("open_video_externally", { path: menu.primaryPath });
       } else if (action === "reveal") {
         await invoke("reveal_path", { path: menu.primaryPath ?? menu.workspacePath });
-      } else if (action === "copy" && menu.paths.length > 0) {
+      } else if (action === "copyTo" && menu.paths.length > 0) {
         await copyVideosToDirectory(menu.paths);
+      } else if (action === "clipboardCopy" && menu.paths.length > 0) {
+        await invoke("write_files_to_clipboard", { paths: menu.paths, operation: "copy" });
+        notify(`已复制 ${menu.paths.length} 个视频到系统文件剪贴板`);
+      } else if (action === "clipboardCut" && menu.paths.length > 0) {
+        await invoke("write_files_to_clipboard", { paths: menu.paths, operation: "move" });
+        notify(`已剪切 ${menu.paths.length} 个视频到系统文件剪贴板`);
+      } else if (action === "paste") {
+        await pasteFileClipboard();
       } else if (action === "delete" && menu.paths.length > 0) {
         await recycleVideos(menu.paths);
       }
@@ -1818,6 +1884,43 @@ export default function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    void listen<FileTaskSnapshot>("file-task-progress", (event) => {
+      const task = event.payload;
+      setActiveFileTask((current) => (!current || current.id === task.id || task.id > current.id ? task : current));
+      if (!["completed", "cancelled"].includes(task.state) || completedFileTasks.current.has(task.id)) {
+        return;
+      }
+      completedFileTasks.current.add(task.id);
+      const completed = task.results.filter((result) => result.status === "completed").length;
+      const skipped = task.results.filter((result) => result.status === "skipped").length;
+      const failed = task.results.filter((result) => result.status === "failed").length;
+      const cancelled = task.results.filter((result) => result.status === "cancelled").length;
+      const verb = task.operation === "move" ? "移动" : "复制";
+      notify(`${verb}任务 #${task.id}：成功 ${completed}，跳过 ${skipped}，失败 ${failed}${cancelled ? `，取消 ${cancelled}` : ""}`);
+      writeClientLog(
+        failed > 0 ? "warn" : "info",
+        `文件任务 #${task.id} 完成：${verb}成功 ${completed}，跳过 ${skipped}，失败 ${failed}，取消 ${cancelled}`,
+      );
+      if (workspace?.path) {
+        void refreshWorkspace(workspace.path, `文件任务 #${task.id} 完成`);
+      }
+      if (fileTaskDismissTimer.current !== null) {
+        window.clearTimeout(fileTaskDismissTimer.current);
+      }
+      fileTaskDismissTimer.current = window.setTimeout(() => {
+        setActiveFileTask((current) => (current?.id === task.id ? null : current));
+        fileTaskDismissTimer.current = null;
+      }, 5000);
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch((error: unknown) => writeClientLog("warn", `文件任务监听不可用：${errorMessage(error)}`));
+    return () => unlisten?.();
+  }, [workspace?.path]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
     void listen<ThumbnailResult>("thumbnail-generated", (event) => applyThumbnailResult(event.payload)).then((cleanup) => {
       unlisten = cleanup;
     });
@@ -1861,6 +1964,29 @@ export default function App() {
       if (isEditing || isSettingsOpen) {
         return;
       }
+      const modifier = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (modifier && key === "c" && selectedVideos.size > 0) {
+        event.preventDefault();
+        if (!event.repeat) {
+          void writeSelectionToFileClipboard("copy");
+        }
+        return;
+      }
+      if (modifier && key === "x" && selectedVideos.size > 0) {
+        event.preventDefault();
+        if (!event.repeat) {
+          void writeSelectionToFileClipboard("move");
+        }
+        return;
+      }
+      if (modifier && key === "v" && workspace?.isAvailable) {
+        event.preventDefault();
+        if (!event.repeat) {
+          void pasteFileClipboard();
+        }
+        return;
+      }
       if (event.key === "Delete" && selectedVideos.size > 0) {
         event.preventDefault();
         void recycleSelectedVideos();
@@ -1872,7 +1998,7 @@ export default function App() {
         startInlineRename(path);
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a" && visibleVideos.length > 0) {
+      if (modifier && key === "a" && visibleVideos.length > 0) {
         event.preventDefault();
         setSelectedVideos(new Set(visibleVideos.map((video) => video.path)));
         setSelectionAnchor(visibleVideos[visibleVideos.length - 1]?.path ?? null);
@@ -1904,7 +2030,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handleWorkspaceKeyboard);
     return () => window.removeEventListener("keydown", handleWorkspaceKeyboard);
-  }, [isSettingsOpen, metadataLoading, selectedVideos, selectionAnchor, visibleVideos]);
+  }, [isSettingsOpen, metadataLoading, selectedVideos, selectionAnchor, visibleVideos, workspace?.isAvailable, workspace?.path]);
 
   useEffect(() => {
     if (!renamingPath) {
@@ -2692,6 +2818,30 @@ export default function App() {
       </PanelGroup>
       </div>
 
+      {activeFileTask && (
+        <section className="file-task-card" aria-label={`文件任务 ${activeFileTask.id}`}>
+          <div className="file-task-heading">
+            <div>
+              <strong>{activeFileTask.operation === "move" ? "移动" : "复制"}任务 #{activeFileTask.id}</strong>
+              <span>
+                {activeFileTask.state === "queued" && "等待开始"}
+                {activeFileTask.state === "running" && `正在处理 ${Math.min(activeFileTask.totalItems, activeFileTask.completedItems + 1)} / ${activeFileTask.totalItems}`}
+                {activeFileTask.state === "completed" && "已完成"}
+                {activeFileTask.state === "cancelled" && "已取消未开始项目"}
+              </span>
+            </div>
+            {["queued", "running"].includes(activeFileTask.state) && (
+              <button type="button" onClick={() => void cancelActiveFileTask()}>取消</button>
+            )}
+          </div>
+          <progress max={Math.max(1, activeFileTask.totalItems)} value={activeFileTask.completedItems} />
+          <div className="file-task-summary" title={activeFileTask.results.find((result) => result.error)?.error ?? undefined}>
+            <span>成功 {activeFileTask.results.filter((result) => result.status === "completed").length}</span>
+            <span>跳过 {activeFileTask.results.filter((result) => result.status === "skipped").length}</span>
+            <span>失败 {activeFileTask.results.filter((result) => result.status === "failed").length}</span>
+          </div>
+        </section>
+      )}
       {toast && <div className="toast" role="status">{toast}</div>}
 
       {workspaceContextMenu && (
@@ -2713,8 +2863,16 @@ export default function App() {
                 <FolderOpen size={16} />
                 在资源管理器中显示
               </button>
-              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("copy")}>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("clipboardCopy")}>
                 <ClipboardCopy size={16} />
+                复制 <span className="menu-shortcut">Ctrl+C</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("clipboardCut")}>
+                <Scissors size={16} />
+                剪切 <span className="menu-shortcut">Ctrl+X</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("copyTo")}>
+                <FolderOpen size={16} />
                 复制到…
               </button>
               <div className="workspace-context-menu-separator" />
@@ -2732,6 +2890,10 @@ export default function App() {
               </button>
             </>
           )}
+          <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("paste")}>
+            <ClipboardPaste size={16} />
+            粘贴 <span className="menu-shortcut">Ctrl+V</span>
+          </button>
           <div className="workspace-context-menu-separator" />
           <button type="button" role="menuitem" onClick={() => void runWorkspaceContextMenuAction("refresh")}>
             <RefreshCw size={16} />

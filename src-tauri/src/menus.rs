@@ -94,9 +94,5 @@ pub(super) fn reveal_context_target(target: &ContextMenuTarget) -> Result<(), St
         return open_context_target(target);
     }
 
-    Command::new("explorer.exe")
-        .arg(format!("/select,{}", path_string(&target.path)))
-        .spawn()
-        .map_err(|error| format!("Unable to show the selected item: {error}"))?;
-    Ok(())
+    windows_shell::reveal_windows_path(&target.path)
 }

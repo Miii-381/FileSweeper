@@ -49,6 +49,10 @@
 - 文件操作的原子边界为单文件，不承诺整个批次是单一事务。
 - 所有用户可见的复制、移动、重命名和回收站删除统一使用 Windows `IFileOperation`，由专用 STA 线程串行执行。
 - 复制使用目标目录临时文件、长度校验、最终改名的提交流程。复制失败立即清理临时文件；每次工作区枚举时清理该目录中遗留的应用临时文件。
+- 文件任务以单调递增 ID 标识，公开排队、运行、完成、取消状态和逐文件结果；取消只阻止尚未开始的项目，不强行中断正在执行的单文件 Shell 操作。
+- 移动复用复制校验与无覆盖提交，目标提交后才永久删除源文件；源删除失败时回滚目标，宁可保留重复文件并报告失败，也不先损坏源文件。
+- 系统文件剪贴板写入通过共同父目录绝对 PIDL 和一层相对子 PIDL 调用 `SHCreateDataObject` 创建 Shell `IDataObject`，再由独立 STA/OLE 线程调用 `OleSetClipboard`。数据对象必须保持存活，STA 线程必须运行阻塞式 Windows 消息循环以调度 Explorer 的 COM 请求；Rust channel 只保存任务，发送后通过线程消息唤醒，禁止让 STA 阻塞在 `recv()`。应用运行期间不立即调用 `OleFlushClipboard`，也不在发布返回前使用 `OpenClipboard` 同步回读。Shell 提供宽字符 `CF_HDROP` 和 `CFSTR_SHELLIDLIST`，Preferred DropEffect 严格使用 COPY（`0x1`）或 MOVE（`0x2`）。读取外部剪贴板时缺少 Preferred DropEffect 则默认复制。拖出暂时保留 Shell Item Array 的 `BHID_DataObject`，与剪贴板构造路径分开验证。
+- “在资源管理器中显示”使用 `SHOpenFolderAndSelectItems`，不拼接 Explorer `/select,路径` 命令行；后者对带空格路径的非标准引号解析会错误回退到 Documents。
 - 拖入仅接受受支持的视频文件；文件夹、非视频和虚拟文件对象跳过并在结果中说明。
 - 拖入复制默认目标为当前工作区目录。同名绝不覆盖，自动使用 `文件名 (1).扩展名` 规则；源与目标为同一路径时跳过。
 - 批量或超过 400ms 的单文件操作显示模态进度窗口，并锁定目录导航、选择和文件操作。用户可取消未开始任务，当前单文件操作先安全结束。

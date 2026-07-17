@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Maximize2, MonitorPlay, Pause, Play, Video, Volume2, VolumeX } from "lucide-react";
+import { Maximize2, Minimize2, MonitorPlay, Pause, Play, Video, Volume2, VolumeX } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 import type { VideoEntry, VideoStreamUrl } from "../app-types";
@@ -33,6 +33,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   onAudioPreferenceChange,
 }, ref) {
   const videoElement = useRef<HTMLVideoElement>(null);
+  const playerRoot = useRef<HTMLElement>(null);
   const playerSurface = useRef<HTMLDivElement>(null);
   const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
@@ -45,11 +46,58 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenControlsVisible, setFullscreenControlsVisible] = useState(true);
   const streamStartTime = useRef(0);
   const streamRequest = useRef(0);
   const resumeAfterSeek = useRef(false);
   const isScrubbing = useRef(false);
   const directFallbackRequested = useRef(false);
+  const fullscreenControlsTimer = useRef<number | null>(null);
+
+  const showFullscreenControls = () => {
+    setFullscreenControlsVisible(true);
+    if (fullscreenControlsTimer.current !== null) {
+      window.clearTimeout(fullscreenControlsTimer.current);
+    }
+    if (isFullscreen && isPlaying) {
+      fullscreenControlsTimer.current = window.setTimeout(() => {
+        setFullscreenControlsVisible(false);
+        fullscreenControlsTimer.current = null;
+      }, 2200);
+    }
+  };
+
+  const keepFullscreenControlsVisible = () => {
+    setFullscreenControlsVisible(true);
+    if (fullscreenControlsTimer.current !== null) {
+      window.clearTimeout(fullscreenControlsTimer.current);
+      fullscreenControlsTimer.current = null;
+    }
+  };
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      const active = document.fullscreenElement === playerRoot.current;
+      setIsFullscreen(active);
+      setFullscreenControlsVisible(true);
+      if (!active && fullscreenControlsTimer.current !== null) {
+        window.clearTimeout(fullscreenControlsTimer.current);
+        fullscreenControlsTimer.current = null;
+      }
+    };
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreen);
+      if (fullscreenControlsTimer.current !== null) {
+        window.clearTimeout(fullscreenControlsTimer.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    showFullscreenControls();
+  }, [isFullscreen, isPlaying]);
 
   useEffect(() => {
     setThumbnailSrc(null);
@@ -253,6 +301,14 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     });
   };
 
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement === playerRoot.current) {
+      void document.exitFullscreen?.();
+    } else {
+      void playerRoot.current?.requestFullscreen?.();
+    }
+  };
+
   if (!video) {
     return (
       <section className="player-placeholder">
@@ -265,8 +321,26 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   }
 
   return (
-    <section className="preview-player" aria-label={`${video.name} 的视频预览`}>
-      <div className="preview-media" ref={playerSurface}>
+    <section
+      className={`preview-player ${isFullscreen && !fullscreenControlsVisible ? "controls-hidden" : ""}`}
+      aria-label={`${video.name} 的视频预览`}
+      ref={playerRoot}
+      onPointerMove={showFullscreenControls}
+      onPointerDown={showFullscreenControls}
+    >
+      <div
+        className="preview-media"
+        ref={playerSurface}
+        onClick={(event) => {
+          if (!(event.target instanceof Element && event.target.closest("button"))) {
+            togglePlayback();
+          }
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          toggleFullscreen();
+        }}
+      >
         {thumbnailSrc ? <img className="preview-thumbnail" src={thumbnailSrc} alt="" /> : <div className="preview-thumbnail-fallback"><Video size={30} /></div>}
         {streamUrl && (
           <video
@@ -332,7 +406,12 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
         )}
       </div>
       {isTranscoded && <p className="transcode-notice">实时转码预览：拖动结束后会从目标位置重新开始转码</p>}
-      <div className="player-controls" aria-label="播放器控制">
+      <div
+        className="player-controls"
+        aria-label="播放器控制"
+        onPointerEnter={keepFullscreenControlsVisible}
+        onPointerLeave={showFullscreenControls}
+      >
         <button type="button" aria-label={isPlaying ? "暂停" : "播放"} title={isPlaying ? "暂停" : "播放"} onClick={togglePlayback} disabled={playerState !== "ready"}>
           {isPlaying ? <Pause size={16} /> : <Play size={16} />}
         </button>
@@ -404,8 +483,8 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
         <select aria-label="播放速率" value={rate} disabled={playerState !== "ready"} onChange={(event) => setRate(Number(event.target.value))}>
           {[0.5, 0.75, 1, 1.25, 1.5, 2].map((value) => <option key={value} value={value}>{value}×</option>)}
         </select>
-        <button type="button" aria-label="全屏" title="全屏" disabled={playerState !== "ready"} onClick={() => void playerSurface.current?.requestFullscreen?.()}>
-          <Maximize2 size={16} />
+        <button type="button" aria-label={isFullscreen ? "退出全屏" : "全屏"} title={isFullscreen ? "退出全屏" : "全屏"} disabled={playerState !== "ready"} onClick={toggleFullscreen}>
+          {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
         </button>
       </div>
     </section>

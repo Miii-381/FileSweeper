@@ -93,6 +93,27 @@ export type CopyResult = {
   failedPaths: string[];
 };
 
+export type FileTaskOperation = "copy" | "move";
+export type FileTaskState = "queued" | "running" | "completed" | "cancelled";
+export type FileTaskItemStatus = "completed" | "skipped" | "failed" | "cancelled";
+
+export type FileTaskItemResult = {
+  sourcePath: string;
+  destinationPath: string | null;
+  status: FileTaskItemStatus;
+  error: string | null;
+};
+
+export type FileTaskSnapshot = {
+  id: number;
+  operation: FileTaskOperation;
+  state: FileTaskState;
+  destinationPath: string;
+  totalItems: number;
+  completedItems: number;
+  results: FileTaskItemResult[];
+};
+
 export type WorkspaceContextMenu = {
   x: number;
   y: number;
