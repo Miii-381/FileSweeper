@@ -246,6 +246,7 @@ fn generate_thumbnail_impl(
     path: &Path,
     thumbnail_index: &Arc<Mutex<ThumbnailIndex>>,
     thumbnail_cache_dir: &Path,
+    cache_maintenance_lock: &Arc<Mutex<()>>,
     capture_position: &str,
     persist_immediately: bool,
 ) -> Result<PathBuf, String> {
@@ -310,20 +311,25 @@ fn generate_thumbnail_impl(
         );
         return Err(error);
     }
-    if thumbnail_path.exists() {
-        fs::remove_file(&thumbnail_path)
-            .map_err(|error| format!("Unable to replace the cached thumbnail: {error}"))?;
+    {
+        let _cache_maintenance = cache_maintenance_lock
+            .lock()
+            .map_err(|_| "Unable to access the thumbnail cache maintenance lock.".to_string())?;
+        if thumbnail_path.exists() {
+            fs::remove_file(&thumbnail_path)
+                .map_err(|error| format!("Unable to replace the cached thumbnail: {error}"))?;
+        }
+        fs::rename(&temporary_path, &thumbnail_path)
+            .map_err(|error| format!("Unable to store the cached thumbnail: {error}"))?;
+        record_thumbnail_cache(
+            &video_path,
+            &metadata,
+            &thumbnail_path,
+            thumbnail_index,
+            capture_position,
+            persist_immediately,
+        )?;
     }
-    fs::rename(&temporary_path, &thumbnail_path)
-        .map_err(|error| format!("Unable to store the cached thumbnail: {error}"))?;
-    record_thumbnail_cache(
-        &video_path,
-        &metadata,
-        &thumbnail_path,
-        thumbnail_index,
-        capture_position,
-        persist_immediately,
-    )?;
     log::info!(
         "Thumbnail generated for {} -> {}",
         path_string(&video_path),
@@ -335,8 +341,7 @@ fn generate_thumbnail_impl(
 pub(super) fn generate_thumbnail_batch_impl(
     paths: Vec<String>,
     media_sidecar_pool: Arc<MediaSidecarPermits>,
-    thumbnail_index: Arc<Mutex<ThumbnailIndex>>,
-    thumbnail_cache_dir: PathBuf,
+    thumbnail_cache: ThumbnailCacheMaintenanceState,
     capture_position: String,
     cache_limit_bytes: u64,
     app_handle: tauri::AppHandle,
@@ -351,8 +356,7 @@ pub(super) fn generate_thumbnail_batch_impl(
         .into_iter()
         .map(|path| {
             let media_sidecar_pool = Arc::clone(&media_sidecar_pool);
-            let thumbnail_index = Arc::clone(&thumbnail_index);
-            let thumbnail_cache_dir = thumbnail_cache_dir.clone();
+            let thumbnail_cache = thumbnail_cache.clone();
             let capture_position = capture_position.clone();
             let app_handle = app_handle.clone();
             thread::spawn(move || {
@@ -363,8 +367,9 @@ pub(super) fn generate_thumbnail_batch_impl(
                         .map_err(|error| format!("Unable to access this video: {error}"))?;
                     let thumbnail_path = generate_thumbnail_impl(
                         &video_path,
-                        &thumbnail_index,
-                        &thumbnail_cache_dir,
+                        &thumbnail_cache.index,
+                        &thumbnail_cache.directory,
+                        &thumbnail_cache.lock,
                         &capture_position,
                         false,
                     );
@@ -400,16 +405,19 @@ pub(super) fn generate_thumbnail_batch_impl(
     }
 
     if !thumbnails.is_empty() {
-        let index = thumbnail_index
+        let index = thumbnail_cache
+            .index
             .lock()
             .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
-        persist_thumbnail_index_at(&thumbnail_cache_dir, &index)?;
+        persist_thumbnail_index_at(&thumbnail_cache.directory, &index)?;
     }
 
-    let mut index = thumbnail_index
-        .lock()
-        .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
-    maintain_thumbnail_cache(&thumbnail_cache_dir, &mut index, cache_limit_bytes)?;
+    maintain_thumbnail_cache(
+        &thumbnail_cache.directory,
+        &thumbnail_cache.index,
+        &thumbnail_cache.lock,
+        cache_limit_bytes,
+    )?;
 
     Ok(ThumbnailBatchResult {
         thumbnails,

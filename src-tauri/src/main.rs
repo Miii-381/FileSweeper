@@ -609,6 +609,13 @@ struct ThumbnailIndexState(Arc<Mutex<ThumbnailIndex>>);
 
 struct ThumbnailCacheDirectory(PathBuf);
 
+#[derive(Clone)]
+struct ThumbnailCacheMaintenanceState {
+    index: Arc<Mutex<ThumbnailIndex>>,
+    directory: PathBuf,
+    lock: Arc<Mutex<()>>,
+}
+
 /// The player only receives a loopback URL; the request handler validates the file again.
 struct VideoStreamServer {
     base_url: Option<String>,
@@ -772,25 +779,32 @@ mod thumbnail_cache_tests {
         fs::write(&second_source, b"second").unwrap();
         fs::write(directory.join("old.jpg"), [1_u8; 8]).unwrap();
         fs::write(directory.join("new.jpg"), [2_u8; 8]).unwrap();
-        fs::write(directory.join("orphan.jpg"), [3_u8; 8]).unwrap();
+        fs::write(directory.join("0123456789abcdef.jpg"), [3_u8; 8]).unwrap();
 
-        let mut index = ThumbnailIndex::default();
+        let index = Arc::new(Mutex::new(ThumbnailIndex::default()));
+        let cache_maintenance_lock = Arc::new(Mutex::new(()));
         let first_access = current_unix_millis().saturating_add(1);
-        index.entries.insert(
+        index.lock().unwrap().entries.insert(
             path_string(&first_source),
             cache_entry(&first_source, "old.jpg", first_access),
         );
-        index.entries.insert(
+        index.lock().unwrap().entries.insert(
             path_string(&second_source),
             cache_entry(&second_source, "new.jpg", first_access.saturating_add(1)),
         );
-        maintain_thumbnail_cache(&directory, &mut index, 8).unwrap();
+        fs::write(directory.join("in-progress.tmp.jpg"), [4_u8; 8]).unwrap();
+        maintain_thumbnail_cache(&directory, &index, &cache_maintenance_lock, 8).unwrap();
 
         assert!(!directory.join("old.jpg").exists());
-        assert!(!directory.join("orphan.jpg").exists());
+        assert!(!directory.join("0123456789abcdef.jpg").exists());
+        assert!(directory.join("in-progress.tmp.jpg").exists());
         assert!(directory.join("new.jpg").exists());
-        assert_eq!(index.entries.len(), 1);
-        assert!(index.entries.contains_key(&path_string(&second_source)));
+        assert_eq!(index.lock().unwrap().entries.len(), 1);
+        assert!(index
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&path_string(&second_source)));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1215,7 +1229,32 @@ fn thumbnail_entry_is_current(
         && thumbnail_path.is_file()
 }
 
+fn is_thumbnail_cache_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(stem) = file_name.strip_suffix(".jpg") else {
+        return false;
+    };
+    stem.len() == 16 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn maintain_thumbnail_cache(
+    thumbnail_cache_dir: &Path,
+    thumbnail_index: &Arc<Mutex<ThumbnailIndex>>,
+    cache_maintenance_lock: &Arc<Mutex<()>>,
+    cache_limit_bytes: u64,
+) -> Result<(), String> {
+    let _cache_maintenance = cache_maintenance_lock
+        .lock()
+        .map_err(|_| "Unable to access the thumbnail cache maintenance lock.".to_string())?;
+    let mut index = thumbnail_index
+        .lock()
+        .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
+    maintain_thumbnail_cache_locked(thumbnail_cache_dir, &mut index, cache_limit_bytes)
+}
+
+fn maintain_thumbnail_cache_locked(
     thumbnail_cache_dir: &Path,
     index: &mut ThumbnailIndex,
     cache_limit_bytes: u64,
@@ -1241,11 +1280,7 @@ fn maintain_thumbnail_cache(
         let directory_entry = directory_entry
             .map_err(|error| format!("Unable to inspect a thumbnail cache entry: {error}"))?;
         let path = directory_entry.path();
-        let is_thumbnail = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"));
-        if is_thumbnail {
+        if is_thumbnail_cache_file(&path) {
             let file_name = directory_entry.file_name().to_string_lossy().to_string();
             if !referenced_files.contains(&file_name) {
                 fs::remove_file(&path).map_err(|error| {
@@ -1402,8 +1437,7 @@ fn probe_video_metadata_batch(
 fn generate_thumbnail_batch_impl(
     paths: Vec<String>,
     media_sidecar_pool: Arc<MediaSidecarPermits>,
-    thumbnail_index: Arc<Mutex<ThumbnailIndex>>,
-    thumbnail_cache_dir: PathBuf,
+    thumbnail_cache: ThumbnailCacheMaintenanceState,
     capture_position: String,
     cache_limit_bytes: u64,
     app_handle: tauri::AppHandle,
@@ -1411,8 +1445,7 @@ fn generate_thumbnail_batch_impl(
     media_processing::generate_thumbnail_batch_impl(
         paths,
         media_sidecar_pool,
-        thumbnail_index,
-        thumbnail_cache_dir,
+        thumbnail_cache,
         capture_position,
         cache_limit_bytes,
         app_handle,
@@ -1622,20 +1655,17 @@ async fn scan_workspace(
 #[tauri::command]
 fn save_configuration(
     settings: Preferences,
-    thumbnail_index: tauri::State<'_, ThumbnailIndexState>,
     thumbnail_cache_directory: tauri::State<'_, ThumbnailCacheDirectory>,
+    thumbnail_cache: tauri::State<'_, ThumbnailCacheMaintenanceState>,
 ) -> Result<AppConfig, String> {
     let configuration = update_config(move |config| {
         config.settings = settings;
         Ok(())
     })?;
-    let mut index = thumbnail_index
-        .0
-        .lock()
-        .map_err(|_| "Unable to access the thumbnail index.".to_string())?;
     maintain_thumbnail_cache(
         &thumbnail_cache_directory.0,
-        &mut index,
+        &thumbnail_cache.index,
+        &thumbnail_cache.lock,
         thumbnail_cache_limit_bytes(configuration.settings.thumbnail_cache_gb),
     )?;
     Ok(configuration)
@@ -1984,8 +2014,7 @@ async fn generate_thumbnails(
     paths: Vec<String>,
     app_handle: tauri::AppHandle,
     media_sidecar_pool: tauri::State<'_, MediaSidecarPool>,
-    thumbnail_index: tauri::State<'_, ThumbnailIndexState>,
-    thumbnail_cache_directory: tauri::State<'_, ThumbnailCacheDirectory>,
+    thumbnail_cache: tauri::State<'_, ThumbnailCacheMaintenanceState>,
 ) -> Result<ThumbnailBatchResult, String> {
     if paths.is_empty() {
         return Ok(ThumbnailBatchResult {
@@ -1994,15 +2023,13 @@ async fn generate_thumbnails(
         });
     }
     let media_sidecar_pool = Arc::clone(&media_sidecar_pool.0);
-    let thumbnail_index = Arc::clone(&thumbnail_index.0);
-    let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
+    let thumbnail_cache = thumbnail_cache.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let settings = load_config()?.settings;
         generate_thumbnail_batch_impl(
             paths,
             media_sidecar_pool,
-            thumbnail_index,
-            thumbnail_cache_dir,
+            thumbnail_cache,
             settings.thumbnail_capture_position,
             thumbnail_cache_limit_bytes(settings.thumbnail_cache_gb),
             app_handle,
@@ -2212,7 +2239,10 @@ fn main() {
     let log_directory = log_dir().expect("failed to create VideoSweeper log directory");
     let thumbnail_cache_directory =
         thumbnail_cache_dir().expect("failed to create VideoSweeper thumbnail cache directory");
-    let mut thumbnail_index = load_thumbnail_index_from(&thumbnail_cache_directory);
+    let thumbnail_index = Arc::new(Mutex::new(load_thumbnail_index_from(
+        &thumbnail_cache_directory,
+    )));
+    let thumbnail_cache_maintenance_lock = Arc::new(Mutex::new(()));
     let cache_limit_bytes = thumbnail_cache_limit_bytes(
         load_config()
             .expect("failed to load VideoSweeper configuration")
@@ -2221,10 +2251,12 @@ fn main() {
     );
     maintain_thumbnail_cache(
         &thumbnail_cache_directory,
-        &mut thumbnail_index,
+        &thumbnail_index,
+        &thumbnail_cache_maintenance_lock,
         cache_limit_bytes,
     )
     .unwrap_or_else(|error| eprintln!("Unable to maintain the thumbnail cache: {error}"));
+    let thumbnail_cache_directory_for_maintenance = thumbnail_cache_directory.clone();
     let transcode_controller = Arc::new(TranscodeController::new());
     let video_stream_server = match start_video_stream_server(Arc::clone(&transcode_controller)) {
         Ok(base_url) => VideoStreamServer {
@@ -2248,8 +2280,13 @@ fn main() {
         .manage(ThumbnailReadPool(Arc::new(ThumbnailReadPermits::new(
             MAX_PARALLEL_THUMBNAIL_READS,
         ))))
-        .manage(ThumbnailIndexState(Arc::new(Mutex::new(thumbnail_index))))
+        .manage(ThumbnailIndexState(Arc::clone(&thumbnail_index)))
         .manage(ThumbnailCacheDirectory(thumbnail_cache_directory))
+        .manage(ThumbnailCacheMaintenanceState {
+            index: thumbnail_index,
+            directory: thumbnail_cache_directory_for_maintenance,
+            lock: thumbnail_cache_maintenance_lock,
+        })
         .manage(video_stream_server)
         .manage(start_file_operation_queue())
         // Plugins are registered here so their native capabilities are available to the webview.
