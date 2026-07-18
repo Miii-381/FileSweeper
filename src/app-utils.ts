@@ -2,7 +2,6 @@ import {
   debug as logDebug,
   error as logErrorMessage,
   info as logInfo,
-  LogLevel,
   warn as logWarn,
 } from "@tauri-apps/plugin-log";
 
@@ -60,10 +59,6 @@ export function formatPlaybackTime(value: number) {
     : `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-export function logLevelLabel(level: LogLevel) {
-  return LogLevel[level]?.toUpperCase() ?? "LOG";
-}
-
 export function logLevelRank(level: string) {
   if (level.includes("ERROR")) {
     return 4;
@@ -98,7 +93,10 @@ export function filterLogContent(content: string, minimumLevel: LogMinimumLevel)
 export function writeClientLog(level: "debug" | "info" | "warn" | "error", message: string) {
   const logger =
     level === "debug" ? logDebug : level === "info" ? logInfo : level === "warn" ? logWarn : logErrorMessage;
-  void logger(message, { file: "src/App.tsx" }).catch(() => {
-    // The Vite browser shell has no Tauri log plugin; ignore that path during local UI-only previews.
+  void logger(message, { file: "src/App.tsx" }).catch((error: unknown) => {
+    // Keep the fallback outside the Tauri logger so a logger failure cannot recurse into itself.
+    const fallback =
+      level === "debug" ? console.debug : level === "info" ? console.info : level === "warn" ? console.warn : console.error;
+    fallback(`[client-log-fallback][${level}] ${message}`, error);
   });
 }

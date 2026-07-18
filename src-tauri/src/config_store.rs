@@ -1,6 +1,33 @@
 use super::*;
 
 const WORKSPACE_STATE_VERSION: u32 = 1;
+static STARTUP_CONFIG_DIAGNOSTICS: OnceLock<Mutex<Vec<(log::Level, String)>>> = OnceLock::new();
+
+fn record_startup_config_diagnostic(level: log::Level, message: String) {
+    eprintln!("{message}");
+    match STARTUP_CONFIG_DIAGNOSTICS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+    {
+        Ok(mut diagnostics) => diagnostics.push((level, message)),
+        Err(_) => {
+            eprintln!("Unable to retain the startup configuration diagnostic for file logging")
+        }
+    }
+}
+
+pub(super) fn take_startup_diagnostics() -> Vec<(log::Level, String)> {
+    match STARTUP_CONFIG_DIAGNOSTICS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+    {
+        Ok(mut diagnostics) => std::mem::take(&mut *diagnostics),
+        Err(_) => {
+            log::error!("Unable to read retained startup configuration diagnostics");
+            Vec::new()
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +89,10 @@ pub(super) struct ConfigStore {
 
 impl ConfigStore {
     pub(super) fn open(config_path: PathBuf) -> Result<Self, String> {
+        log::info!(
+            "Opening configuration store: path={}",
+            path_string(&config_path)
+        );
         let mut config = load_config_from_path(&config_path)?;
         let workspace_state_path = config_path
             .parent()
@@ -73,6 +104,13 @@ impl ConfigStore {
         )?;
         config.workspace_focus = workspace_state.workspace_focus;
         config.workspace_sort = workspace_state.workspace_sort;
+        log::info!(
+            "Configuration store opened: config_version={}, favorites={}, workspace_focus={}, workspace_sort={}",
+            config.version,
+            config.favorites.len(),
+            config.workspace_focus.len(),
+            config.workspace_sort.len()
+        );
         Ok(Self {
             config_path,
             workspace_state_path,
@@ -91,35 +129,47 @@ impl ConfigStore {
     where
         F: FnOnce(&mut AppConfig) -> Result<(), String>,
     {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| "Unable to access the configuration state.".to_string())?;
-        let mut next = current.clone();
-        update(&mut next)?;
-        validate_config(&mut next)?;
-        write_config_to_path(&self.config_path, &next)?;
-        *current = next.clone();
-        Ok(next)
+        let result = (|| {
+            let mut current = self
+                .state
+                .lock()
+                .map_err(|_| "Unable to access the configuration state.".to_string())?;
+            let mut next = current.clone();
+            update(&mut next)?;
+            validate_config(&mut next)?;
+            write_config_to_path(&self.config_path, &next)?;
+            *current = next.clone();
+            Ok(next)
+        })();
+        if let Err(error) = &result {
+            log::error!("Configuration update failed: {error}");
+        }
+        result
     }
 
     pub(super) fn update_workspace_state<F>(&self, update: F) -> Result<AppConfig, String>
     where
         F: FnOnce(&mut AppConfig) -> Result<(), String>,
     {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| "Unable to access the workspace state.".to_string())?;
-        let mut next = current.clone();
-        update(&mut next)?;
-        let mut workspace_state = WorkspaceStateFile::from_config(&next);
-        workspace_state.validate()?;
-        write_workspace_state_to_path(&self.workspace_state_path, &workspace_state)?;
-        next.workspace_focus = workspace_state.workspace_focus;
-        next.workspace_sort = workspace_state.workspace_sort;
-        *current = next.clone();
-        Ok(next)
+        let result = (|| {
+            let mut current = self
+                .state
+                .lock()
+                .map_err(|_| "Unable to access the workspace state.".to_string())?;
+            let mut next = current.clone();
+            update(&mut next)?;
+            let mut workspace_state = WorkspaceStateFile::from_config(&next);
+            workspace_state.validate()?;
+            write_workspace_state_to_path(&self.workspace_state_path, &workspace_state)?;
+            next.workspace_focus = workspace_state.workspace_focus;
+            next.workspace_sort = workspace_state.workspace_sort;
+            *current = next.clone();
+            Ok(next)
+        })();
+        if let Err(error) = &result {
+            log::error!("Workspace state update failed: {error}");
+        }
+        result
     }
 }
 
@@ -167,6 +217,17 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
     }
     if !(0.25..=100.0).contains(&config.settings.thumbnail_cache_gb) {
         return Err("Thumbnail cache size must be between 0.25 and 100 GB.".to_string());
+    }
+    let requested_concurrency = config.settings.background_sidecar_concurrency;
+    config.settings.background_sidecar_concurrency = config
+        .settings
+        .background_sidecar_concurrency
+        .clamp(1, available_parallelism());
+    if config.settings.background_sidecar_concurrency != requested_concurrency {
+        log::warn!(
+            "Background sidecar concurrency was clamped: requested={requested_concurrency}, accepted={}",
+            config.settings.background_sidecar_concurrency
+        );
     }
     if !matches!(
         config.settings.thumbnail_capture_position.as_str(),
@@ -250,7 +311,21 @@ fn write_json_atomically<T: Serialize>(
         atomic_replace_file(&temporary_path, path, label)
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
+        if let Err(cleanup_error) = fs::remove_file(&temporary_path) {
+            if temporary_path.exists() {
+                log::error!(
+                    "Atomic {label} write failed and staged file cleanup also failed: path={}, error={cleanup_error}",
+                    path_string(&temporary_path)
+                );
+            }
+        }
+    }
+    match &result {
+        Ok(()) => log::debug!("Atomic {label} write completed: path={}", path_string(path)),
+        Err(error) => log::error!(
+            "Atomic {label} write failed: path={}, error={error}",
+            path_string(path)
+        ),
     }
     result
 }
@@ -288,6 +363,11 @@ fn migrate_config_source(source: &str) -> Result<(AppConfig, bool), String> {
         .map_err(|error| format!("Unable to decode the configuration: {error}"))?;
     let migrated = config.version != CONFIG_VERSION || contains_legacy_workspace_state;
     validate_config(&mut config)?;
+    if migrated {
+        log::info!(
+            "Configuration migration required: source_version={version}, target_version={CONFIG_VERSION}, embedded_workspace_state={contains_legacy_workspace_state}"
+        );
+    }
     Ok((config, migrated))
 }
 
@@ -295,6 +375,7 @@ fn load_config_from_path(path: &Path) -> Result<AppConfig, String> {
     if !path.exists() {
         let config = AppConfig::default();
         write_config_to_path(path, &config)?;
+        log::info!("Created default configuration: path={}", path_string(path));
         return Ok(config);
     }
 
@@ -304,18 +385,29 @@ fn load_config_from_path(path: &Path) -> Result<AppConfig, String> {
         Ok((config, migrated)) => {
             if migrated {
                 write_config_to_path(path, &config)?;
+                log::info!(
+                    "Persisted migrated configuration: path={}",
+                    path_string(path)
+                );
             }
+            log::debug!(
+                "Configuration loaded: path={}, version={}",
+                path_string(path),
+                config.version
+            );
             Ok(config)
         }
         Err(error) => {
             let backup = backup_corrupt_file(path, "config")?;
-            log::warn!(
-                "Configuration recovery was required: {error}; backup={}",
+            let diagnostic = format!(
+                "Configuration recovery was required; defaults replaced the invalid configuration: {error}; backup={}",
                 backup
                     .as_deref()
                     .map(path_string)
                     .unwrap_or_else(|| "<none>".to_string())
             );
+            log::warn!("{diagnostic}");
+            record_startup_config_diagnostic(log::Level::Warn, diagnostic);
             let config = AppConfig::default();
             write_config_to_path(path, &config)?;
             Ok(config)
@@ -329,6 +421,7 @@ fn load_workspace_state_from_path(
 ) -> Result<WorkspaceStateFile, String> {
     if !path.exists() {
         write_workspace_state_to_path(path, &fallback)?;
+        log::info!("Created workspace state file: path={}", path_string(path));
         return Ok(fallback);
     }
 
@@ -336,7 +429,15 @@ fn load_workspace_state_from_path(
         .map_err(|error| format!("Unable to read the workspace state: {error}"))?;
     match serde_json::from_str::<WorkspaceStateFile>(&source) {
         Ok(mut workspace_state) => match workspace_state.validate() {
-            Ok(()) => Ok(workspace_state),
+            Ok(()) => {
+                log::debug!(
+                    "Workspace state loaded: path={}, focus={}, sort={}",
+                    path_string(path),
+                    workspace_state.workspace_focus.len(),
+                    workspace_state.workspace_sort.len()
+                );
+                Ok(workspace_state)
+            }
             Err(error) => recover_workspace_state(path, fallback, error),
         },
         Err(error) => recover_workspace_state(
@@ -353,13 +454,15 @@ fn recover_workspace_state(
     error: String,
 ) -> Result<WorkspaceStateFile, String> {
     let backup = backup_corrupt_file(path, "workspace-state")?;
-    log::warn!(
-        "Workspace state recovery was required: {error}; backup={}",
+    let diagnostic = format!(
+        "Workspace state recovery was required; the fallback state replaced the invalid file: {error}; backup={}",
         backup
             .as_deref()
             .map(path_string)
             .unwrap_or_else(|| "<none>".to_string())
     );
+    log::warn!("{diagnostic}");
+    record_startup_config_diagnostic(log::Level::Warn, diagnostic);
     write_workspace_state_to_path(path, &fallback)?;
     Ok(fallback)
 }

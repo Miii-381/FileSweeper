@@ -25,11 +25,12 @@ export function DirectoryTreeNode({
   const isExpanded = expandedPaths.has(entry.path);
   const state = treeState[entry.path];
   const isRoot = depth === 0;
+  const hasChildren = state?.status === "loaded" ? state.folders.length > 0 : entry.hasChildren;
 
   return (
     <li className="tree-node">
       <div className={`tree-row ${selectedPath === entry.path ? "active" : ""}`} style={{ paddingLeft: 8 + depth * 16 }}>
-        {entry.hasChildren ? (
+        {hasChildren ? (
           <button
             className="tree-disclosure"
             type="button"

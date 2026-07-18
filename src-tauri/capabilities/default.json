@@ -5,7 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:default",
-    "log:default"
+    "dialog:allow-open",
+    "log:allow-log"
   ]
 }

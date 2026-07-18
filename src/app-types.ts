@@ -1,5 +1,4 @@
 import type { ThemeId } from "./theme";
-import type { LogLevel } from "@tauri-apps/plugin-log";
 
 export type ViewMode = "grid" | "list";
 export type ColorMode = "dark" | "light";
@@ -7,7 +6,6 @@ export type SortKey = "createdAt" | "name" | "size" | "duration" | "resolution";
 export type ListColumnId = "name" | "size" | "duration" | "resolution" | "modifiedAt";
 export type ThumbnailCapturePosition = "opening" | "early" | "middle" | "late" | "ending";
 
-export const MAX_THUMBNAIL_BATCH_SIZE = 12;
 export const GRID_CARD_WIDTH = 220;
 // 180px card height plus the 16px vertical track gap kept between virtual rows.
 export const GRID_ROW_HEIGHT = 196;
@@ -87,12 +85,6 @@ export type RenameResult = {
   name: string;
 };
 
-export type CopyResult = {
-  copiedPaths: string[];
-  skippedPaths: string[];
-  failedPaths: string[];
-};
-
 export type FileTaskOperation = "copy" | "move";
 export type FileTaskState = "queued" | "running" | "completed" | "cancelled";
 export type FileTaskItemStatus = "completed" | "skipped" | "failed" | "cancelled";
@@ -117,7 +109,8 @@ export type FileTaskSnapshot = {
 export type WorkspaceContextMenu = {
   x: number;
   y: number;
-  workspacePath: string;
+  kind: "workspace" | "videos" | "directory";
+  workspacePath: string | null;
   paths: string[];
   primaryPath: string | null;
 };
@@ -167,14 +160,10 @@ export type ThumbnailTask = {
 
 export type LogSnapshot = {
   path: string;
-  content: string;
+  hash: string;
+  changed: boolean;
+  content: string | null;
   size: number;
-};
-
-export type LiveLogEntry = {
-  id: number;
-  level: LogLevel;
-  message: string;
 };
 
 export type Preferences = {
@@ -190,7 +179,7 @@ export type Preferences = {
   showNomediaMedia: boolean;
   videoExtensions: string[];
   managedVideoExtensions: string[];
-  openUnsupportedExternally: boolean;
+  backgroundSidecarConcurrency: number;
   listColumns: ListColumn[];
 };
 
@@ -226,70 +215,16 @@ export type AppConfig = {
 export type ApplicationState = {
   config: AppConfig;
   roots: DirectoryEntry[];
+  settingsLimits: SettingsLimits;
+};
+
+export type SettingsLimits = {
+  backgroundSidecarConcurrencyMin: number;
+  backgroundSidecarConcurrencyMax: number;
 };
 
 export type TreeStatus = "idle" | "loading" | "loaded" | "error";
 export type TreeState = Record<string, { status: TreeStatus; folders: DirectoryEntry[] }>;
-
-export const fallbackConfig: AppConfig = {
-  version: 2,
-  favorites: [],
-  lastWorkspace: null,
-  workspaceFocus: {},
-  workspaceSort: {},
-  settings: {
-    appearance: "dark",
-    accentTheme: "teal",
-    thumbnailCacheGb: 0.5,
-    thumbnailCapturePosition: "middle",
-    autoplay: true,
-    volume: 100,
-    muted: false,
-    rememberWorkspaceFocus: true,
-    showHiddenItems: false,
-    showNomediaMedia: false,
-    videoExtensions: [
-      ".mp4",
-      ".mkv",
-      ".webm",
-      ".avi",
-      ".mov",
-      ".wmv",
-      ".flv",
-      ".m4v",
-      ".mpeg",
-      ".mpg",
-      ".3gp",
-      ".rm",
-      ".rmvb",
-      ".ts",
-    ],
-    managedVideoExtensions: [
-      ".mp4",
-      ".mkv",
-      ".webm",
-      ".avi",
-      ".mov",
-      ".wmv",
-      ".flv",
-      ".m4v",
-      ".mpeg",
-      ".mpg",
-      ".3gp",
-      ".rm",
-      ".rmvb",
-      ".ts",
-    ],
-    openUnsupportedExternally: true,
-    listColumns: [
-      { id: "name", visible: true, width: 280 },
-      { id: "size", visible: true, width: 112 },
-      { id: "duration", visible: true, width: 94 },
-      { id: "resolution", visible: true, width: 112 },
-      { id: "modifiedAt", visible: true, width: 170 },
-    ],
-  },
-};
 
 export const listColumnLabels: Record<ListColumnId, string> = {
   name: "名称",

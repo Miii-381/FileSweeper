@@ -1,0 +1,311 @@
+.preview-panel {
+    background: var(--surface-raised);
+    border-left: 1px solid var(--border-subtle);
+    grid-template-rows: minmax(220px, 1fr) auto;
+    min-width: 0;
+    height: 100%;
+    display: grid;
+    overflow: hidden;
+    animation: preview-panel-enter .42s var(--motion-standard-easing) both
+}
+
+.player-placeholder {
+    color: var(--text-muted);
+    text-align: center;
+    background: var(--surface-base);
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 11px;
+    min-height: 240px;
+    padding: 28px;
+    display: flex;
+    overflow: hidden
+}
+
+.player-icon {
+    width: 58px;
+    height: 58px;
+    color: var(--accent);
+    background: var(--accent-deep);
+    border: 1px solid var(--accent-focus);
+    border-radius: 8px;
+    flex: none;
+    place-items: center;
+    display: grid
+}
+
+.player-placeholder p {
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
+    margin: 0;
+    font-size: 12px;
+    overflow: hidden
+}
+
+.preview-player {
+    background: var(--surface-base);
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 240px;
+    display: grid;
+    overflow: hidden
+}
+
+.preview-panel:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px
+}
+
+.preview-media {
+    background: #000;
+    min-height: 0;
+    position: relative;
+    overflow: hidden
+}
+
+.preview-thumbnail,
+.preview-video,
+.preview-thumbnail-fallback {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    inset: 0
+}
+
+.preview-thumbnail,
+.preview-video {
+    object-fit: contain
+}
+
+.preview-thumbnail {
+    background: var(--surface-base)
+}
+
+.preview-thumbnail-fallback {
+    color: var(--accent);
+    background: linear-gradient(135deg, #ffffff12 25%, #0000 25%) 0 0/16px 16px, var(--surface-base);
+    place-items: center;
+    display: grid
+}
+
+.preview-video {
+    opacity: 0;
+    transition: opacity var(--motion-standard) ease
+}
+
+.preview-video.is-ready {
+    opacity: 1
+}
+
+.preview-status,
+.preview-error {
+    color: var(--text-primary);
+    text-align: center;
+    background: #00000085;
+    border-radius: 7px;
+    max-width: calc(100% - 32px);
+    padding: 8px 10px;
+    font-size: 12px;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%)
+}
+
+.preview-error {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    display: grid
+}
+
+.preview-error button {
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 11px
+}
+
+.transcode-notice {
+    color: var(--text-secondary);
+    background: var(--surface-raised);
+    border-top: 1px solid var(--border-subtle);
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 11px;
+    text-align: center
+}
+
+.player-controls {
+    color: var(--text-secondary);
+    background: var(--surface-raised);
+    border-top: 1px solid var(--border-subtle);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 8px 10px;
+    display: flex
+}
+
+.player-controls button {
+    color: var(--text-secondary);
+    background: var(--surface-control);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    width: 28px;
+    height: 27px;
+    flex: none;
+    place-items: center;
+    display: grid
+}
+
+.player-controls button:disabled,
+.player-controls input:disabled,
+.player-controls select:disabled {
+    opacity: .45
+}
+
+.player-time {
+    color: var(--text-muted);
+    white-space: nowrap;
+    font: 10px/1 Cascadia Code, Consolas, monospace
+}
+
+.player-progress {
+    accent-color: var(--accent);
+    min-width: 36px;
+    flex: 1
+}
+
+.player-volume {
+    accent-color: var(--accent);
+    width: 52px
+}
+
+.player-controls select {
+    color: var(--text-secondary);
+    background: var(--surface-control);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    width: 48px;
+    height: 27px;
+    padding: 0 3px;
+    font-size: 11px
+}
+.preview-player:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    min-height: 0;
+    background: #000;
+    display: block
+}
+
+.preview-player:fullscreen .preview-media {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    inset: 0
+}
+
+.preview-player:fullscreen .player-controls {
+    z-index: 5;
+    color: #e9edf3;
+    background: linear-gradient(0deg, #050608ed 0%, #090b0fcf 58%, transparent 100%);
+    border: 0;
+    gap: 10px;
+    padding: 44px clamp(18px, 3vw, 46px) clamp(18px, 3vh, 32px);
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    opacity: 1;
+    transition: opacity 180ms ease, transform 180ms ease;
+    transform: translateY(0)
+}
+
+.preview-player:fullscreen.controls-hidden {
+    cursor: none
+}
+
+.preview-player:fullscreen.controls-hidden .player-controls {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(10px)
+}
+
+.preview-player:fullscreen .player-controls button,
+.preview-player:fullscreen .player-controls select {
+    color: #f5f7fa;
+    background: #ffffff17;
+    border-color: #ffffff24;
+    backdrop-filter: blur(8px)
+}
+
+.preview-player:fullscreen .player-controls button {
+    width: 36px;
+    height: 34px;
+    border-radius: 8px
+}
+
+.preview-player:fullscreen .player-time {
+    color: #d5dae2;
+    font-size: 11px
+}
+
+.preview-player:fullscreen .player-progress {
+    min-width: 120px
+}
+
+.preview-player:fullscreen .player-volume {
+    width: min(100px, 10vw)
+}
+
+.preview-player:fullscreen .transcode-notice {
+    z-index: 4;
+    color: #d9dee7;
+    background: #0506088c;
+    border: 0;
+    border-radius: 0 0 8px 8px;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    backdrop-filter: blur(8px)
+}
+
+.details-panel {
+    border-top: 1px solid var(--border-subtle)
+}
+
+.details-panel dl {
+    gap: 0;
+    margin: 3px 12px 12px;
+    display: grid
+}
+
+.details-panel dl div {
+    border-bottom: 1px solid var(--border-subtle);
+    grid-template-columns: 76px minmax(0, 1fr);
+    align-items: center;
+    min-height: 30px;
+    display: grid
+}
+
+.details-panel dt,
+.details-panel dd {
+    margin: 0;
+    font-size: 12px
+}
+
+.details-panel dt {
+    color: var(--text-muted)
+}
+
+.details-panel dd {
+    color: var(--text-secondary);
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden
+}

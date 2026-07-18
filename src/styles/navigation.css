@@ -1,0 +1,155 @@
+.navigation-panel {
+    background: var(--surface-raised);
+    border-right: 1px solid var(--border-subtle);
+    flex-direction: column;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    overflow: hidden
+}
+
+.nav-section {
+    padding: 17px 10px 4px
+}
+
+.favorites-section {
+    flex: none;
+    max-height: 36%;
+    overflow: auto
+}
+
+.tree-section {
+    flex: 1;
+    min-height: 0;
+    overflow: auto
+}
+
+.section-heading {
+    color: var(--text-muted);
+    justify-content: space-between;
+    height: 32px;
+    padding: 0 5px 0 10px;
+    font-size: 11px;
+    font-weight: 650
+}
+
+.nav-list {
+    gap: 2px;
+    display: grid
+}
+
+.nav-empty,
+.tree-status {
+    color: var(--text-subtle);
+    padding: 8px 10px;
+    font-size: 12px
+}
+
+.nav-row {
+    color: var(--text-secondary);
+    text-align: left;
+    background: 0 0;
+    border-radius: 7px;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+    overflow: hidden
+}
+
+.nav-row:hover:not(:disabled),
+.nav-row.active {
+    color: var(--text-primary);
+    background: var(--surface-hover)
+}
+
+.nav-row.active {
+    color: var(--accent);
+    background: var(--accent-deep)
+}
+
+.nav-row span,
+.tree-label span {
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    font-size: 13px;
+    overflow: hidden
+}
+
+.nav-row>svg,
+.tree-label>svg {
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px
+}
+
+.directory-tree,
+.tree-children {
+    margin: 0;
+    padding: 0;
+    list-style: none
+}
+
+.tree-row {
+    color: var(--text-secondary);
+    border-radius: 7px;
+    align-items: center;
+    min-width: 0;
+    height: 34px;
+    padding-right: 7px;
+    display: flex
+}
+
+.tree-row:hover,
+.tree-row.active {
+    background: var(--surface-hover)
+}
+
+.tree-row.active {
+    color: var(--accent);
+    background: var(--accent-deep)
+}
+
+.tree-disclosure {
+    color: var(--text-subtle);
+    background: 0 0;
+    border-radius: 6px;
+    flex: 0 0 24px;
+    place-items: center;
+    width: 24px;
+    height: 30px;
+    display: grid
+}
+
+.tree-disclosure-spacer {
+    flex: 0 0 24px;
+    width: 24px;
+    height: 30px;
+    display: block
+}
+
+.tree-disclosure:hover {
+    color: var(--text-primary);
+    background: #ffffff14
+}
+
+.tree-label {
+    min-width: 0;
+    height: 30px;
+    color: inherit;
+    text-align: left;
+    background: 0 0;
+    flex: 1;
+    gap: 7px
+}
+
+.tree-status {
+    padding-left: 38px
+}
+
+.navigation-footer {
+    border-top: 1px solid var(--border-subtle);
+    padding: 8px
+}

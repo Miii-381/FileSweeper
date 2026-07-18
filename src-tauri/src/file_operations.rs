@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
+    let requested = paths.len();
     let config = load_config()?;
     let extensions: HashSet<&str> = config
         .settings
@@ -33,8 +34,13 @@ pub(super) fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, 
     }
 
     if normalized_paths.is_empty() {
+        log::warn!("Video path normalization produced no usable files: requested={requested}");
         return Err("Select at least one video to move to the Recycle Bin.".to_string());
     }
+    log::debug!(
+        "Video paths normalized: requested={requested}, accepted={}",
+        normalized_paths.len()
+    );
     Ok(normalized_paths)
 }
 
@@ -207,52 +213,6 @@ fn unique_copy_destination(source: &Path, destination_directory: &Path) -> Resul
     Err("Unable to find an available destination file name.".to_string())
 }
 
-fn copy_videos_to_directory(paths: Vec<String>, destination: PathBuf) -> CopyResult {
-    let config = match load_config() {
-        Ok(config) => config,
-        Err(_) => {
-            return CopyResult {
-                copied_paths: Vec::new(),
-                skipped_paths: Vec::new(),
-                failed_paths: paths,
-            }
-        }
-    };
-    let mut copied_paths = Vec::new();
-    let mut skipped_paths = Vec::new();
-    let mut failed_paths = Vec::new();
-    for source in paths {
-        let source_path = match fs::canonicalize(&source) {
-            Ok(path) => path,
-            Err(_) => {
-                failed_paths.push(source);
-                continue;
-            }
-        };
-        let metadata = match fs::metadata(&source_path) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && is_supported_video_path(&source_path, &config.settings) =>
-            {
-                metadata
-            }
-            _ => {
-                skipped_paths.push(path_string(&source_path));
-                continue;
-            }
-        };
-        match copy_one_to_directory(&source_path, &destination, metadata.len()) {
-            Ok(target) => copied_paths.push(path_string(&target)),
-            Err(_) => failed_paths.push(path_string(&source_path)),
-        }
-    }
-    CopyResult {
-        copied_paths,
-        skipped_paths,
-        failed_paths,
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn delete_path_with_shell(path: &Path) -> Result<(), String> {
     unsafe {
@@ -319,10 +279,7 @@ fn copy_one_to_directory(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("video"),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0),
+        current_unix_millis(),
     ));
     let temporary_name = temporary
         .file_name()
@@ -367,7 +324,14 @@ fn copy_one_to_directory(
             path_string(&temporary),
             path_string(&target)
         );
-        let _ = fs::remove_file(&temporary);
+        if let Err(cleanup_error) = fs::remove_file(&temporary) {
+            if temporary.exists() {
+                log::error!(
+                    "File task copy failed and temporary cleanup also failed: temporary={}, error={cleanup_error}",
+                    path_string(&temporary)
+                );
+            }
+        }
         return Err(error);
     }
     log::debug!(
@@ -408,7 +372,10 @@ fn transfer_one(
     };
     let normalized_source = path_string(&source_path);
     let metadata = match fs::metadata(&source_path) {
-        Ok(metadata) if metadata.is_file() && is_supported_video_path(&source_path, settings) => {
+        Ok(metadata)
+            if metadata.is_file()
+                && config_store::is_supported_video_path(&source_path, settings) =>
+        {
             metadata
         }
         Ok(_) => {
@@ -485,8 +452,17 @@ fn transfer_one(
 }
 
 fn emit_task_snapshot(control: &FileTaskControl, app_handle: &tauri::AppHandle) {
-    if let Ok(snapshot) = control.snapshot.lock().map(|snapshot| snapshot.clone()) {
-        let _ = app_handle.emit("file-task-progress", snapshot);
+    match control.snapshot.lock().map(|snapshot| snapshot.clone()) {
+        Ok(snapshot) => {
+            if let Err(error) = app_handle.emit("file-task-progress", &snapshot) {
+                log::warn!(
+                    "File task state changed but UI event delivery failed: task_id={}, state={:?}, error={error}",
+                    snapshot.id,
+                    snapshot.state
+                );
+            }
+        }
+        Err(_) => log::error!("Unable to read file task state for UI event delivery"),
     }
 }
 
@@ -497,11 +473,13 @@ fn run_transfer_task(
     operation: FileTaskOperation,
     app_handle: tauri::AppHandle,
 ) {
-    let task_id = control
-        .snapshot
-        .lock()
-        .map(|snapshot| snapshot.id)
-        .unwrap_or(0);
+    let task_id = match control.snapshot.lock() {
+        Ok(snapshot) => snapshot.id,
+        Err(_) => {
+            log::error!("Unable to read file task id before execution; using diagnostic id zero");
+            0
+        }
+    };
     log::info!(
         "File task #{task_id} started on STA queue: operation={operation:?}, items={}, destination={}",
         paths.len(),
@@ -509,6 +487,8 @@ fn run_transfer_task(
     );
     if let Ok(mut snapshot) = control.snapshot.lock() {
         snapshot.state = FileTaskState::Running;
+    } else {
+        log::error!("Unable to mark file task #{task_id} as running");
     }
     emit_task_snapshot(&control, &app_handle);
 
@@ -532,6 +512,8 @@ fn run_transfer_task(
                     snapshot.completed_items += 1;
                 }
                 snapshot.state = FileTaskState::Cancelled;
+            } else {
+                log::error!("Unable to mark remaining items cancelled for file task #{task_id}");
             }
             emit_task_snapshot(&control, &app_handle);
             return;
@@ -563,6 +545,12 @@ fn run_transfer_task(
         if let Ok(mut snapshot) = control.snapshot.lock() {
             snapshot.results.push(result);
             snapshot.completed_items += 1;
+        } else {
+            log::error!(
+                "File task item completed but its result could not be recorded: task_id={task_id}, item={}/{}",
+                index + 1,
+                paths.len()
+            );
         }
         emit_task_snapshot(&control, &app_handle);
     }
@@ -573,6 +561,8 @@ fn run_transfer_task(
         } else {
             FileTaskState::Completed
         };
+    } else {
+        log::error!("Unable to set terminal state for file task #{task_id}");
     }
     if let Ok(snapshot) = control.snapshot.lock() {
         let succeeded = snapshot
@@ -595,6 +585,8 @@ fn run_transfer_task(
             snapshot.state,
             snapshot.total_items
         );
+    } else {
+        log::error!("Unable to summarize terminal results for file task #{task_id}");
     }
     emit_task_snapshot(&control, &app_handle);
 }
@@ -709,6 +701,9 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
             let mut buffer = vec![0_u16; length as usize + 1];
             let copied = DragQueryFileW(drop_handle, index, Some(&mut buffer));
             if copied == 0 {
+                log::warn!(
+                    "Windows clipboard path could not be decoded; skipping item: index={index}"
+                );
                 continue;
             }
             paths.push(String::from_utf16_lossy(&buffer[..copied as usize]));
@@ -719,10 +714,18 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
 
         let format_name = HSTRING::from("Preferred DropEffect");
         let preferred_effect_format = RegisterClipboardFormatW(PCWSTR(format_name.as_ptr()));
-        let operation = if preferred_effect_format != 0
-            && IsClipboardFormatAvailable(preferred_effect_format).is_ok()
-        {
-            GetClipboardData(preferred_effect_format)
+        let operation = if preferred_effect_format == 0 {
+            log::warn!(
+                "Unable to register the Preferred DropEffect clipboard format; falling back to copy"
+            );
+            FileTaskOperation::Copy
+        } else if IsClipboardFormatAvailable(preferred_effect_format).is_ok() {
+            let preferred_effect = GetClipboardData(preferred_effect_format)
+                .inspect_err(|error| {
+                    log::warn!(
+                        "Unable to read Preferred DropEffect from the clipboard; falling back to copy: {error}"
+                    );
+                })
                 .ok()
                 .and_then(|handle| {
                     let memory = HGLOBAL(handle.0);
@@ -736,11 +739,19 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
                         Some(effect)
                     })
                 })
-                .flatten()
-                .filter(|effect| effect & DROPEFFECT_MOVE.0 != 0)
-                .map(|_| FileTaskOperation::Move)
-                .unwrap_or(FileTaskOperation::Copy)
+                .flatten();
+            match preferred_effect {
+                Some(effect) if effect & DROPEFFECT_MOVE.0 != 0 => FileTaskOperation::Move,
+                Some(_) => FileTaskOperation::Copy,
+                None => {
+                    log::warn!(
+                        "Preferred DropEffect was advertised but could not be read; falling back to copy"
+                    );
+                    FileTaskOperation::Copy
+                }
+            }
         } else {
+            log::info!("File clipboard has no Preferred DropEffect; falling back to copy");
             FileTaskOperation::Copy
         };
         log::info!(
@@ -756,7 +767,9 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
         }
         Ok(ClipboardFiles { paths, operation })
     })();
-    let _ = unsafe { CloseClipboard() };
+    if let Err(error) = unsafe { CloseClipboard() } {
+        log::warn!("Unable to close the Windows clipboard after reading: {error}");
+    }
     if let Err(error) = &result {
         log::error!("Windows file clipboard read failed: error={error}");
     }
@@ -806,8 +819,17 @@ fn recycle_paths(paths: Vec<PathBuf>) -> RecycleResult {
     let mut failed_paths = Vec::new();
     for path in paths {
         match recycle_path(&path) {
-            Ok(()) => recycled_paths.push(path_string(&path)),
-            Err(_) => failed_paths.push(path_string(&path)),
+            Ok(()) => {
+                log::info!("Video moved to Recycle Bin: path={}", path_string(&path));
+                recycled_paths.push(path_string(&path));
+            }
+            Err(error) => {
+                log::error!(
+                    "Unable to move video to Recycle Bin: path={}, error={error}",
+                    path_string(&path)
+                );
+                failed_paths.push(path_string(&path));
+            }
         }
     }
     RecycleResult {
@@ -824,10 +846,21 @@ fn process_clipboard_operation(task: ClipboardOperationTask) {
             owner,
             response,
         } => {
-            let _ = response.send(write_file_clipboard(&paths, operation, owner));
+            if response
+                .send(write_file_clipboard(&paths, operation, owner))
+                .is_err()
+            {
+                log::warn!(
+                    "Clipboard write completed but its requester no longer accepts a response"
+                );
+            }
         }
         ClipboardOperationTask::ReadClipboard { response } => {
-            let _ = response.send(read_file_clipboard());
+            if response.send(read_file_clipboard()).is_err() {
+                log::warn!(
+                    "Clipboard read completed but its requester no longer accepts a response"
+                );
+            }
         }
     }
 }
@@ -841,28 +874,34 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
     let tasks = Arc::new(Mutex::new(HashMap::new()));
     thread::spawn(move || {
         #[cfg(target_os = "windows")]
-        let com_initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+        let com_initialization = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         #[cfg(target_os = "windows")]
-        log::debug!("File operation queue COM initialization: success={com_initialized}");
+        let com_initialized = com_initialization.is_ok();
+        #[cfg(target_os = "windows")]
+        if com_initialized {
+            log::debug!("File operation queue COM initialization succeeded");
+        } else {
+            log::error!(
+                "File operation queue COM initialization failed; shell operations may fail: {com_initialization:?}"
+            );
+        }
+        log::info!("File operation STA queue started");
 
         while let Ok(task) = receiver.recv() {
             match task {
                 FileOperationTask::Recycle { paths, response } => {
-                    let _ = response.send(recycle_paths(paths));
+                    if response.send(recycle_paths(paths)).is_err() {
+                        log::warn!("Recycle operation completed but its requester no longer accepts a response");
+                    }
                 }
                 FileOperationTask::Rename {
                     path,
                     new_stem,
                     response,
                 } => {
-                    let _ = response.send(rename_video_path(path, new_stem));
-                }
-                FileOperationTask::Copy {
-                    paths,
-                    destination,
-                    response,
-                } => {
-                    let _ = response.send(copy_videos_to_directory(paths, destination));
+                    if response.send(rename_video_path(path, new_stem)).is_err() {
+                        log::warn!("Rename operation completed but its requester no longer accepts a response");
+                    }
                 }
                 FileOperationTask::Transfer {
                     control,
@@ -878,17 +917,23 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
         if com_initialized {
             unsafe { CoUninitialize() };
         }
+        log::info!("File operation STA queue stopped");
     });
     #[cfg(target_os = "windows")]
     let clipboard_thread_id = {
         let (ready_sender, ready_receiver) = mpsc::sync_channel::<u32>(1);
         thread::spawn(move || {
-            let ole_initialized = unsafe { OleInitialize(None) }.is_ok();
-            log::debug!("Clipboard queue OLE initialization: success={ole_initialized}");
-            if !ole_initialized {
-                let _ = ready_sender.send(0);
+            let ole_initialization = unsafe { OleInitialize(None) };
+            if !ole_initialization.is_ok() {
+                log::error!(
+                    "Clipboard queue OLE initialization failed; file clipboard operations are unavailable: {ole_initialization:?}"
+                );
+                if ready_sender.send(0).is_err() {
+                    log::warn!("Clipboard queue initialization failed after its startup receiver disappeared");
+                }
                 return;
             }
+            log::debug!("Clipboard queue OLE initialization succeeded");
 
             let mut message = MSG::default();
             unsafe {
@@ -896,6 +941,9 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
             }
             let thread_id = unsafe { GetCurrentThreadId() };
             if ready_sender.send(thread_id).is_err() {
+                log::warn!(
+                    "Clipboard queue initialized but its startup receiver disappeared; stopping the queue"
+                );
                 unsafe { OleUninitialize() };
                 return;
             }
@@ -927,7 +975,15 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
             log::debug!("Clipboard STA message loop stopped: thread_id={thread_id}");
             unsafe { OleUninitialize() };
         });
-        ready_receiver.recv().unwrap_or_default()
+        match ready_receiver.recv() {
+            Ok(thread_id) => thread_id,
+            Err(error) => {
+                log::error!(
+                    "Clipboard queue exited before reporting its thread identifier: {error}"
+                );
+                0
+            }
+        }
     };
     #[cfg(not(target_os = "windows"))]
     thread::spawn(move || {
@@ -1002,25 +1058,6 @@ pub(super) fn enqueue_rename(
         .map_err(|_| "The file operation did not return a result.".to_string())?
 }
 
-pub(super) fn enqueue_copy(
-    paths: Vec<String>,
-    destination: PathBuf,
-    queue: &FileOperationQueue,
-) -> Result<CopyResult, String> {
-    let (response_sender, response_receiver) = mpsc::channel();
-    queue
-        .sender
-        .send(FileOperationTask::Copy {
-            paths,
-            destination,
-            response: response_sender,
-        })
-        .map_err(|_| "The file operation queue is unavailable.".to_string())?;
-    response_receiver
-        .recv()
-        .map_err(|_| "The file operation did not return a result.".to_string())
-}
-
 pub(super) fn start_transfer_task(
     paths: Vec<String>,
     destination: PathBuf,
@@ -1065,18 +1102,18 @@ pub(super) fn start_transfer_task(
         if tasks.len() >= 64 {
             let mut completed_ids = tasks
                 .iter()
-                .filter_map(|(task_id, control)| {
-                    control
-                        .snapshot
-                        .lock()
-                        .ok()
-                        .filter(|snapshot| {
-                            matches!(
-                                snapshot.state,
-                                FileTaskState::Completed | FileTaskState::Cancelled
-                            )
-                        })
-                        .map(|_| *task_id)
+                .filter_map(|(task_id, control)| match control.snapshot.lock() {
+                    Ok(snapshot) => matches!(
+                        snapshot.state,
+                        FileTaskState::Completed | FileTaskState::Cancelled
+                    )
+                    .then_some(*task_id),
+                    Err(_) => {
+                        log::error!(
+                            "Unable to inspect file task #{task_id} during registry pruning"
+                        );
+                        None
+                    }
                 })
                 .collect::<Vec<_>>();
             completed_ids.sort_unstable();
@@ -1102,6 +1139,8 @@ pub(super) fn start_transfer_task(
     {
         if let Ok(mut tasks) = queue.tasks.lock() {
             tasks.remove(&id);
+        } else {
+            log::error!("Unable to remove rejected file task #{id} from the registry");
         }
         return Err("The file operation queue is unavailable.".to_string());
     }

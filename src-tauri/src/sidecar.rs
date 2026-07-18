@@ -35,8 +35,11 @@ pub(super) fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
     let cache = SIDECAR_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(entries) = cache.lock() {
         if let Some(path) = entries.get(name) {
+            log::debug!("Using cached {name} sidecar path: {}", path_string(path));
             return Ok(path.clone());
         }
+    } else {
+        log::warn!("Unable to read the {name} sidecar path cache; resolving from disk");
     }
 
     let mut candidates = Vec::new();
@@ -60,11 +63,22 @@ pub(super) fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
     let resolved = candidates
         .into_iter()
         .find(|candidate| candidate.is_file())
-        .map(|candidate| fs::canonicalize(&candidate).unwrap_or(candidate));
+        .map(|candidate| match fs::canonicalize(&candidate) {
+            Ok(canonical) => canonical,
+            Err(error) => {
+                log::warn!(
+                    "Unable to canonicalize resolved {name} sidecar; using the discovered path: path={}, error={error}",
+                    path_string(&candidate)
+                );
+                candidate
+            }
+        });
     match resolved {
         Some(path) => {
             if let Ok(mut entries) = cache.lock() {
                 entries.insert(name.to_string(), path.clone());
+            } else {
+                log::warn!("Resolved {name} sidecar but could not update the path cache");
             }
             log::debug!("Resolved {name} sidecar at {}", path_string(&path));
             Ok(path)
@@ -89,10 +103,19 @@ pub(super) fn configure_sidecar_command(command: &mut Command) {
 
 pub(super) fn read_child_stderr(child: &mut Child) -> String {
     let Some(mut stderr) = child.stderr.take() else {
+        log::debug!(
+            "Media sidecar has no captured stderr pipe: process_id={}",
+            child.id()
+        );
         return String::new();
     };
     let mut output = String::new();
-    let _ = stderr.read_to_string(&mut output);
+    if let Err(error) = stderr.read_to_string(&mut output) {
+        log::warn!(
+            "Unable to read media sidecar stderr: process_id={}, error={error}",
+            child.id()
+        );
+    }
     output.trim().to_string()
 }
 
@@ -114,18 +137,36 @@ pub(super) fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<(),
                 ));
             }
             None if start.elapsed() >= timeout => {
+                log::error!(
+                    "Media sidecar timed out; terminating process tree: process_id={}, timeout_ms={}",
+                    child.id(),
+                    timeout.as_millis()
+                );
                 #[cfg(target_os = "windows")]
                 {
                     let mut taskkill = Command::new("taskkill");
                     configure_sidecar_command(&mut taskkill);
-                    let _ = taskkill
+                    if let Err(error) = taskkill
                         .args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
-                        .status();
+                        .status()
+                    {
+                        log::warn!("Unable to run taskkill for timed-out sidecar: process_id={}, error={error}", child.id());
+                    }
                 }
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(error) = child.kill() {
+                    log::warn!(
+                        "Unable to kill timed-out sidecar directly: process_id={}, error={error}",
+                        child.id()
+                    );
+                }
+                if let Err(error) = child.wait() {
+                    log::warn!(
+                        "Unable to reap timed-out sidecar: process_id={}, error={error}",
+                        child.id()
+                    );
+                }
                 return Err("The media sidecar timed out.".to_string());
             }
             None => thread::sleep(Duration::from_millis(100)),

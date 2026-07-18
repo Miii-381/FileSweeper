@@ -102,8 +102,10 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   useEffect(() => {
     setThumbnailSrc(null);
     if (!video) {
+      writeClientLog("debug", "播放器进入空闲状态：当前没有选中视频");
       return;
     }
+    writeClientLog("info", `播放器准备直连预览：${video.path}`);
     if (!thumbnailPath) {
       onEnsureThumbnail(video);
       return;
@@ -132,7 +134,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     setPlayerState(video ? "loading" : "idle");
     setIsPlaying(false);
     setCurrentTime(0);
-    setDuration(0);
+    setDuration(video?.duration ?? 0);
     streamStartTime.current = 0;
     resumeAfterSeek.current = false;
     directFallbackRequested.current = false;
@@ -148,7 +150,13 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
           if (active && request === streamRequest.current) {
             setStreamUrl(url);
             setIsTranscoded(nextIsTranscoded);
-            setDuration(streamDuration ?? 0);
+            setDuration(streamDuration ?? video.duration ?? 0);
+            writeClientLog(
+              "info",
+              `播放器流地址创建完成：${video.path}，转码 ${nextIsTranscoded}，时长 ${streamDuration ?? video.duration ?? 0}`,
+            );
+          } else {
+            writeClientLog("debug", `播放器流地址结果已过期，忽略 UI 更新：${video.path}，请求 ${request}`);
           }
         })
         .catch((error) => {
@@ -163,6 +171,10 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     return () => {
       active = false;
       window.clearTimeout(timer);
+      writeClientLog("debug", `播放器视频发生切换或卸载，停止旧转码：${video.path}`);
+      void invoke("stop_transcoded_preview", { path: video.path }).catch((error: unknown) => {
+        writeClientLog("warn", `停止旧转码预览失败：${video.path}，${errorMessage(error)}`);
+      });
     };
   }, [video]);
 
@@ -187,12 +199,14 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       return;
     }
     if (element.paused) {
+      writeClientLog("info", `请求播放视频：${video?.path ?? ""}`);
       void element.play().catch((error) => {
         const message = errorMessage(error);
         setPlayerError(message);
         writeClientLog("error", `播放预览失败：${video?.path ?? ""}，${message}`);
       });
     } else {
+      writeClientLog("info", `请求暂停视频：${video?.path ?? ""}`);
       element.pause();
     }
   };
@@ -209,16 +223,30 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     setPlayerError(null);
     setPlayerState("loading");
     setStreamUrl(null);
+    writeClientLog(
+      "info",
+      `请求 FFmpeg 转码预览：${video.path}，位置 ${targetTime.toFixed(3)} 秒，恢复播放 ${resume}，请求 ${request}`,
+    );
     void invoke<VideoStreamUrl>("get_video_stream_url", {
       path: video.path,
       startSeconds: targetTime,
       forceTranscode: true,
+      knownDuration: duration > 0 ? duration : undefined,
     })
       .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
         if (request === streamRequest.current) {
           setIsTranscoded(nextIsTranscoded);
           setDuration(streamDuration ?? duration);
           setStreamUrl(url);
+          writeClientLog(
+            "info",
+            `FFmpeg 转码预览地址创建完成：${video.path}，位置 ${targetTime.toFixed(3)} 秒，请求 ${request}`,
+          );
+        } else {
+          writeClientLog(
+            "debug",
+            `FFmpeg 转码预览结果已被更新的定位请求取代：${video.path}，位置 ${targetTime.toFixed(3)} 秒，请求 ${request}`,
+          );
         }
       })
       .catch((error) => {
@@ -242,16 +270,22 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
 
   const seek = (nextTime: number) => {
     const element = videoElement.current;
-    if (!element || !video || !Number.isFinite(nextTime)) {
+    if (!video || !Number.isFinite(nextTime)) {
       return;
     }
     const targetTime = Math.min(Math.max(0, nextTime), duration);
     if (!isTranscoded) {
+      if (!element) {
+        return;
+      }
       element.currentTime = targetTime;
       setCurrentTime(targetTime);
+      writeClientLog("info", `直连播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒`);
       return;
     }
-    startTranscodedPreview(targetTime, !element.paused);
+    const resume = element ? !element.paused : resumeAfterSeek.current || isPlaying;
+    writeClientLog("info", `转码播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒`);
+    startTranscodedPreview(targetTime, resume);
   };
 
   const skipPlayback = (seconds: number) => {
@@ -269,6 +303,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       element.pause();
     }
     setIsPlaying(false);
+    writeClientLog("debug", `播放器停止当前播放请求：${video?.path ?? "无视频"}`);
   };
 
   const releasePlayback = () => {
@@ -279,6 +314,12 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     }
     setStreamUrl(null);
     setPlayerState("idle");
+    if (video) {
+      writeClientLog("info", `播放器释放媒体资源：${video.path}`);
+      void invoke("stop_transcoded_preview", { path: video.path }).catch((error: unknown) => {
+        writeClientLog("warn", `释放播放器资源时停止转码失败：${video.path}，${errorMessage(error)}`);
+      });
+    }
   };
 
   useImperativeHandle(
@@ -296,16 +337,25 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     if (!video) {
       return;
     }
-    void invoke("open_video_externally", { path: video.path }).catch((error: unknown) => {
-      writeClientLog("error", `使用外部播放器打开失败：${video.path}，${errorMessage(error)}`);
-    });
+    writeClientLog("info", `播放器错误恢复：使用系统默认应用打开 ${video.path}`);
+    void invoke("open_video_externally", { path: video.path })
+      .then(() => writeClientLog("info", `已将视频交给系统默认应用：${video.path}`))
+      .catch((error: unknown) => {
+        writeClientLog("error", `使用外部播放器打开失败：${video.path}，${errorMessage(error)}`);
+      });
   };
 
   const toggleFullscreen = () => {
     if (document.fullscreenElement === playerRoot.current) {
-      void document.exitFullscreen?.();
+      writeClientLog("info", `退出播放器全屏：${video?.path ?? ""}`);
+      void document.exitFullscreen?.().catch((error: unknown) => {
+        writeClientLog("warn", `退出播放器全屏失败：${errorMessage(error)}`);
+      });
     } else {
-      void playerRoot.current?.requestFullscreen?.();
+      writeClientLog("info", `进入播放器全屏：${video?.path ?? ""}`);
+      void playerRoot.current?.requestFullscreen?.().catch((error: unknown) => {
+        writeClientLog("warn", `进入播放器全屏失败：${errorMessage(error)}`);
+      });
     }
   };
 
@@ -358,6 +408,10 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
                 return;
               }
               setPlayerState("ready");
+              writeClientLog(
+                "info",
+                `播放器可以播放：${video.path}，模式 ${isTranscoded ? "FFmpeg 转码" : "原文件直连"}，尺寸 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
+              );
               if (autoplay || resumeAfterSeek.current) {
                 resumeAfterSeek.current = false;
                 void videoElement.current?.play().catch((error) => {
@@ -376,15 +430,28 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
               if (!isTranscoded && Number.isFinite(event.currentTarget.duration)) {
                 setDuration(event.currentTarget.duration);
               }
+              writeClientLog(
+                "debug",
+                `播放器元数据已加载：${video.path}，模式 ${isTranscoded ? "转码" : "直连"}，时长 ${event.currentTarget.duration}，尺寸 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
+              );
             }}
             onTimeUpdate={(event) => {
               if (!isScrubbing.current) {
                 setCurrentTime(streamStartTime.current + event.currentTarget.currentTime);
               }
             }}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => setIsPlaying(false)}
+            onPlay={() => {
+              setIsPlaying(true);
+              writeClientLog("info", `播放器开始播放：${video.path}`);
+            }}
+            onPause={() => {
+              setIsPlaying(false);
+              writeClientLog("info", `播放器暂停：${video.path}`);
+            }}
+            onEnded={() => {
+              setIsPlaying(false);
+              writeClientLog("info", `播放器播放结束：${video.path}`);
+            }}
             onError={() => {
               if (!isTranscoded) {
                 fallbackDirectPreview("浏览器报告媒体加载错误", autoplay);
@@ -424,7 +491,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
           step="0.1"
           value={Math.min(currentTime, duration || 0)}
           aria-label="播放进度"
-          disabled={playerState !== "ready" || duration <= 0}
+          disabled={duration <= 0}
           onPointerDown={() => {
             isScrubbing.current = true;
           }}
@@ -450,6 +517,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
             const nextMuted = !isMuted;
             setIsMuted(nextMuted);
             onAudioPreferenceChange(playerVolume, nextMuted, true);
+            writeClientLog("info", `播放器静音状态更新：${video.path}，静音 ${nextMuted}`);
           }}
           disabled={playerState !== "ready"}
         >
@@ -479,8 +547,19 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
               onAudioPreferenceChange(playerVolume, true);
             }
           }}
+          onPointerUp={() => writeClientLog("info", `播放器音量调整完成：${video.path}，音量 ${isMuted ? 0 : playerVolume}`)}
+          onKeyUp={() => writeClientLog("debug", `播放器键盘调整音量：${video.path}，音量 ${isMuted ? 0 : playerVolume}`)}
         />
-        <select aria-label="播放速率" value={rate} disabled={playerState !== "ready"} onChange={(event) => setRate(Number(event.target.value))}>
+        <select
+          aria-label="播放速率"
+          value={rate}
+          disabled={playerState !== "ready"}
+          onChange={(event) => {
+            const nextRate = Number(event.target.value);
+            setRate(nextRate);
+            writeClientLog("info", `播放器速率调整：${video.path}，${rate}x -> ${nextRate}x`);
+          }}
+        >
           {[0.5, 0.75, 1, 1.25, 1.5, 2].map((value) => <option key={value} value={value}>{value}×</option>)}
         </select>
         <button type="button" aria-label={isFullscreen ? "退出全屏" : "全屏"} title={isFullscreen ? "退出全屏" : "全屏"} disabled={playerState !== "ready"} onClick={toggleFullscreen}>

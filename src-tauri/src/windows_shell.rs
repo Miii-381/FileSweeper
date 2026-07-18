@@ -1,4 +1,35 @@
 use super::*;
+#[cfg(target_os = "windows")]
+#[windows::core::implement(IDropSource)]
+struct WindowsFileDragSource;
+
+#[cfg(target_os = "windows")]
+impl WindowsFileDragSource {
+    fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl IDropSource_Impl for WindowsFileDragSource_Impl {
+    fn QueryContinueDrag(
+        &self,
+        escape_pressed: windows::core::BOOL,
+        key_state: MODIFIERKEYS_FLAGS,
+    ) -> HRESULT {
+        if escape_pressed.as_bool() {
+            DRAGDROP_S_CANCEL
+        } else if key_state.0 & MK_LBUTTON.0 == 0 {
+            DRAGDROP_S_DROP
+        } else {
+            S_OK
+        }
+    }
+
+    fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+        DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
 
 #[cfg(target_os = "windows")]
 thread_local! {

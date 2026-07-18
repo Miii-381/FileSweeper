@@ -32,6 +32,7 @@ function cacheThumbnailData(thumbnailPath: string, dataUrl: string) {
   }
   thumbnailDataUrls.set(thumbnailPath, dataUrl);
   thumbnailDataCacheBytes += dataUrlMemorySize(dataUrl);
+  let evicted = 0;
   while (thumbnailDataCacheBytes > MAX_THUMBNAIL_DATA_CACHE_BYTES && thumbnailDataUrls.size > 1) {
     const oldest = thumbnailDataUrls.entries().next().value;
     if (!oldest) {
@@ -40,6 +41,13 @@ function cacheThumbnailData(thumbnailPath: string, dataUrl: string) {
     const [oldestPath, oldestDataUrl] = oldest;
     thumbnailDataUrls.delete(oldestPath);
     thumbnailDataCacheBytes -= dataUrlMemorySize(oldestDataUrl);
+    evicted += 1;
+  }
+  if (evicted > 0) {
+    writeClientLog(
+      "debug",
+      `缩略图内存缓存执行 LRU 淘汰：淘汰 ${evicted} 项，保留 ${thumbnailDataUrls.size} 项，估算字节 ${thumbnailDataCacheBytes}`,
+    );
   }
 }
 
@@ -48,13 +56,16 @@ export function invalidateThumbnailData(thumbnailPath: string) {
   if (dataUrl) {
     thumbnailDataCacheBytes -= dataUrlMemorySize(dataUrl);
     thumbnailDataUrls.delete(thumbnailPath);
+    writeClientLog("debug", `缩略图内存缓存失效：${thumbnailPath}`);
   }
 }
 
 export function clearThumbnailDataCache() {
+  const entries = thumbnailDataUrls.size;
   thumbnailDataUrls.clear();
   thumbnailDataRequests.clear();
   thumbnailDataCacheBytes = 0;
+  writeClientLog("info", `清空缩略图内存缓存：${entries} 项`);
 }
 
 
@@ -70,6 +81,7 @@ export function loadThumbnailData(video: VideoEntry, thumbnailPath: string | nul
 
   const pending = thumbnailDataRequests.get(thumbnailPath);
   if (pending) {
+    writeClientLog("debug", `复用进行中的缩略图读取请求：${thumbnailPath}`);
     return pending;
   }
 
@@ -152,6 +164,7 @@ export const VideoThumbnail = memo(function VideoThumbnail({
       return;
     }
     if (!("IntersectionObserver" in window)) {
+      writeClientLog("warn", `浏览器不支持 IntersectionObserver，回退为立即请求缩略图：${video.path}`);
       onVisible(video);
       return;
     }
