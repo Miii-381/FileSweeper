@@ -69,6 +69,9 @@ impl MediaSidecarPermits {
 
     fn release(&self) {
         let Ok(mut state) = self.state.lock() else {
+            log::error!(
+                "Unable to release a background sidecar permit because the pool lock is poisoned"
+            );
             return;
         };
         state.in_flight = state.in_flight.saturating_sub(1);
@@ -287,6 +290,28 @@ pub(super) fn run_background_sidecar_with_retries<T>(
     Err(last_error)
 }
 
+pub(super) fn run_background_sidecar_once<T>(
+    media_sidecar_pool: &Arc<MediaSidecarPermits>,
+    label: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    log::debug!("Waiting for background sidecar permit: label={label}, attempt=1/1");
+    let permit = media_sidecar_pool.acquire()?;
+    log::debug!("Background sidecar attempt started: label={label}, attempt=1/1");
+    let result = operation();
+    drop(permit);
+    match result {
+        Ok(value) => {
+            log::debug!("Background sidecar attempt succeeded: label={label}, attempt=1/1");
+            Ok(value)
+        }
+        Err(error) => {
+            log::warn!("{label} attempt 1/1 failed: {error}");
+            Err(error)
+        }
+    }
+}
+
 fn probe_and_cache_media_info(
     video_path: &Path,
     media_sidecar_pool: &Arc<MediaSidecarPermits>,
@@ -463,6 +488,22 @@ fn render_thumbnail_with_ffmpeg(
     Ok(generated)
 }
 
+pub(super) fn remove_failed_thumbnail_output(path: &Path, stage: &str) {
+    if !path.exists() {
+        return;
+    }
+    match fs::remove_file(path) {
+        Ok(()) => log::debug!(
+            "Removed failed thumbnail temporary output: stage={stage}, path={}",
+            path_string(path)
+        ),
+        Err(error) => log::warn!(
+            "Unable to remove failed thumbnail temporary output: stage={stage}, path={}, error={error}",
+            path_string(path)
+        ),
+    }
+}
+
 fn generate_thumbnail_impl(
     path: &Path,
     capture_position: &str,
@@ -499,22 +540,25 @@ fn generate_thumbnail_impl(
         path_string(&video_path),
         path_string(&thumbnail_path)
     );
-    let thumbnailer = resolve_sidecar("ffmpegthumbnailer")?;
     let capture_time = thumbnail_capture_time(capture_position);
     let temporary_path = thumbnail_path.with_extension("tmp.jpg");
-    let generated = match run_background_sidecar_with_retries(
-        media_sidecar_pool,
-        "ffmpegthumbnailer",
-        || match render_thumbnail(&thumbnailer, &video_path, &temporary_path, capture_time)? {
-            true => Ok(true),
-            false => Err("ffmpegthumbnailer produced no image.".to_string()),
-        },
-    ) {
+    let thumbnailer_result = match resolve_sidecar("ffmpegthumbnailer") {
+        Ok(thumbnailer) => {
+            run_background_sidecar_once(media_sidecar_pool, "ffmpegthumbnailer", || {
+                match render_thumbnail(&thumbnailer, &video_path, &temporary_path, capture_time)? {
+                    true => Ok(true),
+                    false => Err("ffmpegthumbnailer produced no image.".to_string()),
+                }
+            })
+        }
+        Err(error) => Err(format!("Unable to resolve ffmpegthumbnailer: {error}")),
+    };
+    let generated = match thumbnailer_result {
         Ok(true) => true,
         Ok(false) => false,
         Err(error) => {
             log::warn!(
-                "ffmpegthumbnailer failed for {}; using FFmpeg fallback: {}",
+                "ffmpegthumbnailer was unavailable or failed after at most one attempt for {}; using FFmpeg fallback immediately: {}",
                 path_string(&video_path),
                 error
             );
@@ -548,18 +592,24 @@ fn generate_thumbnail_impl(
                 duration,
             );
             drop(permit);
-            result?
+            match result {
+                Ok(generated) => generated,
+                Err(fallback_error) => {
+                    remove_failed_thumbnail_output(&temporary_path, "ffmpeg-fallback");
+                    log::error!(
+                        "FFmpeg thumbnail fallback failed: video={}, error={fallback_error}",
+                        path_string(&video_path)
+                    );
+                    return Err(format!(
+                        "FFmpeg thumbnail fallback failed for {}: {fallback_error}",
+                        path_string(&video_path)
+                    ));
+                }
+            }
         }
     };
     if !generated {
-        if let Err(error) = fs::remove_file(&temporary_path) {
-            if temporary_path.exists() {
-                log::warn!(
-                    "Unable to remove failed thumbnail temporary file: path={}, error={error}",
-                    path_string(&temporary_path)
-                );
-            }
-        }
+        remove_failed_thumbnail_output(&temporary_path, "no-image-generated");
         let error =
             "Neither ffmpegthumbnailer nor the FFmpeg fallback created a thumbnail.".to_string();
         log::error!(
@@ -578,8 +628,15 @@ fn generate_thumbnail_impl(
             fs::remove_file(&thumbnail_path)
                 .map_err(|error| format!("Unable to replace the cached thumbnail: {error}"))?;
         }
-        fs::rename(&temporary_path, &thumbnail_path)
-            .map_err(|error| format!("Unable to store the cached thumbnail: {error}"))?;
+        if let Err(error) = fs::rename(&temporary_path, &thumbnail_path) {
+            remove_failed_thumbnail_output(&temporary_path, "cache-commit");
+            log::error!(
+                "Unable to commit generated thumbnail to cache: video={}, output={}, error={error}",
+                path_string(&video_path),
+                path_string(&thumbnail_path)
+            );
+            return Err(format!("Unable to store the cached thumbnail: {error}"));
+        }
         record_thumbnail_cache(
             &video_path,
             &metadata,

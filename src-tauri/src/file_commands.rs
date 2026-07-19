@@ -1,24 +1,5 @@
 use super::*;
 
-fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
-    file_operations::normalize_video_paths(paths)
-}
-
-fn enqueue_recycle(
-    paths: Vec<PathBuf>,
-    queue: &FileOperationQueue,
-) -> Result<RecycleResult, String> {
-    file_operations::enqueue_recycle(paths, queue)
-}
-
-fn enqueue_rename(
-    path: PathBuf,
-    new_stem: String,
-    queue: &FileOperationQueue,
-) -> Result<RenameResult, String> {
-    file_operations::enqueue_rename(path, new_stem, queue)
-}
-
 #[tauri::command]
 pub(super) fn recycle_videos(
     paths: Vec<String>,
@@ -27,7 +8,7 @@ pub(super) fn recycle_videos(
     video_stream_server: tauri::State<VideoStreamServer>,
 ) -> Result<RecycleResult, String> {
     log::info!("Recycling {} video(s)", paths.len());
-    let normalized_paths = normalize_video_paths(paths).map_err(|error| {
+    let normalized_paths = file_operations::normalize_video_paths(paths).map_err(|error| {
         log::warn!("Recycle request rejected during path validation: {error}");
         error
     })?;
@@ -54,7 +35,7 @@ pub(super) fn recycle_videos(
             }
         }
     }
-    enqueue_recycle(normalized_paths, &queue)
+    file_operations::enqueue_recycle(normalized_paths, &queue)
         .inspect(|result| {
             log::info!(
                 "Recycle request completed: recycled={}, failed={}",
@@ -72,11 +53,11 @@ pub(super) fn rename_video(
     queue: tauri::State<FileOperationQueue>,
 ) -> Result<RenameResult, String> {
     log::info!("Renaming video: path={path}, requested_stem={new_stem}");
-    let paths = normalize_video_paths(vec![path]).map_err(|error| {
+    let paths = file_operations::normalize_video_paths(vec![path]).map_err(|error| {
         log::warn!("Rename request rejected during path validation: {error}");
         error
     })?;
-    enqueue_rename(
+    file_operations::enqueue_rename(
         paths.into_iter().next().expect("one normalized video path"),
         new_stem,
         &queue,
@@ -159,7 +140,7 @@ pub(super) fn write_files_to_clipboard(
         "Received file clipboard write request: operation={operation:?}, requested_paths={}",
         paths.len()
     );
-    let paths = normalize_video_paths(paths).map_err(|error| {
+    let paths = file_operations::normalize_video_paths(paths).map_err(|error| {
         log::warn!("File clipboard write rejected during path validation: {error}");
         error
     })?;
@@ -268,20 +249,16 @@ pub(super) fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
-fn start_windows_file_drag(paths: Vec<PathBuf>) -> Result<(), String> {
-    windows_shell::start_windows_file_drag(paths)
-}
-
 #[tauri::command]
 pub(super) fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
     let requested = paths.len();
     log::info!("Received file-drag request: requested_paths={requested}");
-    let paths = normalize_video_paths(paths).map_err(|error| {
+    let paths = file_operations::normalize_video_paths(paths).map_err(|error| {
         log::warn!("File-drag request rejected during path validation: {error}");
         error
     })?;
     log::debug!("Received file-drag command for {} video(s)", paths.len());
-    start_windows_file_drag(paths)
+    windows_shell::start_windows_file_drag(paths)
         .inspect(|_| log::info!("File-drag session completed: paths={requested}"))
         .inspect_err(|error| {
             log::error!("File-drag session failed: paths={requested}, error={error}")

@@ -146,13 +146,24 @@ pub(super) fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<(),
                 {
                     let mut taskkill = Command::new("taskkill");
                     configure_sidecar_command(&mut taskkill);
-                    if let Err(error) = taskkill
+                    match taskkill
                         .args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .status()
                     {
-                        log::warn!("Unable to run taskkill for timed-out sidecar: process_id={}, error={error}", child.id());
+                        Ok(status) if status.success() => log::debug!(
+                            "Timed-out sidecar process tree terminated: process_id={}",
+                            child.id()
+                        ),
+                        Ok(status) => log::warn!(
+                            "taskkill returned a failure status for timed-out sidecar: process_id={}, status={status}",
+                            child.id()
+                        ),
+                        Err(error) => log::warn!(
+                            "Unable to run taskkill for timed-out sidecar: process_id={}, error={error}",
+                            child.id()
+                        ),
                     }
                 }
                 if let Err(error) = child.kill() {

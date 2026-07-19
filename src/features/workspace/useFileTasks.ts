@@ -45,8 +45,10 @@ export function useFileTasks({
   const completedTasks = useRef<Set<number>>(new Set());
   const refreshWorkspaceRef = useRef(refreshWorkspace);
   const notifyRef = useRef(notify);
+  const workspacePathRef = useRef<string | null>(workspace?.path ?? null);
   refreshWorkspaceRef.current = refreshWorkspace;
   notifyRef.current = notify;
+  workspacePathRef.current = workspace?.path ?? null;
 
   const applyRecycleResult = useCallback(
     (result: RecycleResult) => {
@@ -153,12 +155,17 @@ export function useFileTasks({
     }
     renameSubmitting.current = true;
     setRenamingPath(null);
+    const renamedWorkspacePath = workspace.path;
     writeClientLog("info", `提交视频重命名：${selected.path} -> ${newStem}${selected.extension}`);
     try {
       const result = await invoke<RenameResult>("rename_video", { path: selected.path, newStem });
-      await refreshWorkspaceRef.current(workspace.path, "重命名");
-      setSelectedVideos(new Set([result.newPath]));
-      setSelectionAnchor(result.newPath);
+      await refreshWorkspaceRef.current(renamedWorkspacePath, "重命名");
+      if (workspacePathRef.current?.toLocaleLowerCase() === renamedWorkspacePath.toLocaleLowerCase()) {
+        setSelectedVideos(new Set([result.newPath]));
+        setSelectionAnchor(result.newPath);
+      } else {
+        writeClientLog("debug", `重命名完成时工作区已切换，跳过选择更新：原工作区 ${renamedWorkspacePath}，当前 ${workspacePathRef.current ?? "无"}`);
+      }
       notifyRef.current(`已重命名为 ${result.name}`);
       writeClientLog("info", `重命名视频：${result.oldPath} -> ${result.newPath}`);
     } catch (renameError) {
@@ -224,8 +231,7 @@ export function useFileTasks({
     }
   }, [startTransferTask]);
 
-  const writeSelectionToFileClipboard = useCallback(async (operation: FileTaskOperation) => {
-    const paths = [...selectedVideos];
+  const writeFilesToClipboard = useCallback(async (paths: string[], operation: FileTaskOperation) => {
     if (paths.length === 0) {
       return;
     }
@@ -238,7 +244,12 @@ export function useFileTasks({
       notifyRef.current(message);
       writeClientLog("error", `写入系统文件剪贴板失败：${message}`);
     }
-  }, [selectedVideos]);
+  }, []);
+
+  const writeSelectionToFileClipboard = useCallback(
+    (operation: FileTaskOperation) => writeFilesToClipboard([...selectedVideos], operation),
+    [selectedVideos, writeFilesToClipboard],
+  );
 
   const pasteFileClipboard = useCallback(async () => {
     if (!workspace?.isAvailable) {
@@ -278,6 +289,7 @@ export function useFileTasks({
   }, [activeFileTask]);
 
   useEffect(() => {
+    let active = true;
     let unlisten: (() => void) | undefined;
     void listen<FileTaskSnapshot>("file-task-progress", (event) => {
       const task = event.payload;
@@ -296,8 +308,9 @@ export function useFileTasks({
         failed > 0 ? "warn" : "info",
         `文件任务 #${task.id} 完成：${verb}成功 ${completed}，跳过 ${skipped}，失败 ${failed}，取消 ${cancelled}`,
       );
-      if (workspace?.path) {
-        void refreshWorkspaceRef.current(workspace.path, `文件任务 #${task.id} 完成`);
+      const workspacePath = workspacePathRef.current;
+      if (workspacePath) {
+        void refreshWorkspaceRef.current(workspacePath, `文件任务 #${task.id} 完成`);
       }
       if (dismissTimer.current !== null) {
         window.clearTimeout(dismissTimer.current);
@@ -308,11 +321,15 @@ export function useFileTasks({
       }, 5000);
     })
       .then((cleanup) => {
-        unlisten = cleanup;
+        if (active) unlisten = cleanup;
+        else cleanup();
       })
       .catch((listenError: unknown) => writeClientLog("warn", `文件任务监听不可用：${errorMessage(listenError)}`));
-    return () => unlisten?.();
-  }, [workspace?.path]);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(
     () => () => {
@@ -336,6 +353,7 @@ export function useFileTasks({
     startTransferTask,
     copyDroppedVideos,
     copyVideosToDirectory,
+    writeFilesToClipboard,
     writeSelectionToFileClipboard,
     pasteFileClipboard,
     cancelActiveFileTask,

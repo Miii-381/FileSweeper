@@ -2,15 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { WorkspaceContextMenu, WorkspaceListing } from "../../app-types";
+import type { FileTaskOperation, WorkspaceContextMenu, WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 import type { ContextMenuAction } from "../../components/ThemedContextMenu";
 
-export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspace, copyVideosToDirectory, pasteFileClipboard, recycleVideos, notify }: {
+export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspace, copyVideosToDirectory, writeFilesToClipboard, pasteFileClipboard, recycleVideos, notify }: {
   workspace: WorkspaceListing | null;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   activateWorkspace: (path: string) => Promise<void>;
   copyVideosToDirectory: (paths: string[]) => Promise<void>;
+  writeFilesToClipboard: (paths: string[], operation: FileTaskOperation) => Promise<void>;
   pasteFileClipboard: () => Promise<void>;
   recycleVideos: (paths: string[]) => Promise<void>;
   notify: (message: string) => void;
@@ -48,13 +49,9 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
         const path = current.primaryPath ?? current.workspacePath;
         if (path) await invoke("reveal_path", { path });
       } else if (action === "copyTo" && current.paths.length > 0) await copyVideosToDirectory(current.paths);
-      else if (action === "clipboardCopy" && current.paths.length > 0) {
-        await invoke("write_files_to_clipboard", { paths: current.paths, operation: "copy" });
-        notify(`已复制 ${current.paths.length} 个视频到系统文件剪贴板`);
-      } else if (action === "clipboardCut" && current.paths.length > 0) {
-        await invoke("write_files_to_clipboard", { paths: current.paths, operation: "move" });
-        notify(`已剪切 ${current.paths.length} 个视频到系统文件剪贴板`);
-      } else if (action === "paste") await pasteFileClipboard();
+      else if (action === "clipboardCopy" && current.paths.length > 0) await writeFilesToClipboard(current.paths, "copy");
+      else if (action === "clipboardCut" && current.paths.length > 0) await writeFilesToClipboard(current.paths, "move");
+      else if (action === "paste") await pasteFileClipboard();
       else if (action === "delete" && current.paths.length > 0) await recycleVideos(current.paths);
       writeClientLog("info", `菜单动作完成：目标 ${current.kind}，动作 ${action}`);
     } catch (actionError) {
@@ -62,7 +59,7 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
       notify(message);
       writeClientLog("error", `执行工作区右键菜单操作失败：${message}`);
     }
-  }, [activateWorkspace, copyVideosToDirectory, menu, notify, pasteFileClipboard, recycleVideos, refreshWorkspace]);
+  }, [activateWorkspace, copyVideosToDirectory, menu, notify, pasteFileClipboard, recycleVideos, refreshWorkspace, writeFilesToClipboard]);
 
   useEffect(() => {
     if (!menu) return;

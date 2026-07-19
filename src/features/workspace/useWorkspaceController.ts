@@ -47,6 +47,8 @@ export function useWorkspaceController({
   const workspaceRequest = useRef(0);
   const workspaceNavigationPending = useRef(false);
   const workspaceScanRequest = useRef(0);
+  const currentWorkspacePath = useRef<string | null>(workspace?.path ?? null);
+  currentWorkspacePath.current = workspace?.path ?? null;
 
   const activateWorkspace = async (
     requestedPath: string,
@@ -132,6 +134,10 @@ export function useWorkspaceController({
   };
 
   const markWorkspaceUnavailable = (path: string, reason: string) => {
+    if (currentWorkspacePath.current?.toLocaleLowerCase() !== path.toLocaleLowerCase()) {
+      writeClientLog("debug", `忽略非当前工作区的断连结果：当前 ${currentWorkspacePath.current ?? "无"}，结果 ${path}`);
+      return;
+    }
     setWorkspace((current) =>
       current && current.path.toLocaleLowerCase() === path.toLocaleLowerCase()
         ? { ...current, videos: [], mediaSuppressed: false, isAvailable: false }
@@ -152,6 +158,10 @@ export function useWorkspaceController({
       const listing = await invoke<WorkspaceListing>("scan_workspace", { path, requestId: scanRequestId });
       if (scanRequestId !== workspaceScanRequest.current) {
         writeClientLog("debug", `工作区刷新响应已过期，忽略：${path}，${reason}`);
+        return;
+      }
+      if (currentWorkspacePath.current?.toLocaleLowerCase() !== path.toLocaleLowerCase()) {
+        writeClientLog("debug", `工作区刷新目标已不是当前工作区，忽略列表和选择更新：当前 ${currentWorkspacePath.current ?? "无"}，结果 ${path}，${reason}`);
         return;
       }
       setWorkspace((current) => {

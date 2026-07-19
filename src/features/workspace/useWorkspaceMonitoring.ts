@@ -22,6 +22,7 @@ export function useWorkspaceMonitoring({ workspace, refreshWorkspace, markUnavai
 
   useEffect(() => {
     if (!workspace?.isAvailable) return;
+    let active = true;
     let unlisten: (() => void) | undefined;
     void getCurrentWebview().onDragDropEvent((event) => {
       if (event.payload.type === "enter" || event.payload.type === "over") setIsExternalDropActive(true);
@@ -31,10 +32,13 @@ export function useWorkspaceMonitoring({ workspace, refreshWorkspace, markUnavai
         writeClientLog("info", `接收拖入文件：${event.payload.paths.length} 个`);
         void copyDroppedRef.current(event.payload.paths, workspace.path);
       }
-    }).then((cleanup) => { unlisten = cleanup; }).catch((monitorError: unknown) => {
+    }).then((cleanup) => {
+      if (active) unlisten = cleanup;
+      else cleanup();
+    }).catch((monitorError: unknown) => {
       writeClientLog("warn", `原生拖入监听不可用：${errorMessage(monitorError)}`);
     });
-    return () => { setIsExternalDropActive(false); unlisten?.(); };
+    return () => { active = false; setIsExternalDropActive(false); unlisten?.(); };
   }, [workspace?.isAvailable, workspace?.path]);
 
   useEffect(() => {

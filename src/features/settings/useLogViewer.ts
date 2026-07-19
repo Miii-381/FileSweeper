@@ -16,7 +16,8 @@ export function useLogViewer(notify: (message: string) => void) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const pollTimer = useRef<number | null>(null);
-  const pollInFlight = useRef(false);
+  const session = useRef(0);
+  const pollInFlight = useRef<number | null>(null);
   const hash = useRef<string | null>(null);
 
   const content = useMemo(
@@ -25,32 +26,47 @@ export function useLogViewer(notify: (message: string) => void) {
   );
 
   const pollLogs = useCallback(async (force = false) => {
-    if (pollInFlight.current) {
+    const requestSession = session.current;
+    if (pollInFlight.current === requestSession) {
       return;
     }
-    pollInFlight.current = true;
-    setLoading(true);
+    pollInFlight.current = requestSession;
+    if (force) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const nextSnapshot = await invoke<LogSnapshot>("poll_log_file", {
         previousHash: force ? null : hash.current,
         maxBytes: 512 * 1024,
       });
+      if (requestSession !== session.current) {
+        writeClientLog("debug", "日志轮询结果属于已关闭的查看会话，忽略状态更新");
+        return;
+      }
       hash.current = nextSnapshot.hash;
       if (nextSnapshot.changed) {
         setSnapshot(nextSnapshot);
       }
     } catch (pollError) {
+      if (requestSession !== session.current) {
+        return;
+      }
       const message = errorMessage(pollError);
       setError(message);
       writeClientLog("error", `读取日志失败：${message}`);
     } finally {
-      setLoading(false);
-      pollInFlight.current = false;
+      if (force && requestSession === session.current) {
+        setLoading(false);
+      }
+      if (pollInFlight.current === requestSession) {
+        pollInFlight.current = null;
+      }
     }
   }, []);
 
   const open = useCallback(() => {
+    session.current += 1;
     setSnapshot(null);
     hash.current = null;
     setError(null);
@@ -60,8 +76,10 @@ export function useLogViewer(notify: (message: string) => void) {
 
   const close = useCallback(() => {
     writeClientLog("info", "关闭日志面板并停止文件轮询");
+    session.current += 1;
     setIsOpen(false);
     setSnapshot(null);
+    setLoading(false);
     hash.current = null;
     setError(null);
   }, []);

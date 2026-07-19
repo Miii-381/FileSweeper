@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ThumbnailBatchResult, ThumbnailResult, VideoEntry } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
@@ -31,9 +31,8 @@ export function useThumbnailQueue({
   const scrollTimer = useRef<number | null>(null);
   const failures = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    currentVideoPaths.current = new Set(videos.map((video) => video.path));
-  }, [videos]);
+  const videoPaths = useMemo(() => new Set(videos.map((video) => video.path)), [videos]);
+  currentVideoPaths.current = videoPaths;
 
   const handleViewportScroll = useCallback(() => {
     if (!scrollActive.current) {
@@ -165,16 +164,24 @@ export function useThumbnailQueue({
   }, [clearDisplayOverrides]);
 
   useEffect(() => {
+    let active = true;
     let unlisten: (() => void) | undefined;
     void listen<ThumbnailResult>("thumbnail-generated", (event) => applyResult(event.payload))
       .then((cleanup) => {
-        unlisten = cleanup;
-        writeClientLog("debug", "缩略图完成事件监听已启动");
+        if (active) {
+          unlisten = cleanup;
+          writeClientLog("debug", "缩略图完成事件监听已启动");
+        } else {
+          cleanup();
+        }
       })
       .catch((listenError: unknown) => {
         writeClientLog("warn", `缩略图完成事件监听不可用，将依赖批次返回结果：${errorMessage(listenError)}`);
       });
-    return () => unlisten?.();
+    return () => {
+      active = false;
+      unlisten?.();
+    };
   }, [applyResult]);
 
   useEffect(

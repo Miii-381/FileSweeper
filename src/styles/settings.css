@@ -150,10 +150,7 @@
     border-radius: 6px;
     min-height: 116px;
     max-height: min(40vh, 360px);
-    overflow: auto
-}
-
-.log-output {
+    overflow: auto;
     color: var(--text-secondary);
     white-space: pre-wrap;
     overflow-wrap: anywhere;

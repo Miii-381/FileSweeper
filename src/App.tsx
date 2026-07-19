@@ -108,6 +108,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const previewPlayerRef = useRef<PreviewPlayerHandle>(null);
   const panelGroupRef = useRef<HTMLDivElement>(null);
+  const initializationStarted = useRef(false);
 
   const effectiveColorMode: ColorMode =
     config.settings.appearance === "system" ? systemColorMode : config.settings.appearance;
@@ -259,6 +260,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     submitInlineRename,
     copyDroppedVideos,
     copyVideosToDirectory,
+    writeFilesToClipboard,
     writeSelectionToFileClipboard,
     pasteFileClipboard,
     cancelActiveFileTask,
@@ -308,6 +310,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     refreshWorkspace,
     activateWorkspace,
     copyVideosToDirectory,
+    writeFilesToClipboard,
     pasteFileClipboard,
     recycleVideos,
     notify,
@@ -474,6 +477,10 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   }, []);
 
   useEffect(() => {
+    if (initializationStarted.current) {
+      return;
+    }
+    initializationStarted.current = true;
     const initialize = async () => {
       const memory = workspaceMemorySummary();
       writeClientLog(

@@ -1,4 +1,5 @@
 import { ClipboardCopy, RefreshCw, X } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 
 import type { LogSnapshot } from "../../app-types";
 import { formatBytes, type LogMinimumLevel } from "../../app-utils";
@@ -24,6 +25,28 @@ export function LogDialog({
   onCopy: () => void;
   onClose: () => void;
 }) {
+  const outputRef = useRef<HTMLPreElement>(null);
+  const savedScrollTop = useRef(0);
+  const followsTail = useRef(false);
+
+  useLayoutEffect(() => {
+    const output = outputRef.current;
+    if (!output) {
+      return;
+    }
+    if (followsTail.current) {
+      output.scrollTop = output.scrollHeight;
+    } else {
+      output.scrollTop = Math.min(
+        savedScrollTop.current,
+        Math.max(0, output.scrollHeight - output.clientHeight),
+      );
+    }
+    savedScrollTop.current = output.scrollTop;
+  }, [content]);
+
+  const displayedContent = content.trim();
+
   return (
     <div className="settings-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="logs-dialog" role="dialog" aria-modal="true" aria-labelledby="logs-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -59,7 +82,18 @@ export function LogDialog({
           {error && <div className="log-error">{error}</div>}
           <section className="log-section">
             <h3>文件日志</h3>
-            <pre className="log-output">{loading ? "正在读取日志..." : content.trim() || "当前级别下暂无日志"}</pre>
+            <pre
+              ref={outputRef}
+              className="log-output"
+              aria-busy={loading}
+              onScroll={(event) => {
+                const output = event.currentTarget;
+                savedScrollTop.current = output.scrollTop;
+                followsTail.current = output.scrollHeight - output.scrollTop - output.clientHeight <= 8;
+              }}
+            >
+              {displayedContent || (loading ? "正在读取日志..." : "当前级别下暂无日志")}
+            </pre>
           </section>
         </div>
       </section>

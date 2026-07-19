@@ -111,6 +111,28 @@ fn background_sidecar_retry_budget_is_three_total_attempts() {
 }
 
 #[test]
+fn thumbnail_sidecar_failure_stops_after_one_attempt() {
+    let pool = Arc::new(MediaSidecarPermits::new(1));
+    let attempts = AtomicU64::new(0);
+    let result = media_processing::run_background_sidecar_once(&pool, "ffmpegthumbnailer", || {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        Err::<(), _>("thumbnailer failed".to_string())
+    });
+    assert_eq!(result.unwrap_err(), "thumbnailer failed");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_thumbnail_fallback_removes_partial_output() {
+    let directory = test_directory("failed-thumbnail-output");
+    let partial = directory.join("thumbnail.tmp.jpg");
+    fs::write(&partial, b"partial image").unwrap();
+    media_processing::remove_failed_thumbnail_output(&partial, "test-fallback");
+    assert!(!partial.exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn background_sidecar_releases_its_permit_between_retries() {
     let pool = Arc::new(MediaSidecarPermits::new(1));
     let attempts = Arc::new(AtomicU64::new(0));
