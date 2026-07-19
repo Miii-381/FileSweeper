@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { FileTaskOperation, WorkspaceContextMenu, WorkspaceListing } from "../../app-types";
+import type { DirectoryEntry, FileTaskOperation, WorkspaceContextMenu, WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 import type { ContextMenuAction } from "../../components/ThemedContextMenu";
 
-export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspace, copyVideosToDirectory, writeFilesToClipboard, pasteFileClipboard, recycleVideos, notify }: {
+export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspace, copyVideosToDirectory, writeFilesToClipboard, pasteFileClipboard, recycleVideos, recycleDirectory, notify }: {
   workspace: WorkspaceListing | null;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   activateWorkspace: (path: string) => Promise<void>;
@@ -14,15 +14,16 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
   writeFilesToClipboard: (paths: string[], operation: FileTaskOperation) => Promise<void>;
   pasteFileClipboard: () => Promise<void>;
   recycleVideos: (paths: string[]) => Promise<void>;
+  recycleDirectory: (path: string) => Promise<void>;
   notify: (message: string) => void;
 }) {
   const [menu, setMenu] = useState<WorkspaceContextMenu | null>(null);
 
-  const showPathMenu = useCallback((event: ReactMouseEvent<HTMLElement>, path: string) => {
+  const showPathMenu = useCallback((event: ReactMouseEvent<HTMLElement>, entry: DirectoryEntry) => {
     event.preventDefault();
     event.stopPropagation();
-    writeClientLog("debug", `打开目录菜单：${path}`);
-    setMenu({ x: Math.max(12, Math.min(event.clientX, window.innerWidth - 252)), y: Math.max(12, Math.min(event.clientY, window.innerHeight - 150)), kind: "directory", workspacePath: workspace?.path ?? null, paths: [path], primaryPath: path });
+    writeClientLog("debug", `打开目录菜单：${entry.path}`);
+    setMenu({ x: Math.max(12, Math.min(event.clientX, window.innerWidth - 252)), y: Math.max(12, Math.min(event.clientY, window.innerHeight - 190)), kind: "directory", workspacePath: workspace?.path ?? null, paths: [entry.path], primaryPath: entry.path, canRecycleDirectory: entry.canRecycle });
   }, [workspace?.path]);
 
   const showWorkspaceMenu = useCallback((event: ReactMouseEvent<HTMLElement>, paths: string[] = []) => {
@@ -53,13 +54,14 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
       else if (action === "clipboardCut" && current.paths.length > 0) await writeFilesToClipboard(current.paths, "move");
       else if (action === "paste") await pasteFileClipboard();
       else if (action === "delete" && current.paths.length > 0) await recycleVideos(current.paths);
+      else if (action === "deleteDirectory" && current.kind === "directory" && current.primaryPath && current.canRecycleDirectory) await recycleDirectory(current.primaryPath);
       writeClientLog("info", `菜单动作完成：目标 ${current.kind}，动作 ${action}`);
     } catch (actionError) {
       const message = errorMessage(actionError);
       notify(message);
       writeClientLog("error", `执行工作区右键菜单操作失败：${message}`);
     }
-  }, [activateWorkspace, copyVideosToDirectory, menu, notify, pasteFileClipboard, recycleVideos, refreshWorkspace, writeFilesToClipboard]);
+  }, [activateWorkspace, copyVideosToDirectory, menu, notify, pasteFileClipboard, recycleDirectory, recycleVideos, refreshWorkspace, writeFilesToClipboard]);
 
   useEffect(() => {
     if (!menu) return;

@@ -1,5 +1,5 @@
 .preview-panel {
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border-left: 1px solid var(--border-subtle);
     grid-template-rows: minmax(220px, 1fr) auto;
     min-width: 0;
@@ -12,7 +12,7 @@
 .player-placeholder {
     color: var(--text-muted);
     text-align: center;
-    background: var(--surface-base);
+    background: var(--surface-base-rgba);
     flex-direction: column;
     justify-content: center;
     align-items: center;
@@ -45,7 +45,7 @@
 }
 
 .preview-player {
-    background: var(--surface-base);
+    background: var(--surface-base-rgba);
     grid-template-rows: minmax(0, 1fr) auto;
     min-height: 240px;
     display: grid;
@@ -79,12 +79,12 @@
 }
 
 .preview-thumbnail {
-    background: var(--surface-base)
+    background: var(--surface-base-rgba)
 }
 
 .preview-thumbnail-fallback {
     color: var(--accent);
-    background: linear-gradient(135deg, #ffffff12 25%, #0000 25%) 0 0/16px 16px, var(--surface-base);
+    background: linear-gradient(135deg, #ffffff12 25%, #0000 25%) 0 0/16px 16px, var(--surface-base-rgba);
     place-items: center;
     display: grid
 }
@@ -129,7 +129,7 @@
 
 .transcode-notice {
     color: var(--text-secondary);
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border-top: 1px solid var(--border-subtle);
     margin: 0;
     padding: 6px 10px;
@@ -139,7 +139,7 @@
 
 .player-controls {
     color: var(--text-secondary);
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border-top: 1px solid var(--border-subtle);
     align-items: center;
     gap: 7px;
@@ -150,7 +150,7 @@
 
 .player-controls button {
     color: var(--text-secondary);
-    background: var(--surface-control);
+    background: var(--surface-control-rgba);
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
     width: 28px;
@@ -185,7 +185,7 @@
 
 .player-controls select {
     color: var(--text-secondary);
-    background: var(--surface-control);
+    background: var(--surface-control-rgba);
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
     width: 48px;

@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { colorModeTokens, themePresets } from "./theme";
 import type { PreviewPlayerHandle } from "./components/PreviewPlayer";
 import { ThemedContextMenu } from "./components/ThemedContextMenu";
+import { ThemedConfirmDialog } from "./components/ThemedConfirmDialog";
 import { AppTitlebar } from "./features/navigation/AppTitlebar";
 import { NavigationPanel } from "./features/navigation/NavigationPanel";
 import { useToast } from "./features/useToast";
@@ -28,12 +30,16 @@ import { useWorkspaceController } from "./features/workspace/useWorkspaceControl
 import {
   type AppConfig,
   type ApplicationState,
+  type AboutInfo,
+  type DataManagementSummary,
   type ColorMode,
   type DirectoryEntry,
   type DirectoryChildren,
+  type DirectoryRecycleResult,
   type SettingsLimits,
   type TreeState,
   type WorkspaceListing,
+  type WindowState,
 } from "./app-types";
 import {
   errorMessage,
@@ -41,12 +47,25 @@ import {
 } from "./app-utils";
 import {
   useEffect,
+  useCallback,
   useRef,
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
+function isSameOrDescendantPath(path: string, parent: string) {
+  const normalizedParent = parent.replace(/[\\/]+$/, "").toLocaleLowerCase();
+  const normalizedPath = path.replace(/[\\/]+$/, "").toLocaleLowerCase();
+  return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}\\`) || normalizedPath.startsWith(`${normalizedParent}/`);
+}
+
+function parentDirectoryPath(path: string) {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const separator = Math.max(normalized.lastIndexOf("\\"), normalized.lastIndexOf("/"));
+  if (separator < 0) return null;
+  return separator <= 2 ? normalized.slice(0, separator + 1) : normalized.slice(0, separator);
+}
 
 
 
@@ -93,6 +112,8 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [roots] = useState<DirectoryEntry[]>(initialState.roots);
   const settingsLimits: SettingsLimits = initialState.settingsLimits;
   const [treeState, setTreeState] = useState<TreeState>({});
+  const treeStateRef = useRef<TreeState>(treeState);
+  treeStateRef.current = treeState;
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [workspace, setWorkspace] = useState<WorkspaceListing | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -100,6 +121,12 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(true);
+  const [leftPanelSize, setLeftPanelSize] = useState(20);
+  const [windowStateReady, setWindowStateReady] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ title: string; message: string; confirmLabel: string; resolve: (confirmed: boolean) => void } | null>(null);
+  const [backgroundDataUrl, setBackgroundDataUrl] = useState<string | null>(null);
+  const [dataSummary, setDataSummary] = useState<DataManagementSummary | null>(null);
+  const [aboutInfo, setAboutInfo] = useState<AboutInfo | null>(null);
   const [systemColorMode, setSystemColorMode] = useState<ColorMode>("dark");
   const { toast, notify } = useToast();
   const [suppressPreviewAutoplay, setSuppressPreviewAutoplay] = useState(false);
@@ -113,6 +140,13 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const effectiveColorMode: ColorMode =
     config.settings.appearance === "system" ? systemColorMode : config.settings.appearance;
   const activeTheme = themePresets.find((theme) => theme.id === config.settings.accentTheme) ?? themePresets[0];
+  const wallpaperVisibility = Math.max(0, Math.min(100, config.settings.backgroundOpacity)) / 100;
+  const neutralSurfaceRgb = effectiveColorMode === "light"
+    ? { base: "242 242 247", raised: "255 255 255", control: "255 255 255", resize: "242 242 247", border: "209 209 214" }
+    : { base: "28 28 30", raised: "36 36 38", control: "44 44 46", resize: "28 28 30", border: "72 72 74" };
+  // The slider has exact endpoints: 0% keeps solid surfaces; 100% makes
+  // wallpaper-facing surfaces fully transparent. Theme presets only provide RGB.
+  const transparentSurface = (rgb: string) => `rgb(${rgb} / ${1 - wallpaperVisibility})`;
   const {
     viewMode,
     searchQuery,
@@ -170,10 +204,19 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     "--accent-border": activeTheme.border,
     "--accent-ink": activeTheme.ink,
     "--accent-focus": activeTheme.focus,
+    "--surface-base-rgba": transparentSurface(neutralSurfaceRgb.base),
+    "--surface-raised-rgba": transparentSurface(neutralSurfaceRgb.raised),
+    "--surface-control-rgba": transparentSurface(neutralSurfaceRgb.control),
+    "--surface-resize-rgba": transparentSurface(neutralSurfaceRgb.resize),
+    "--border-subtle-rgba": transparentSurface(neutralSurfaceRgb.border),
+    "--background-opacity": `${config.settings.backgroundOpacity}%`,
+    "--background-image": backgroundDataUrl ? `url("${backgroundDataUrl}")` : "none",
   } as CSSProperties;
 
 
   const updateAudioPreferences = useAudioPreferences(setConfig);
+
+  const confirmRecycle = useCallback((message: string, title = "确认移到回收站", confirmLabel = "移到回收站") => new Promise<boolean>((resolve) => setConfirmation({ title, message, confirmLabel, resolve })), []);
 
   const {
     metadataLoading,
@@ -204,7 +247,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   } = useLogViewer(notify);
 
 
-  const loadTreeChildren = async (path: string) => {
+  const loadTreeChildren = useCallback(async (path: string) => {
     writeClientLog("debug", `读取目录树：${path}`);
     setTreeState((current) => ({
       ...current,
@@ -212,10 +255,25 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     }));
     try {
       const listing = await invoke<DirectoryChildren>("list_subdirectories", { path });
+      const previousFolders = treeStateRef.current[path]?.folders ?? [];
+      const nextFolderPaths = new Set(listing.folders.map((folder) => folder.path.toLocaleLowerCase()));
+      const removedPaths = previousFolders
+        .filter((folder) => !nextFolderPaths.has(folder.path.toLocaleLowerCase()))
+        .map((folder) => folder.path);
       setTreeState((current) => ({
         ...current,
         [path]: { status: "loaded", folders: listing.folders },
       }));
+      if (removedPaths.length > 0) {
+        setTreeState((current) => Object.fromEntries(
+          Object.entries(current).filter(([currentPath]) => !removedPaths.some((removed) => isSameOrDescendantPath(currentPath, removed))),
+        ));
+        setExpandedPaths((current) => new Set(
+          [...current].filter((currentPath) => !removedPaths.some((removed) => isSameOrDescendantPath(currentPath, removed))),
+        ));
+        setSelectedPath((current) => current && removedPaths.some((removed) => isSameOrDescendantPath(current, removed)) ? null : current);
+        writeClientLog("debug", `目录树刷新已清理 ${removedPaths.length} 个失效子树：${path}`);
+      }
       writeClientLog("info", `目录树读取完成：${path}，子目录 ${listing.folders.length} 个`);
     } catch (error) {
       setTreeState((current) => ({
@@ -224,7 +282,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       }));
       writeClientLog("warn", `目录树读取失败：${path}，${errorMessage(error)}`);
     }
-  };
+  }, []);
 
   const { activateWorkspace, refreshWorkspace, markWorkspaceUnavailable } = useWorkspaceController({
     config,
@@ -274,7 +332,51 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     previewPlayerRef,
     refreshWorkspace,
     notify,
+    confirmRecycle,
   });
+
+  const recycleDirectory = useCallback(async (path: string) => {
+    if (!await confirmRecycle(`将文件夹“${path}”及其内容移到回收站？`)) {
+      writeClientLog("info", `用户取消目录回收站操作：${path}`);
+      return;
+    }
+    writeClientLog("info", `开始目录回收站操作：${path}`);
+    try {
+      const result = await invoke<DirectoryRecycleResult>("recycle_directory", { path });
+      const deletedPath = result.recycledPath;
+      const removedCurrentWorkspace = Boolean(workspace && isSameOrDescendantPath(workspace.path, deletedPath));
+      setConfig(result.config);
+      setTreeState((current) => Object.fromEntries(
+        Object.entries(current).filter(([currentPath]) => !isSameOrDescendantPath(currentPath, deletedPath)),
+      ));
+      setExpandedPaths((current) => new Set([...current].filter((currentPath) => !isSameOrDescendantPath(currentPath, deletedPath))));
+      setSelectedPath((current) => current && isSameOrDescendantPath(current, deletedPath) ? null : current);
+      if (removedCurrentWorkspace) {
+        previewPlayerRef.current?.stopPlayback();
+        previewPlayerRef.current?.releasePlayback();
+        resetMetadata();
+        setWorkspace(null);
+        setWorkspaceLoading(false);
+        setSelectedVideos(new Set());
+        setSelectionAnchor(null);
+        setSuppressPreviewAutoplay(true);
+        writeClientLog("info", `已清空被删除目录中的当前工作区：${deletedPath}`);
+      }
+      const parent = parentDirectoryPath(deletedPath);
+      if (parent) {
+        await loadTreeChildren(parent);
+        if (!removedCurrentWorkspace && workspace?.isAvailable && workspace.path.localeCompare(parent, undefined, { sensitivity: "accent" }) === 0) {
+          await refreshWorkspace(workspace.path, "目录回收站删除后刷新");
+        }
+      }
+      notify(`已将文件夹移到回收站：${deletedPath}`);
+      writeClientLog("info", `目录回收站操作完成：${deletedPath}`);
+    } catch (error) {
+      const message = errorMessage(error);
+      notify(message);
+      writeClientLog("error", `目录回收站操作失败，已保留界面状态：${path}，${message}`);
+    }
+  }, [confirmRecycle, loadTreeChildren, notify, refreshWorkspace, resetMetadata, setConfig, setSelectedVideos, setSelectionAnchor, setSuppressPreviewAutoplay, setWorkspace, workspace]);
 
   const {
     selectionBox: workspaceSelectionBox,
@@ -313,8 +415,45 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     writeFilesToClipboard,
     pasteFileClipboard,
     recycleVideos,
+    recycleDirectory,
     notify,
   });
+
+  useEffect(() => {
+    const paths = [...expandedPaths];
+    void invoke("set_directory_tree_watch_paths", { paths }).catch((error: unknown) => {
+      writeClientLog("warn", `更新目录树监听范围失败：${errorMessage(error)}`);
+    });
+  }, [expandedPaths]);
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    let refreshTimer: number | undefined;
+    const pending = new Set<string>();
+    void listen<string>("directory-tree-event", (event) => {
+      if (!expandedPaths.has(event.payload)) return;
+      pending.add(event.payload);
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined;
+        if (!active) return;
+        for (const path of pending) void loadTreeChildren(path);
+        pending.clear();
+      }, 300);
+    }).then((cleanup) => {
+      if (active) {
+        unlisten = cleanup;
+      } else {
+        cleanup();
+      }
+    }).catch((error: unknown) => writeClientLog("warn", `目录树监听事件不可用：${errorMessage(error)}`));
+    return () => {
+      active = false;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      unlisten?.();
+    };
+  }, [expandedPaths, loadTreeChildren]);
 
   const {
     isOpen: isSettingsOpen,
@@ -334,6 +473,88 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     resetThumbnails: resetThumbnailsForCapturePosition,
     notify,
   });
+
+  useEffect(() => {
+    let active = true;
+    const fileName = config.settings.backgroundImage;
+    if (!fileName) {
+      setBackgroundDataUrl(null);
+      return () => { active = false; };
+    }
+    void invoke<string>("read_background_image", { fileName })
+      .then((dataUrl) => { if (active) setBackgroundDataUrl(dataUrl); })
+      .catch((error: unknown) => {
+        if (active) setBackgroundDataUrl(null);
+        writeClientLog("warn", `读取背景图失败：${errorMessage(error)}`);
+      });
+    return () => { active = false; };
+  }, [config.settings.backgroundImage]);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    void Promise.all([
+      invoke<DataManagementSummary>("get_data_management_summary"),
+      invoke<AboutInfo>("get_about_info"),
+    ]).then(([summary, about]) => {
+      setDataSummary(summary);
+      setAboutInfo(about);
+    }).catch((error: unknown) => writeClientLog("warn", `读取数据管理信息失败：${errorMessage(error)}`));
+  }, [isSettingsOpen]);
+
+  useEffect(() => {
+    let active = true;
+    void invoke<WindowState>("get_window_state").then((state) => {
+      if (!active) return;
+      setLeftPanelSize(state.leftPanelSize);
+      setIsPreviewOpen(state.previewOpen);
+    }).catch((error: unknown) => writeClientLog("warn", `读取窗口布局失败：${errorMessage(error)}`)).finally(() => {
+      if (active) setWindowStateReady(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void invoke("save_window_layout", { leftPanelSize: Math.round(leftPanelSize), previewOpen: isPreviewOpen })
+        .catch((error: unknown) => writeClientLog("warn", `保存窗口布局失败：${errorMessage(error)}`));
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [isPreviewOpen, leftPanelSize]);
+
+  const chooseBackground = useCallback(async () => {
+    const selected = await open({ multiple: false, title: "选择背景图", filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }] });
+    return typeof selected === "string" ? selected : null;
+  }, []);
+
+  const importBackground = useCallback(async (sourcePath: string) => {
+    const result = await invoke<{ fileName: string }>("import_background_image", { sourcePath });
+    return result.fileName;
+  }, []);
+
+  const refreshMaintenance = useCallback(() => {
+    void invoke<DataManagementSummary>("get_data_management_summary").then(setDataSummary).catch(() => undefined);
+  }, []);
+
+  const clearThumbnails = useCallback(async () => {
+    if (!await confirmRecycle("清空全部缩略图缓存？下次浏览时会重新生成缩略图。", "清空缩略图缓存", "清空")) return;
+    await invoke("clear_thumbnail_cache");
+    refreshMaintenance();
+    notify("缩略图缓存已清空");
+  }, [confirmRecycle, notify, refreshMaintenance]);
+
+  const clearOldLogs = useCallback(async () => {
+    if (!await confirmRecycle("删除 30 天前的应用日志？此操作不可恢复。", "清理旧日志", "清理")) return;
+    const removed = await invoke<number>("clear_old_logs");
+    refreshMaintenance();
+    notify(`已清理 ${removed} 个旧日志文件`);
+  }, [confirmRecycle, notify, refreshMaintenance]);
+
+  const openManagedPath = useCallback(async (path: string) => { await invoke("reveal_path", { path }); }, []);
+
+  const exportDiagnostics = useCallback(async () => {
+    const path = await invoke<string>("export_diagnostics");
+    notify(`诊断信息已导出：${path}`);
+  }, [notify]);
 
   const isExternalDropActive = useWorkspaceMonitoring({
     workspace,
@@ -527,6 +748,10 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     showWorkspaceContextMenu(event, operationPaths);
   };
 
+  if (!windowStateReady) {
+    return <main className="app-loading-shell" aria-busy="true">正在恢复窗口布局…</main>;
+  }
+
   return (
     <main
       className={`app-shell ${effectiveColorMode === "light" ? "light-theme" : ""} ${
@@ -548,8 +773,9 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
         className="panel-group"
         autoSaveId={isPreviewOpen ? "video-sweeper-three-panels" : "video-sweeper-two-panels"}
         direction="horizontal"
+        onLayout={(sizes) => setLeftPanelSize(sizes[0] ?? 20)}
       >
-      <Panel defaultSize={20} minSize={0}>
+      <Panel defaultSize={leftPanelSize} minSize={0}>
       <NavigationPanel
         config={config}
         roots={roots}
@@ -642,6 +868,8 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       {activeFileTask && <FileTaskCard task={activeFileTask} onCancel={() => void cancelActiveFileTask()} />}
       {toast && <div className="toast" role="status">{toast}</div>}
 
+      {confirmation && <ThemedConfirmDialog title={confirmation.title} message={confirmation.message} confirmLabel={confirmation.confirmLabel} onCancel={() => { confirmation.resolve(false); setConfirmation(null); }} onConfirm={() => { confirmation.resolve(true); setConfirmation(null); }} />}
+
       {workspaceContextMenu && (
         <ThemedContextMenu
           menu={workspaceContextMenu}
@@ -673,6 +901,14 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
           onApply={applySettings}
           onClose={() => setIsSettingsOpen(false)}
           onNotify={notify}
+          onChooseBackground={chooseBackground}
+          onImportBackground={importBackground}
+          dataSummary={dataSummary}
+          aboutInfo={aboutInfo}
+          onClearThumbnails={() => clearThumbnails().catch((error: unknown) => notify(errorMessage(error)))}
+          onClearOldLogs={() => clearOldLogs().catch((error: unknown) => notify(errorMessage(error)))}
+          onOpenPath={(path) => openManagedPath(path).catch((error: unknown) => notify(errorMessage(error)))}
+          onExportDiagnostics={() => exportDiagnostics().catch((error: unknown) => notify(errorMessage(error)))}
         />
       )}
     </main>

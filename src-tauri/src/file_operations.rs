@@ -782,7 +782,7 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn recycle_path(path: &Path) -> Result<(), String> {
+pub(super) fn recycle_path(path: &Path) -> Result<(), String> {
     unsafe {
         let operation: IFileOperation =
             CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)
@@ -810,7 +810,7 @@ fn recycle_path(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn recycle_path(_path: &Path) -> Result<(), String> {
+pub(super) fn recycle_path(_path: &Path) -> Result<(), String> {
     Err("Moving files to the Recycle Bin is only supported on Windows.".to_string())
 }
 
@@ -859,6 +859,16 @@ fn process_clipboard_operation(task: ClipboardOperationTask) {
             if response.send(read_file_clipboard()).is_err() {
                 log::warn!(
                     "Clipboard read completed but its requester no longer accepts a response"
+                );
+            }
+        }
+        ClipboardOperationTask::Flush { response } => {
+            if response
+                .send(windows_shell::flush_windows_file_clipboard())
+                .is_err()
+            {
+                log::warn!(
+                    "Clipboard flush completed but its requester no longer accepts a response"
                 );
             }
         }
@@ -1226,6 +1236,20 @@ pub(super) fn enqueue_read_clipboard(queue: &FileOperationQueue) -> Result<Clipb
     response_receiver
         .recv()
         .map_err(|_| "The clipboard operation did not return a result.".to_string())?
+}
+
+pub(super) fn flush_file_clipboard(queue: &FileOperationQueue) -> Result<(), String> {
+    let (response_sender, response_receiver) = mpsc::channel();
+    queue
+        .clipboard_sender
+        .send(ClipboardOperationTask::Flush {
+            response: response_sender,
+        })
+        .map_err(|_| "The clipboard operation queue is unavailable.".to_string())?;
+    wake_clipboard_queue(queue)?;
+    response_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "The clipboard flush did not return a result.".to_string())?
 }
 
 #[cfg(test)]

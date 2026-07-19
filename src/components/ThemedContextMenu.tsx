@@ -20,6 +20,7 @@ export type ContextMenuAction =
   | "clipboardCut"
   | "paste"
   | "delete"
+  | "deleteDirectory"
   | "refresh";
 
 export function ThemedContextMenu({
@@ -100,6 +101,10 @@ export function ThemedContextMenu({
         <>
           {item("open", <FolderOpen size={16} />, "在工作区打开")}
           {item("reveal", <FolderOpen size={16} />, "在资源管理器中显示")}
+          {menu.canRecycleDirectory && <>
+            <div className="workspace-context-menu-separator" />
+            {item("deleteDirectory", <Trash2 size={16} />, "移到回收站", true)}
+          </>}
         </>
       )}
       {menu.kind === "videos" && (

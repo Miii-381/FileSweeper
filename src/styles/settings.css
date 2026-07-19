@@ -23,6 +23,22 @@
     animation: dialog-enter .36s var(--motion-standard-easing) both
 }
 
+.confirm-dialog {
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    width: min(420px, 100%);
+    padding: 20px;
+    box-shadow: 0 28px 60px #0000007a;
+    animation: dialog-enter .24s var(--motion-standard-easing) both
+}
+
+.confirm-dialog h2 { margin: 0 0 10px; font-size: 17px }
+.confirm-dialog p { color: var(--text-secondary); margin: 0; line-height: 1.55; overflow-wrap: anywhere }
+.confirm-dialog footer { justify-content: flex-end; gap: 8px; margin-top: 20px; display: flex }
+.danger-command { color: #fff; background: #b14436 }
+
 .logs-dialog {
     color: var(--text-primary);
     background: var(--surface-raised);
@@ -237,8 +253,12 @@
     border-color: var(--text-primary)
 }
 
-.number-input {
-    gap: 6px
+.setting-row .number-input {
+    grid-template-columns: minmax(0, 1fr) 22px;
+    align-items: center;
+    gap: 6px;
+    width: min(190px, 56%);
+    display: grid
 }
 
 .number-input input,
@@ -259,10 +279,10 @@
     box-shadow: 0 0 0 2px var(--accent-soft)
 }
 
-.number-input input {
+.setting-row .number-input input {
     text-align: right;
     appearance: textfield;
-    width: 90px;
+    width: 100%;
     padding: 0 8px
 }
 
@@ -293,12 +313,12 @@
     font-style: normal
 }
 
-.volume-input {
+.opacity-input {
     gap: 10px;
     min-width: 216px
 }
 
-.volume-input input {
+.opacity-input input {
     appearance: none;
     background: var(--border-strong);
     border-radius: 4px;
@@ -307,7 +327,7 @@
     height: 4px
 }
 
-.volume-input input::-webkit-slider-thumb {
+.opacity-input input::-webkit-slider-thumb {
     appearance: none;
     background: var(--accent);
     border: 2px solid var(--accent-ink);
@@ -317,7 +337,7 @@
     box-shadow: 0 1px 3px #00000047
 }
 
-.volume-input input::-moz-range-thumb {
+.opacity-input input::-moz-range-thumb {
     background: var(--accent);
     border: 2px solid var(--accent-ink);
     border-radius: 50%;
@@ -325,7 +345,7 @@
     height: 12px
 }
 
-.volume-input output {
+.opacity-input output {
     color: var(--text-muted);
     text-align: right;
     width: 34px;
@@ -338,8 +358,12 @@
     font-size: 12px
 }
 
-.extension-setting {
+.setting-row.extension-setting {
     align-items: flex-start
+}
+
+.setting-row.extension-setting>span:first-child {
+    padding-top: 7px
 }
 
 .extension-manager {
@@ -557,6 +581,50 @@
 .switch.on span {
     transform: translate(16px)
 }
+
+.background-setting-actions,
+.settings-action-row,
+.data-summary,
+.about-sidecars {
+    align-items: center;
+    gap: 8px;
+    display: flex;
+    flex-wrap: wrap
+}
+
+.background-setting-actions {
+    justify-content: flex-end;
+    max-width: 62%
+}
+
+.background-name,
+.settings-description,
+.about-sidecars {
+    color: var(--text-muted);
+    font-size: 12px
+}
+
+.background-name {
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 210px;
+    overflow: hidden
+}
+
+.data-summary {
+    color: var(--text-secondary);
+    background: var(--surface-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    font-size: 12px
+}
+
+.data-summary strong { color: var(--text-primary) }
+
+.settings-action-row { justify-content: flex-end }
 
 .settings-footer {
     border-top: 1px solid var(--border-subtle);

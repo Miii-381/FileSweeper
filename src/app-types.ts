@@ -15,6 +15,7 @@ export type DirectoryEntry = {
   path: string;
   name: string;
   hasChildren: boolean;
+  canRecycle: boolean;
 };
 
 export type VideoEntry = {
@@ -79,6 +80,11 @@ export type RecycleResult = {
   failedPaths: string[];
 };
 
+export type DirectoryRecycleResult = {
+  recycledPath: string;
+  config: AppConfig;
+};
+
 export type RenameResult = {
   oldPath: string;
   newPath: string;
@@ -113,6 +119,7 @@ export type WorkspaceContextMenu = {
   workspacePath: string | null;
   paths: string[];
   primaryPath: string | null;
+  canRecycleDirectory?: boolean;
 };
 
 export type VideoStreamUrl = {
@@ -181,6 +188,34 @@ export type Preferences = {
   managedVideoExtensions: string[];
   backgroundSidecarConcurrency: number;
   listColumns: ListColumn[];
+  backgroundImage: string | null;
+  backgroundOpacity: number;
+};
+
+export type DataManagementSummary = {
+  dataPath: string;
+  thumbnailBytes: number;
+  logBytes: number;
+  backgroundBytes: number;
+  totalBytes: number;
+};
+
+export type AboutInfo = {
+  appVersion: string;
+  dataPath: string;
+  licensesPath: string | null;
+  sidecars: Record<string, string>;
+};
+
+export type WindowState = {
+  version: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  maximized: boolean;
+  leftPanelSize: number;
+  previewOpen: boolean;
 };
 
 export type FavoriteFolder = {

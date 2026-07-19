@@ -1,5 +1,5 @@
 .navigation-panel {
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border-right: 1px solid var(--border-subtle);
     flex-direction: column;
     min-width: 0;

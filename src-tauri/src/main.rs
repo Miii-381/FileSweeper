@@ -6,6 +6,7 @@ mod domain;
 mod file_commands;
 mod file_operations;
 mod log_commands;
+mod maintenance_commands;
 mod media_commands;
 mod media_processing;
 mod media_stream;
@@ -15,6 +16,7 @@ mod regression_tests;
 mod runtime_api;
 mod sidecar;
 mod storage;
+mod window_state;
 mod windows_shell;
 mod workspace;
 
@@ -29,8 +31,8 @@ use runtime_api::*;
 use sidecar::{configure_sidecar_command, resolve_sidecar, wait_for_child};
 use storage::*;
 use workspace::{
-    available_roots, list_subdirectories_impl, scan_workspace_impl, WorkspaceWatchState,
-    WORKSPACE_SCAN_CANCELLED,
+    available_roots, is_recyclable_directory, list_subdirectories_impl, scan_workspace_impl,
+    DirectoryTreeWatchState, WorkspaceWatchState, WORKSPACE_SCAN_CANCELLED,
 };
 
 use axum::{
@@ -87,8 +89,9 @@ use windows::{
         },
         System::{
             Ole::{
-                DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleSetClipboard,
-                OleUninitialize, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE,
+                DoDragDrop, IDropSource, IDropSource_Impl, OleFlushClipboard, OleInitialize,
+                OleSetClipboard, OleUninitialize, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY,
+                DROPEFFECT_MOVE,
             },
             SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS},
             Threading::GetCurrentThreadId,
@@ -158,6 +161,7 @@ fn main() {
         };
     tauri::Builder::default()
         .manage(WorkspaceWatchState::new())
+        .manage(DirectoryTreeWatchState::new())
         .manage(MediaSidecarPool(Arc::new(MediaSidecarPermits::new(
             initial_config.settings.background_sidecar_concurrency,
         ))))
@@ -187,6 +191,9 @@ fn main() {
                 .build(),
         )
         .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window_state::restore_main_window(&window);
+            }
             for (level, message) in config_store::take_startup_diagnostics() {
                 log::log!(level, "Startup configuration diagnostic: {message}");
             }
@@ -240,11 +247,16 @@ fn main() {
                 Ok(stopped) => log::info!("Preview shutdown completed: stopped_processes={stopped}"),
                 Err(error) => log::warn!("Unable to stop all FFmpeg previews during shutdown: {error}"),
             }
+            let queue = window.state::<FileOperationQueue>();
+            if let Err(error) = file_operations::flush_file_clipboard(&queue) {
+                log::warn!("Unable to persist the Explorer file clipboard during shutdown: {error}");
+            }
         })
         .invoke_handler(tauri::generate_handler![
             application_commands::load_application_state,
             application_commands::is_running_as_administrator,
             application_commands::list_subdirectories,
+            application_commands::set_directory_tree_watch_paths,
             application_commands::workspace_is_accessible,
             application_commands::scan_workspace,
             application_commands::save_configuration,
@@ -263,13 +275,23 @@ fn main() {
             file_commands::start_file_drag,
             log_commands::poll_log_file,
             file_commands::recycle_videos,
+            file_commands::recycle_directory,
             file_commands::rename_video,
             file_commands::start_file_task,
             file_commands::get_file_task,
             file_commands::cancel_file_task,
             file_commands::write_files_to_clipboard,
             file_commands::paste_files_from_clipboard,
-            file_commands::reveal_path
+            file_commands::reveal_path,
+            maintenance_commands::get_data_management_summary,
+            maintenance_commands::import_background_image,
+            maintenance_commands::read_background_image,
+            maintenance_commands::clear_thumbnail_cache,
+            maintenance_commands::clear_old_logs,
+            maintenance_commands::get_about_info,
+            maintenance_commands::export_diagnostics,
+            window_state::get_window_state,
+            window_state::save_window_layout
         ])
         .run(tauri::generate_context!())
         .expect("failed to run VideoSweeper");

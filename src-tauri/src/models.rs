@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const CONFIG_VERSION: u32 = 3;
+pub(super) const CONFIG_VERSION: u32 = 4;
 pub(super) const DEFAULT_EXTENSIONS: [&str; 14] = [
     ".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg", ".3gp",
     ".rm", ".rmvb", ".ts",
@@ -61,6 +61,10 @@ pub(super) fn default_remember_workspace_focus() -> bool {
     true
 }
 
+pub(super) fn default_background_opacity() -> u8 {
+    50
+}
+
 pub(super) fn available_parallelism() -> usize {
     match std::thread::available_parallelism() {
         Ok(parallelism) => parallelism.get(),
@@ -109,6 +113,10 @@ pub(super) struct Preferences {
     pub(super) background_sidecar_concurrency: usize,
     #[serde(default = "default_list_columns")]
     pub(super) list_columns: Vec<ListColumn>,
+    #[serde(default)]
+    pub(super) background_image: Option<String>,
+    #[serde(default = "default_background_opacity")]
+    pub(super) background_opacity: u8,
 }
 
 impl Default for Preferences {
@@ -128,6 +136,8 @@ impl Default for Preferences {
             managed_video_extensions: default_video_extensions(),
             background_sidecar_concurrency: recommended_background_sidecar_concurrency(),
             list_columns: default_list_columns(),
+            background_image: None,
+            background_opacity: default_background_opacity(),
         }
     }
 }
@@ -177,9 +187,10 @@ pub(super) struct DirectoryEntry {
     pub(super) path: String,
     pub(super) name: String,
     pub(super) has_children: bool,
+    pub(super) can_recycle: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct VideoEntry {
     pub(super) path: String,
@@ -223,6 +234,68 @@ pub(super) struct ApplicationState {
 pub(super) struct SettingsLimits {
     pub(super) background_sidecar_concurrency_min: usize,
     pub(super) background_sidecar_concurrency_max: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DataManagementSummary {
+    pub(super) data_path: String,
+    pub(super) thumbnail_bytes: u64,
+    pub(super) log_bytes: u64,
+    pub(super) background_bytes: u64,
+    pub(super) total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AboutInfo {
+    pub(super) app_version: String,
+    pub(super) data_path: String,
+    pub(super) licenses_path: Option<String>,
+    pub(super) sidecars: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BackgroundImportResult {
+    pub(super) file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WindowState {
+    pub(super) version: u32,
+    pub(super) x: i32,
+    pub(super) y: i32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) maximized: bool,
+    #[serde(default = "default_left_panel_size")]
+    pub(super) left_panel_size: u8,
+    #[serde(default = "default_preview_open")]
+    pub(super) preview_open: bool,
+}
+
+pub(super) fn default_left_panel_size() -> u8 {
+    20
+}
+pub(super) fn default_preview_open() -> bool {
+    true
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            x: 80,
+            y: 80,
+            width: 1440,
+            height: 900,
+            maximized: false,
+            left_panel_size: default_left_panel_size(),
+            preview_open: default_preview_open(),
+        }
+    }
 }
 
 pub(super) const MEDIA_CACHE_VERSION: u32 = 2;
@@ -328,6 +401,13 @@ pub(super) struct VideoStreamUrl {
 pub(super) struct RecycleResult {
     pub(super) recycled_paths: Vec<String>,
     pub(super) failed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DirectoryRecycleResult {
+    pub(super) recycled_path: String,
+    pub(super) config: AppConfig,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -480,6 +560,9 @@ pub(super) enum ClipboardOperationTask {
     },
     ReadClipboard {
         response: mpsc::Sender<Result<ClipboardFiles, String>>,
+    },
+    Flush {
+        response: mpsc::Sender<Result<(), String>>,
     },
 }
 

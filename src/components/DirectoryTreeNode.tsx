@@ -20,12 +20,14 @@ export function DirectoryTreeNode({
   treeState: TreeState;
   onSelect: (path: string) => void;
   onToggle: (path: string) => void;
-  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, path: string) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>, entry: DirectoryEntry) => void;
 }) {
   const isExpanded = expandedPaths.has(entry.path);
   const state = treeState[entry.path];
   const isRoot = depth === 0;
-  const hasChildren = state?.status === "loaded" ? state.folders.length > 0 : entry.hasChildren;
+  // Roots remain expandable even when their initial child probe was empty, so later external
+  // folder creation is discoverable without restarting the application.
+  const hasChildren = isRoot || (state?.status === "loaded" ? state.folders.length > 0 : entry.hasChildren);
 
   return (
     <li className="tree-node">
@@ -49,7 +51,7 @@ export function DirectoryTreeNode({
           title={entry.path}
           aria-current={selectedPath === entry.path ? "page" : undefined}
           onClick={() => onSelect(entry.path)}
-          onContextMenu={(event) => onContextMenu(event, entry.path)}
+          onContextMenu={(event) => onContextMenu(event, entry)}
         >
           {isRoot ? <HardDrive size={16} /> : isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />}
           <span>{entry.name}</span>

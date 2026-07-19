@@ -25,6 +25,7 @@ export function useFileTasks({
   previewPlayerRef,
   refreshWorkspace,
   notify,
+  confirmRecycle,
 }: {
   workspace: WorkspaceListing | null;
   setWorkspace: Dispatch<SetStateAction<WorkspaceListing | null>>;
@@ -35,6 +36,7 @@ export function useFileTasks({
   previewPlayerRef: RefObject<PreviewPlayerHandle | null>;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   notify: (message: string) => void;
+  confirmRecycle: (message: string) => Promise<boolean>;
 }) {
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -75,7 +77,7 @@ export function useFileTasks({
         writeClientLog("debug", "回收站操作被忽略：没有视频路径");
         return;
       }
-      if (!window.confirm(`将 ${paths.length} 个视频移到回收站？`)) {
+      if (!await confirmRecycle(`将 ${paths.length} 个视频移到回收站？`)) {
         writeClientLog("info", `用户取消回收站操作：${paths.length} 个视频`);
         return;
       }
@@ -96,7 +98,7 @@ export function useFileTasks({
         writeClientLog("error", `回收站操作失败：${message}`);
       }
     },
-    [applyRecycleResult, previewPlayerRef, selectedVideo],
+    [applyRecycleResult, confirmRecycle, previewPlayerRef, selectedVideo],
   );
 
   const recycleSelectedVideos = useCallback(

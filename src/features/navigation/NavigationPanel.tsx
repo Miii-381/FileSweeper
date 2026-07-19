@@ -24,7 +24,7 @@ export function NavigationPanel({
   onChooseFavorite: () => void;
   onSelectPath: (path: string) => void;
   onTogglePath: (path: string) => void;
-  onContextMenu: (event: ReactMouseEvent<HTMLElement>, path: string) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLElement>, entry: DirectoryEntry) => void;
   onOpenSettings: () => void;
 }) {
   return (
@@ -47,7 +47,7 @@ export function NavigationPanel({
                 key={favorite.path}
                 title={favorite.path}
                 onClick={() => onSelectPath(favorite.path)}
-                onContextMenu={(event) => onContextMenu(event, favorite.path)}
+                onContextMenu={(event) => onContextMenu(event, { ...favorite, hasChildren: true, canRecycle: false })}
               >
                 <Star size={16} />
                 <span>{favorite.name}</span>

@@ -50,7 +50,10 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   const [fullscreenControlsVisible, setFullscreenControlsVisible] = useState(true);
   const streamStartTime = useRef(0);
   const streamRequest = useRef(0);
-  const resumeAfterSeek = useRef(false);
+  // Playback permission is deliberately independent from media loading. A late stream URL,
+  // fallback, or canplay event must never undo an explicit user pause.
+  const playbackIntent = useRef(false);
+  const activeMediaRequest = useRef(0);
   const isScrubbing = useRef(false);
   const directFallbackRequested = useRef(false);
   const fullscreenControlsTimer = useRef<number | null>(null);
@@ -136,7 +139,8 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     setCurrentTime(0);
     setDuration(video?.duration ?? 0);
     streamStartTime.current = 0;
-    resumeAfterSeek.current = false;
+    playbackIntent.current = Boolean(video && autoplay);
+    activeMediaRequest.current = 0;
     directFallbackRequested.current = false;
     const request = ++streamRequest.current;
     if (!video) {
@@ -148,6 +152,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       void invoke<VideoStreamUrl>("get_video_stream_url", { path: video.path })
         .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
           if (active && request === streamRequest.current) {
+            activeMediaRequest.current = request;
             setStreamUrl(url);
             setIsTranscoded(nextIsTranscoded);
             setDuration(streamDuration ?? video.duration ?? 0);
@@ -199,6 +204,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       return;
     }
     if (element.paused) {
+      playbackIntent.current = true;
       writeClientLog("info", `请求播放视频：${video?.path ?? ""}`);
       void element.play().catch((error) => {
         const message = errorMessage(error);
@@ -206,6 +212,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
         writeClientLog("error", `播放预览失败：${video?.path ?? ""}，${message}`);
       });
     } else {
+      playbackIntent.current = false;
       writeClientLog("info", `请求暂停视频：${video?.path ?? ""}`);
       element.pause();
     }
@@ -218,7 +225,8 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     const targetTime = duration > 0 ? Math.min(Math.max(0, startTime), duration) : Math.max(0, startTime);
     const request = ++streamRequest.current;
     streamStartTime.current = targetTime;
-    resumeAfterSeek.current = resume;
+    playbackIntent.current = resume;
+    activeMediaRequest.current = 0;
     setCurrentTime(targetTime);
     setPlayerError(null);
     setPlayerState("loading");
@@ -235,6 +243,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     })
       .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
         if (request === streamRequest.current) {
+          activeMediaRequest.current = request;
           setIsTranscoded(nextIsTranscoded);
           setDuration(streamDuration ?? duration);
           setStreamUrl(url);
@@ -283,7 +292,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       writeClientLog("info", `直连播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒`);
       return;
     }
-    const resume = element ? !element.paused : resumeAfterSeek.current || isPlaying;
+    const resume = playbackIntent.current;
     writeClientLog("info", `转码播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒`);
     startTranscodedPreview(targetTime, resume);
   };
@@ -298,6 +307,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
 
   const stopPlayback = () => {
     streamRequest.current += 1;
+    playbackIntent.current = false;
     const element = videoElement.current;
     if (element) {
       element.pause();
@@ -307,6 +317,8 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   };
 
   const releasePlayback = () => {
+    playbackIntent.current = false;
+    activeMediaRequest.current = 0;
     const element = videoElement.current;
     if (element) {
       element.removeAttribute("src");
@@ -403,8 +415,12 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
               if (!isTranscoded && (event.currentTarget.videoWidth === 0 || event.currentTarget.videoHeight === 0)) {
                 fallbackDirectPreview(
                   `canplay 时视频尺寸为 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
-                  autoplay || !event.currentTarget.paused,
+                  playbackIntent.current,
                 );
+                return;
+              }
+              if (activeMediaRequest.current !== streamRequest.current) {
+                writeClientLog("debug", `忽略过期媒体源的 canplay 事件：${video.path}`);
                 return;
               }
               setPlayerState("ready");
@@ -412,8 +428,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
                 "info",
                 `播放器可以播放：${video.path}，模式 ${isTranscoded ? "FFmpeg 转码" : "原文件直连"}，尺寸 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
               );
-              if (autoplay || resumeAfterSeek.current) {
-                resumeAfterSeek.current = false;
+              if (playbackIntent.current) {
                 void videoElement.current?.play().catch((error) => {
                   writeClientLog("warn", `自动播放预览被阻止：${video.path}，${errorMessage(error)}`);
                 });
@@ -423,7 +438,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
               if (!isTranscoded && (event.currentTarget.videoWidth === 0 || event.currentTarget.videoHeight === 0)) {
                 fallbackDirectPreview(
                   `loadedmetadata 时视频尺寸为 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
-                  autoplay || !event.currentTarget.paused,
+                  playbackIntent.current,
                 );
                 return;
               }
@@ -441,6 +456,11 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
               }
             }}
             onPlay={() => {
+              if (!playbackIntent.current || activeMediaRequest.current !== streamRequest.current) {
+                writeClientLog("warn", `播放器拒绝非预期播放事件：${video.path}`);
+                videoElement.current?.pause();
+                return;
+              }
               setIsPlaying(true);
               writeClientLog("info", `播放器开始播放：${video.path}`);
             }}
@@ -449,12 +469,13 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
               writeClientLog("info", `播放器暂停：${video.path}`);
             }}
             onEnded={() => {
+              playbackIntent.current = false;
               setIsPlaying(false);
               writeClientLog("info", `播放器播放结束：${video.path}`);
             }}
             onError={() => {
               if (!isTranscoded) {
-                fallbackDirectPreview("浏览器报告媒体加载错误", autoplay);
+                fallbackDirectPreview("浏览器报告媒体加载错误", playbackIntent.current);
                 return;
               }
               const message = "此视频无法在内嵌播放器中播放";

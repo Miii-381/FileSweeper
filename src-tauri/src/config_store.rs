@@ -237,6 +237,17 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
     }
 
     config.settings.volume = config.settings.volume.min(100);
+    config.settings.background_opacity = config.settings.background_opacity.min(100);
+    if let Some(background) = &config.settings.background_image {
+        let valid_name = Path::new(background)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| *name == background)
+            .is_some();
+        if !valid_name {
+            return Err("The background image must be managed by VideoSweeper.".to_string());
+        }
+    }
     domain::normalize_extensions(&mut config.settings.video_extensions);
     domain::normalize_extensions(&mut config.settings.managed_video_extensions);
 
@@ -624,6 +635,74 @@ mod tests {
             persisted_workspace["workspaceFocus"]["D:\\Videos"]["videoPath"],
             "D:\\Videos\\focused.mp4"
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn persists_every_adjustable_preference_field() {
+        let directory = test_directory("all-preferences");
+        let path = directory.join("config.json");
+        let store = ConfigStore::open(path.clone()).unwrap();
+        store
+            .update_config(|config| {
+                config.settings.appearance = "light".to_string();
+                config.settings.accent_theme = "sky".to_string();
+                config.settings.thumbnail_cache_gb = 1.25;
+                config.settings.thumbnail_capture_position = "late".to_string();
+                config.settings.autoplay = false;
+                config.settings.volume = 57;
+                config.settings.muted = true;
+                config.settings.remember_workspace_focus = false;
+                config.settings.show_hidden_items = true;
+                config.settings.show_nomedia_media = true;
+                config.settings.video_extensions = vec![".mkv".to_string(), ".mp4".to_string()];
+                config.settings.managed_video_extensions =
+                    vec![".mkv".to_string(), ".mp4".to_string(), ".webm".to_string()];
+                config.settings.background_sidecar_concurrency = 1;
+                config.settings.list_columns = vec![
+                    ListColumn {
+                        id: "name".to_string(),
+                        visible: true,
+                        width: 320,
+                    },
+                    ListColumn {
+                        id: "size".to_string(),
+                        visible: false,
+                        width: 144,
+                    },
+                ];
+                config.settings.background_image = Some("wallpaper.jpg".to_string());
+                config.settings.background_opacity = 50;
+                Ok(())
+            })
+            .unwrap();
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let settings = &persisted["settings"];
+        assert_eq!(settings["appearance"], "light");
+        assert_eq!(settings["accentTheme"], "sky");
+        assert_eq!(settings["thumbnailCacheGb"], 1.25);
+        assert_eq!(settings["thumbnailCapturePosition"], "late");
+        assert_eq!(settings["autoplay"], false);
+        assert_eq!(settings["volume"], 57);
+        assert_eq!(settings["muted"], true);
+        assert_eq!(settings["rememberWorkspaceFocus"], false);
+        assert_eq!(settings["showHiddenItems"], true);
+        assert_eq!(settings["showNomediaMedia"], true);
+        assert_eq!(
+            settings["videoExtensions"],
+            serde_json::json!([".mkv", ".mp4"])
+        );
+        assert_eq!(
+            settings["managedVideoExtensions"],
+            serde_json::json!([".mkv", ".mp4", ".webm"])
+        );
+        assert_eq!(settings["backgroundSidecarConcurrency"], 1);
+        assert_eq!(settings["listColumns"][0]["width"], 320);
+        assert_eq!(settings["listColumns"][1]["visible"], false);
+        assert_eq!(settings["backgroundImage"], "wallpaper.jpg");
+        assert_eq!(settings["backgroundOpacity"], 50);
         fs::remove_dir_all(directory).unwrap();
     }
 }

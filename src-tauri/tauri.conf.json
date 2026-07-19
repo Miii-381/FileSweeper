@@ -35,9 +35,13 @@
       "../sidecars/ffprobe",
       "../sidecars/ffmpegthumbnailer"
     ],
+    "resources": [
+      "../LICENSES"
+    ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   }

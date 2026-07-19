@@ -30,6 +30,20 @@ pub(super) fn log_path() -> Result<PathBuf, String> {
     Ok(log_dir()?.join("video-sweeper.log"))
 }
 
+pub(super) fn backgrounds_dir() -> Result<PathBuf, String> {
+    let directory = app_data_dir()?.join("backgrounds");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Unable to create the backgrounds directory: {error}"))?;
+    Ok(directory)
+}
+
+pub(super) fn diagnostics_dir() -> Result<PathBuf, String> {
+    let directory = app_data_dir()?.join("diagnostics");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Unable to create the diagnostics directory: {error}"))?;
+    Ok(directory)
+}
+
 pub(super) fn unix_millis(time: Result<SystemTime, std::io::Error>) -> Option<u128> {
     let time = match time {
         Ok(time) => time,

@@ -64,6 +64,21 @@ pub(super) async fn list_subdirectories(path: String) -> Result<DirectoryChildre
 }
 
 #[tauri::command]
+pub(super) fn set_directory_tree_watch_paths(
+    paths: Vec<String>,
+    watch_state: tauri::State<'_, DirectoryTreeWatchState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    log::debug!(
+        "Updating directory tree watcher paths: count={}",
+        paths.len()
+    );
+    watch_state
+        .set_paths(paths, &app_handle)
+        .inspect_err(|error| log::warn!("Unable to update directory tree watchers: {error}"))
+}
+
+#[tauri::command]
 pub(super) async fn workspace_is_accessible(
     path: String,
     watch_state: tauri::State<'_, WorkspaceWatchState>,
@@ -148,6 +163,7 @@ pub(super) fn save_configuration(
     thumbnail_cache: tauri::State<'_, ThumbnailCacheMaintenanceState>,
     media_sidecar_pool: tauri::State<'_, MediaSidecarPool>,
 ) -> Result<AppConfig, String> {
+    let previous_background = load_config()?.settings.background_image;
     log::info!(
         "Saving application settings: appearance={}, accent={}, thumbnail_cache_gb={}, capture_position={}, autoplay={}, volume={}, muted={}, hidden={}, nomedia={}, extensions={}, sidecar_concurrency={}, list_columns={}",
         settings.appearance,
@@ -195,6 +211,11 @@ pub(super) fn save_configuration(
         configuration.version,
         configuration.settings.background_sidecar_concurrency
     );
+    if previous_background != configuration.settings.background_image {
+        if let Some(previous_background) = previous_background {
+            maintenance_commands::remove_managed_background(&previous_background);
+        }
+    }
     Ok(configuration)
 }
 

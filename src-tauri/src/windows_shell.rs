@@ -341,6 +341,24 @@ pub(super) fn write_windows_file_clipboard(
 }
 
 #[cfg(target_os = "windows")]
+pub(super) fn flush_windows_file_clipboard() -> Result<(), String> {
+    unsafe {
+        OleFlushClipboard()
+            .map_err(|error| format!("Unable to flush the Explorer file clipboard: {error}"))?;
+    }
+    LIVE_FILE_CLIPBOARD_OBJECT.with(|slot| {
+        slot.replace(None);
+    });
+    log::info!("Explorer file clipboard was flushed for application shutdown");
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn flush_windows_file_clipboard() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 pub(super) fn reveal_windows_path(path: &Path) -> Result<(), String> {
     let path = path.to_path_buf();
     thread::spawn(move || unsafe {

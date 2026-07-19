@@ -9,6 +9,78 @@ pub(super) struct WorkspaceWatchState {
     active: Mutex<Option<ActiveWorkspaceWatcher>>,
 }
 
+struct DirectoryTreeWatcher {
+    _watcher: notify::RecommendedWatcher,
+}
+
+pub(super) struct DirectoryTreeWatchState {
+    active: Mutex<HashMap<String, DirectoryTreeWatcher>>,
+}
+
+impl DirectoryTreeWatchState {
+    pub(super) fn new() -> Self {
+        Self {
+            active: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(super) fn set_paths(
+        &self,
+        paths: Vec<String>,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        let mut desired = HashMap::new();
+        for path in paths {
+            let directory = fs::canonicalize(&path)
+                .map_err(|error| format!("Unable to watch this folder: {error}"))?;
+            if !directory.is_dir() {
+                return Err("Only folders can be watched in the directory tree.".to_string());
+            }
+            let normalized = path_string(&directory);
+            desired.insert(normalized.to_ascii_lowercase(), directory);
+        }
+
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Unable to access directory tree watchers.".to_string())?;
+        active.retain(|key, _| desired.contains_key(key));
+
+        for (key, directory) in desired {
+            if active.contains_key(&key) {
+                continue;
+            }
+            let event_app = app_handle.clone();
+            let watched_path = path_string(&directory);
+            let event_path = watched_path.clone();
+            let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                match result {
+                    Ok(event) => {
+                        log::debug!(
+                            "Directory tree filesystem event: parent={event_path}, kind={:?}, paths={}",
+                            event.kind,
+                            event.paths.len()
+                        );
+                        if let Err(error) = event_app.emit("directory-tree-event", &event_path) {
+                            log::warn!(
+                                "Directory tree change detected but UI event delivery failed: parent={event_path}, error={error}"
+                            );
+                        }
+                    }
+                    Err(error) => log::warn!("Directory tree watcher error: parent={event_path}, error={error}"),
+                }
+            })
+            .map_err(|error| format!("Unable to create the directory tree watcher: {error}"))?;
+            watcher
+                .watch(&directory, RecursiveMode::NonRecursive)
+                .map_err(|error| format!("Unable to watch the directory tree folder: {error}"))?;
+            active.insert(key, DirectoryTreeWatcher { _watcher: watcher });
+            log::debug!("Directory tree watcher started: path={watched_path}");
+        }
+        Ok(())
+    }
+}
+
 impl WorkspaceWatchState {
     pub(super) fn new() -> Self {
         Self {
@@ -201,6 +273,7 @@ pub(super) fn available_roots(settings: &Preferences) -> Vec<DirectoryEntry> {
                     path: path_string(&path),
                     name: path_string(&path),
                     has_children: has_visible_child_directories(&path, settings),
+                    can_recycle: false,
                 })
             })
             .collect()
@@ -213,8 +286,13 @@ pub(super) fn available_roots(settings: &Preferences) -> Vec<DirectoryEntry> {
             path: path_string(&path),
             name: path_string(&path),
             has_children: has_visible_child_directories(&path, settings),
+            can_recycle: false,
         }]
     }
+}
+
+pub(super) fn is_recyclable_directory(directory: &Path) -> bool {
+    directory.parent().is_some()
 }
 
 fn resolve_directory(path: &str) -> Result<PathBuf, String> {
@@ -269,6 +347,7 @@ pub(super) fn list_subdirectories_impl(
             // Child discovery is deliberately lazy. Probing every child here turns one tree
             // expansion into N additional read_dir calls on large/network directories.
             has_children: true,
+            can_recycle: is_recyclable_directory(&entry_path),
         });
     }
     folders.sort_by_key(|folder| folder.name.to_lowercase());
@@ -466,6 +545,16 @@ mod tests {
             list_subdirectories_impl(root.to_str().unwrap(), &Preferences::default()).unwrap();
         assert_eq!(children.folders.len(), 1);
         assert_eq!(children.folders[0].name, "child");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_non_root_directories_are_recyclable() {
+        assert!(!is_recyclable_directory(Path::new(r"C:\\")));
+        let root = test_directory("recyclable");
+        let child = root.join("child");
+        fs::create_dir(&child).unwrap();
+        assert!(is_recyclable_directory(&child));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,5 +1,48 @@
 use super::*;
 
+fn is_same_or_descendant(path: &str, directory: &Path) -> bool {
+    let parent = path_string(directory)
+        .trim_end_matches(&['\\', '/'][..])
+        .to_ascii_lowercase();
+    let candidate = path.trim_end_matches(&['\\', '/'][..]).to_ascii_lowercase();
+    candidate == parent
+        || candidate
+            .strip_prefix(&parent)
+            .is_some_and(|suffix| suffix.starts_with('\\') || suffix.starts_with('/'))
+}
+
+fn purge_deleted_directory_references(directory: &Path) -> Result<AppConfig, String> {
+    let deleted_path = path_string(directory);
+    update_config(|config| {
+        config
+            .favorites
+            .retain(|favorite| !is_same_or_descendant(&favorite.path, directory));
+        if config
+            .last_workspace
+            .as_deref()
+            .is_some_and(|path| is_same_or_descendant(path, directory))
+        {
+            config.last_workspace = None;
+        }
+        Ok(())
+    })?;
+    update_workspace_state(|config| {
+        config
+            .workspace_focus
+            .retain(|path, _| !is_same_or_descendant(path, directory));
+        config
+            .workspace_sort
+            .retain(|path, _| !is_same_or_descendant(path, directory));
+        Ok(())
+    })
+    .inspect(|_| log::info!("Removed persisted references for recycled directory: {deleted_path}"))
+    .inspect_err(|error| {
+        log::error!(
+            "Unable to remove persisted references for recycled directory {deleted_path}: {error}"
+        )
+    })
+}
+
 #[tauri::command]
 pub(super) fn recycle_videos(
     paths: Vec<String>,
@@ -44,6 +87,47 @@ pub(super) fn recycle_videos(
             );
         })
         .inspect_err(|error| log::error!("Recycle request failed: {error}"))
+}
+
+#[tauri::command]
+pub(super) fn recycle_directory(
+    path: String,
+    queue: tauri::State<FileOperationQueue>,
+) -> Result<DirectoryRecycleResult, String> {
+    log::info!("Recycling directory: requested_path={path}");
+    let directory = fs::canonicalize(&path)
+        .map_err(|error| format!("Unable to access the selected folder: {error}"))?;
+    if !directory.is_dir() {
+        return Err("Only folders can be moved to the Recycle Bin.".to_string());
+    }
+    if !is_recyclable_directory(&directory) {
+        return Err("Disk roots cannot be moved to the Recycle Bin.".to_string());
+    }
+    let normalized = path_string(&directory);
+    let result = file_operations::enqueue_recycle(vec![directory.clone()], &queue)?;
+    if !result
+        .recycled_paths
+        .iter()
+        .any(|recycled| recycled.eq_ignore_ascii_case(&normalized))
+    {
+        return Err("Unable to move the selected folder to the Recycle Bin.".to_string());
+    }
+    let config = match purge_deleted_directory_references(&directory) {
+        Ok(config) => config,
+        Err(error) => {
+            // The Shell operation has already succeeded. Return the confirmed filesystem result
+            // so the UI can discard stale paths even if persistence needs later recovery.
+            log::error!(
+                "Directory was recycled but persisted reference cleanup failed: path={normalized}, error={error}"
+            );
+            load_config()?
+        }
+    };
+    log::info!("Directory moved to Recycle Bin: path={normalized}");
+    Ok(DirectoryRecycleResult {
+        recycled_path: normalized,
+        config,
+    })
 }
 
 #[tauri::command]
@@ -263,4 +347,21 @@ pub(super) fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
         .inspect_err(|error| {
             log::error!("File-drag session failed: paths={requested}, error={error}")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_reference_cleanup_matches_only_whole_path_segments() {
+        let deleted = Path::new(r"C:\\Videos\\Archive");
+        assert!(is_same_or_descendant(r"C:\\Videos\\Archive", deleted));
+        assert!(is_same_or_descendant(
+            r"c:\\videos\\archive\\nested",
+            deleted
+        ));
+        assert!(!is_same_or_descendant(r"C:\\Videos\\Archived", deleted));
+        assert!(!is_same_or_descendant(r"C:\\Videos", deleted));
+    }
 }

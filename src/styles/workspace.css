@@ -1,5 +1,5 @@
 .workspace {
-    background: var(--surface-base);
+    background: var(--surface-base-rgba);
     grid-template-rows: 56px minmax(0, 1fr);
     min-width: 0;
     height: 100%;
@@ -60,7 +60,7 @@
 .workspace-scroll-action:hover,
 .workspace-scroll-action:focus-visible {
     color: var(--accent);
-    background: var(--surface-control);
+    background: var(--surface-control-rgba);
     border-color: var(--accent-focus)
 }
 
@@ -90,7 +90,7 @@
 }
 
 .workspace-toolbar {
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border-bottom: 1px solid var(--border-subtle);
     gap: 8px;
     min-width: 0;
@@ -99,7 +99,7 @@
 
 .search-field {
     color: var(--text-muted);
-    background: var(--surface-control);
+    background: var(--surface-control-rgba);
     border: 1px solid var(--border-strong);
     border-radius: 8px;
     gap: 8px;
@@ -304,7 +304,7 @@
     height: var(--video-card-height);
     color: var(--text-secondary);
     text-align: left;
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
     gap: 7px;
@@ -319,7 +319,7 @@
 }
 
 .video-card:hover {
-    background: var(--surface-control);
+    background: var(--surface-control-rgba);
     border-color: var(--border-hover);
     transform: translateY(-1px)
 }
@@ -334,7 +334,7 @@
 .video-thumbnail {
     min-height: 0;
     color: var(--accent);
-    background: linear-gradient(135deg, #ffffff12 25%, #0000 25%) 0 0/16px 16px, linear-gradient(315deg, #ffffff0a 25%, #0000 25%) 0 0/16px 16px, var(--surface-base);
+    background: linear-gradient(135deg, #ffffff12 25%, #0000 25%) 0 0/16px 16px, linear-gradient(315deg, #ffffff0a 25%, #0000 25%) 0 0/16px 16px, var(--surface-base-rgba);
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
     justify-content: center;
@@ -344,7 +344,7 @@
 }
 
 .video-thumbnail.has-image {
-    background: var(--surface-base);
+    background: var(--surface-base-rgba);
     overflow: hidden
 }
 
@@ -397,7 +397,7 @@
 
 .inline-rename input {
     color: var(--text-primary);
-    background: var(--surface-raised);
+    background: var(--surface-raised-rgba);
     border: 1px solid var(--accent-focus);
     border-radius: 4px;
     outline: none;

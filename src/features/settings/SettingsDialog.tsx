@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Monitor, Moon, Plus, Sun, X } from "lucide-react";
 import { useState } from "react";
 
-import { listColumnLabels, type ListColumn, type ListColumnId, type Preferences, type SettingsLimits, type ThumbnailCapturePosition } from "../../app-types";
+import { listColumnLabels, type AboutInfo, type DataManagementSummary, type ListColumn, type ListColumnId, type Preferences, type SettingsLimits, type ThumbnailCapturePosition } from "../../app-types";
 import { writeClientLog } from "../../app-utils";
 import { themePresets } from "../../theme";
 
@@ -11,12 +11,28 @@ export function SettingsDialog({
   onApply,
   onClose,
   onNotify,
+  onChooseBackground,
+  onImportBackground,
+  dataSummary,
+  aboutInfo,
+  onClearThumbnails,
+  onClearOldLogs,
+  onOpenPath,
+  onExportDiagnostics,
 }: {
   settings: Preferences;
   limits: SettingsLimits;
   onApply: (settings: Preferences) => Promise<boolean>;
   onClose: () => void;
   onNotify: (message: string) => void;
+  onChooseBackground: () => Promise<string | null>;
+  onImportBackground: (sourcePath: string) => Promise<string>;
+  dataSummary: DataManagementSummary | null;
+  aboutInfo: AboutInfo | null;
+  onClearThumbnails: () => Promise<void>;
+  onClearOldLogs: () => Promise<void>;
+  onOpenPath: (path: string) => Promise<void>;
+  onExportDiagnostics: () => Promise<void>;
 }) {
   const [settingsDraft, setSettingsDraft] = useState<Preferences>(() => ({
     ...settings,
@@ -25,7 +41,8 @@ export function SettingsDialog({
     listColumns: settings.listColumns.map((column) => ({ ...column })),
   }));
   const [newVideoExtension, setNewVideoExtension] = useState("");
-  const settingsDirty = JSON.stringify(settingsDraft) !== JSON.stringify(settings);
+  const [backgroundSource, setBackgroundSource] = useState<string | null>(null);
+  const settingsDirty = JSON.stringify(settingsDraft) !== JSON.stringify(settings) || backgroundSource !== null;
 
   const closeSettings = () => {
     if (settingsDirty && !window.confirm("偏好设置尚未应用，确定放弃这些改动吗？")) {
@@ -113,7 +130,16 @@ export function SettingsDialog({
   };
   const applySettings = async () => {
     writeClientLog("info", `设置对话框请求应用草稿：修改 ${settingsDirty}`);
-    if (await onApply(settingsDraft)) {
+    const nextSettings = { ...settingsDraft };
+    if (backgroundSource) {
+      try {
+        nextSettings.backgroundImage = await onImportBackground(backgroundSource);
+      } catch (error) {
+        onNotify(`导入背景图失败：${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+    if (await onApply(nextSettings)) {
       writeClientLog("info", "设置对话框草稿应用成功，准备关闭");
       onClose();
     } else {
@@ -191,6 +217,26 @@ export function SettingsDialog({
                     ))}
                   </div>
                 </div>
+                <div className="setting-row extension-setting">
+                  <span>全局背景图</span>
+                  <div className="background-setting-actions">
+                    <span className="background-name">{backgroundSource ?? settingsDraft.backgroundImage ?? "未设置"}</span>
+                    <button type="button" className="command-button" onClick={() => void onChooseBackground().then((path) => {
+                      if (path) setBackgroundSource(path);
+                    })}>选择图片</button>
+                    {(backgroundSource || settingsDraft.backgroundImage) && <button type="button" className="command-button" onClick={() => {
+                      setBackgroundSource(null);
+                      setSettingsDraft((draft) => ({ ...draft, backgroundImage: null }));
+                    }}>移除</button>}
+                  </div>
+                </div>
+                <label className="setting-row">
+                  <span>背景图透明度</span>
+                  <span className="opacity-input">
+                    <input type="range" min="0" max="100" value={settingsDraft.backgroundOpacity} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, backgroundOpacity: Number(event.target.value) }))} />
+                    <output>{settingsDraft.backgroundOpacity}%</output>
+                  </span>
+                </label>
               </section>
 
               <section className="settings-section">
@@ -254,7 +300,7 @@ export function SettingsDialog({
                 </label>
                 <label className="setting-row">
                   <span>默认音量</span>
-                  <span className="volume-input">
+                  <span className="opacity-input">
                     <input
                       type="range"
                       min="0"
@@ -430,6 +476,32 @@ export function SettingsDialog({
                   </div>
                 ))}
               </section>
+
+              <section className="settings-section">
+                <h3>数据管理</h3>
+                <div className="data-summary" aria-live="polite">
+                  <span>缩略图 {formatBytes(dataSummary?.thumbnailBytes ?? 0)}</span>
+                  <span>日志 {formatBytes(dataSummary?.logBytes ?? 0)}</span>
+                  <span>背景 {formatBytes(dataSummary?.backgroundBytes ?? 0)}</span>
+                  <strong>合计 {formatBytes(dataSummary?.totalBytes ?? 0)}</strong>
+                </div>
+                <div className="settings-action-row">
+                  <button type="button" className="command-button" onClick={() => void onClearThumbnails()}>清空缩略图缓存</button>
+                  <button type="button" className="command-button" onClick={() => void onClearOldLogs()}>清理旧日志</button>
+                  {dataSummary && <button type="button" className="command-button" onClick={() => void onOpenPath(dataSummary.dataPath)}>打开数据目录</button>}
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <h3>关于与诊断</h3>
+                <p className="settings-description">VideoSweeper {aboutInfo?.appVersion ?? "正在读取版本信息"}</p>
+                {aboutInfo && <div className="about-sidecars">{Object.entries(aboutInfo.sidecars).map(([name, version]) => <span key={name}>{name}: {version}</span>)}</div>}
+                <div className="settings-action-row">
+                  <button type="button" className="command-button" onClick={() => void onExportDiagnostics()}>导出诊断信息</button>
+                  {aboutInfo && <button type="button" className="command-button" onClick={() => void onOpenPath(aboutInfo.dataPath)}>打开数据目录</button>}
+                  {aboutInfo?.licensesPath && <button type="button" className="command-button" onClick={() => void onOpenPath(aboutInfo.licensesPath!)}>打开许可证</button>}
+                </div>
+              </section>
             </div>
 
             <footer className="settings-footer">
@@ -443,4 +515,10 @@ export function SettingsDialog({
           </section>
         </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
