@@ -3,6 +3,7 @@ name = "video-sweeper"
 version = "0.8.0"
 description = "A local video management application"
 authors = ["Ayanami"]
+license = "MIT"
 edition = "2021"
 
 [build-dependencies]

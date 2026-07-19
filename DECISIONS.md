@@ -9,7 +9,7 @@
 - 安装器在目标位置创建 `VideoSweeper` 子目录。默认目标为 `%LOCALAPPDATA%\VideoSweeper`；用户选择自定义位置时，应用与数据均位于该自定义位置下的 `VideoSweeper` 子目录。
 - 数据库、缩略图、配置、背景图、备份和日志均位于可执行文件同级的 `data` 目录。安装目录不可写时，应用明确报错并退出，不回退到其他数据目录。
 - 升级保留既有 `data`，仅替换应用和 sidecar。卸载删除整个 `VideoSweeper` 目录及其中数据。
-- FFmpeg、ffprobe 和 ffmpegthumbnailer 作为固定版本的 sidecar 随包分发。当前 FFmpeg/ffprobe 二进制启用了 `--enable-gpl --enable-version3`，按 GPLv3+ 处理；ffmpegthumbnailer 上游为 GPLv2+。安装包必须携带对应许可证和源代码获取说明，升级与扩展安装在 v0.1 仅使用命令行。
+- 项目不随包分发 FFmpeg、ffprobe 或 ffmpegthumbnailer。用户自行下载并安装兼容版本；应用仅按约定路径调用用户提供的工具。项目自有代码使用 MIT 许可证，用户所选二进制文件继续受其各自许可证约束。
 - 应用默认以普通权限运行。Windows 禁止普通资源管理器向管理员完整性级别的窗口发送文件拖放；若检测到应用被管理员终端/IDE 启动，必须提示用户以普通权限重启，不能把该系统拒绝伪装成复制失败。
 
 ## 真实文件系统与数据恢复
@@ -145,7 +145,7 @@
 - ✅ NSIS 默认目录和自定义目录安装到 `VideoSweeper` 子目录已经真实安装验证。
 - ✅ 数据位于可执行文件同级 `data`，不可写时报错且不切换位置：路径解析和启动失败策略已实现。
 - 🟡 卸载删除整个应用目录及 `data`：已加入受管 NSIS 卸载钩子，普通卸载清理安装目录内 `data`、覆盖升级保留数据；仍待生成安装包和占用/权限失败矩阵验收。独立升级逻辑不再列为目标，应用与特定版本 FFmpeg/ffprobe/ffmpegthumbnailer 的命令参数深度绑定，媒体工具与应用只能作为同一版本整体替换。
-- ✅ FFmpeg、ffprobe、ffmpegthumbnailer 已通过 `externalBin` 按应用版本固定随包分发，不提供 sidecar 独立升级。
+- ✅ FFmpeg、ffprobe、ffmpegthumbnailer 不通过 `externalBin` 或安装包分发；用户按文档自行安装，不提供应用内下载或 sidecar 独立升级。
 - ✅ 管理员权限检测与普通权限提示：已实现，并记录拖放完整性级别限制。
 
 ### 真实文件系统与数据恢复（5 完成 / 0 部分）

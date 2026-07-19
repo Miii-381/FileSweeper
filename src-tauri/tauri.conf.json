@@ -30,11 +30,6 @@
   "bundle": {
     "active": true,
     "targets": "nsis",
-    "externalBin": [
-      "../sidecars/ffmpeg",
-      "../sidecars/ffprobe",
-      "../sidecars/ffmpegthumbnailer"
-    ],
     "resources": [
       "../LICENSES"
     ],

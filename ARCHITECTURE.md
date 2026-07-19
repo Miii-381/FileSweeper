@@ -8,7 +8,7 @@ VideoSweeper 是 Windows 本地视频文件管理器。它只枚举当前工作�
 
 - 平台：Windows、Tauri v2、单主窗口、单实例。
 - 数据目录：可执行文件同级 `data/`，包含设置与通用状态 `config.json`、焦点与排序 `workspace-state.json`、`logs/`、`thumbnails/` 和损坏文件备份。
-- 媒体工具：随包分发 `ffmpeg`、`ffprobe`、`ffmpegthumbnailer` sidecar。
+- 媒体工具：用户自行安装 `ffmpeg`、`ffprobe`、`ffmpegthumbnailer`；应用只在约定的本地 `sidecars` 目录中查找并调用它们，不随包分发或下载。
 - 外部播放：交由 Windows 默认关联程序，不维护 PotPlayer 路径或按格式分流。
 
 ## 2. 实际技术组成

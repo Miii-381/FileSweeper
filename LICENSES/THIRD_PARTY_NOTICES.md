@@ -1,16 +1,14 @@
 # 第三方组件许可证与来源
 
-此目录会作为 Windows 安装包资源随应用分发。它记录本版本随包的媒体 sidecar，供“关于与诊断”中的“打开许可证”入口访问。
+此目录会作为 Windows 安装包资源随应用分发。VideoSweeper 不随包提供下列媒体 sidecar；本文件仅保留用户可选安装工具的上游许可证与来源说明，供“关于与诊断”中的“打开许可证”入口访问。
 
 ## FFmpeg 与 FFprobe
 
 - 文件：`ffmpeg-x86_64-pc-windows-msvc.exe`、`ffprobe-x86_64-pc-windows-msvc.exe`
-- 已核验构建标识：`2026-07-13-git-9c2aabaa34-full_build-www.gyan.dev`
 - 上游项目：<https://ffmpeg.org/>
-- 二进制发行来源：<https://www.gyan.dev/ffmpeg/builds/>
-- 许可证：GNU General Public License，版本 3 或更高版本。
+- 官方 Windows 下载说明：<https://ffmpeg.org/download.html#build-windows>
 
-该构建的 `ffmpeg -version` 明确包含 `--enable-gpl --enable-version3`。因此 VideoSweeper 不将其描述为 LGPL 构建；重新替换二进制时，必须重新核验其配置、许可证和源代码获取方式。
+用户取得的构建可能为 LGPL 或 GPL，取决于其实际配置。若构建包含 `--enable-gpl` 或 `--enable-nonfree`，不得将其标注为 LGPL-only；本项目不对用户自行下载的二进制重新授权。
 
 完整的 GPLv3 文本及对应源代码获取说明见：
 
@@ -29,6 +27,6 @@
 
 ## 发布约束
 
-1. `RELEASE.md` 中的 SHA-256、构建标识与本目录的来源说明必须来自同一批待发布二进制。
-2. 发布人员必须将所选二进制发行包提供的完整许可证文本和源代码获取说明一并保留在本目录；不得以开发机缓存或不明构建替代。
-3. 若改用 LGPL-only FFmpeg 构建，必须同步更新本文件、`RELEASE.md`、哈希和“关于”页显示的许可证说明后才能发布。
+1. 发布人员必须确认安装包不包含本文件列出的可执行文件。
+2. 用户自行安装工具时，应核验下载来源、版本、哈希、许可证与源代码获取说明，不得把 GPL 构建标注为 LGPL。
+3. 本项目许可证为 MIT；此文件不改变用户自行取得的任何第三方二进制许可证。

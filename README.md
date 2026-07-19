@@ -1,116 +1,92 @@
-# VideoSweeper 部署教程
+# VideoSweeper
 
-## 1. 部署前置条件
+VideoSweeper 是一个 **Windows 端** 本地视频管理应用。本项目的自有源代码使用 [MIT 许可证](LICENSE)。
 
-目标环境为 Windows x64。打包机器需要安装：
+> 项目仓库、NSIS 安装包、更新包和安装脚本均不包含、不下载、不镜像 FFmpeg、FFprobe 或 ffmpegthumbnailer 二进制文件。用户自行取得、安装并承担所选二进制文件的许可证义务。
+
+## 1. 开发前置条件
+
+目标环境为 Windows x64。构建机器需要安装：
 
 - Node.js 与 npm
 - Rust stable MSVC 工具链
-- Visual Studio Build Tools，并勾选 Desktop development with C++
+- Visual Studio Build Tools（Desktop development with C++）
 - Windows 10/11 SDK
 - Microsoft Edge WebView2 Runtime
-
-确认工具链：
 
 ```powershell
 node --version
 npm --version
 rustc --version
 cargo --version
-```
-
-## 2. 准备 npm
-
-使用项目默认 npm 配置安装依赖：
-
-```powershell
 npm install
 ```
 
-若 registry 无法下载 Tauri 依赖，可在本机创建未纳入版本控制的 `.npmrc`，例如：
+## 2. 用户自行安装媒体工具
 
-```ini
-registry=https://registry.npmjs.org/
-```
+FFmpeg 和 FFprobe 是完整媒体预览、元数据读取与缩略图回退所需的工具；ffmpegthumbnailer 可选，缺失时应用会回退到 FFmpeg 生成缩略图。
 
-## 3. 准备应用图标
+### 下载地址与许可证
 
-Tauri 打包 Windows 应用前必须存在：
+- FFmpeg/FFprobe： [FFmpeg 官方 Windows 下载说明](https://ffmpeg.org/download.html#build-windows)。可选择其中列出的可信 Windows 构建来源；若选择 Gyan 的 full build，需注意其构建可能启用 GPL 组件。
+- ffmpegthumbnailer： [上游 Releases](https://github.com/dirkvdb/ffmpegthumbnailer/releases)，上游许可证为 GPLv2+。
+- FFmpeg 构建的许可证取决于实际 `configure` 参数。若需要 LGPL-only 构建，运行 `ffmpeg -version` 后确认输出不含 `--enable-gpl` 与 `--enable-nonfree`；请同时保留该发行方提供的许可证和源代码获取说明。
 
-```text
-src-tauri/icons/icon.ico
-```
+项目不为这些工具指定或重新授权许可证。下载后请自行核验来源、版本、哈希和适用许可证。
 
-推荐准备一张至少 `1024 x 1024` 的 PNG 图标，例如 `app-icon.png`，在项目根目录执行：
+若所选构建为 GPL 许可，其对应源码及构建脚本应从同一发行方获取；项目不为第三方构建提供源码托管或验证服务。
 
-```powershell
-npm run tauri icon app-icon.png
-```
+### 安装位置与文件名
 
-该命令会生成 `src-tauri/icons/icon.ico` 及其他平台图标资源。
-
-## 4. 检查 FFmpeg sidecar
-
-发布包会内置 FFmpeg、ffprobe 和 ffmpegthumbnailer。由于这些二进制文件体积较大，仓库仅保留
-`sidecars/README.md`，实际 `.exe` 由构建机器自行准备。确认以下文件存在：
+将已下载的可执行文件复制到 **VideoSweeper 安装目录** 下的 `sidecars` 目录。默认当前用户安装通常位于 `%LOCALAPPDATA%\VideoSweeper`；使用自定义安装位置时，以你实际选择的 `VideoSweeper` 目录为准。
 
 ```text
-sidecars/ffmpeg-x86_64-pc-windows-msvc.exe
-sidecars/ffprobe-x86_64-pc-windows-msvc.exe
-sidecars/ffmpegthumbnailer-x86_64-pc-windows-msvc.exe
+<VideoSweeper 安装目录>\sidecars\
+  ffmpeg-x86_64-pc-windows-msvc.exe
+  ffprobe-x86_64-pc-windows-msvc.exe
+  ffmpegthumbnailer-x86_64-pc-windows-msvc.exe   （可选）
 ```
 
-它们的文件名必须与当前 Rust target triple 一致。可从受信任的 LGPL FFmpeg 构建和
-ffmpegthumbnailer 发布包取得，将文件复制并重命名为上述名称；不要将完整下载目录或 `.exe`
-提交到 Git。
+下载包内一般是 `ffmpeg.exe`、`ffprobe.exe`，或位于 `bin` 子目录；请复制后按上述名称重命名。不要把文件放入应用的 `data` 目录。
 
-## 5. 本地验收
+> 此文件名为应用内部硬性约定，请勿更改为其他名称，否则无法正常识别。
 
-先执行前端构建检查：
+仓库提供的脚本只复制你已经手动下载的文件，不访问网络也不下载任何二进制。以 PowerShell 7 为例：
 
 ```powershell
-npm run build
+# 参数说明：<FFmpeg bin目录> <VideoSweeper安装目录> [ffmpegthumbnailer路径]
+pwsh -File .\scripts\install-local-media-tools.ps1 `
+  "C:\Users\你的用户名\Downloads\ffmpeg\bin" `
+  "$env:LOCALAPPDATA\VideoSweeper" `
+  "C:\Users\你的用户名\Downloads\ffmpegthumbnailer.exe"
 ```
 
-启动完整 Tauri 桌面应用进行验收：
+前两个位置参数分别为包含 `ffmpeg.exe` 与 `ffprobe.exe` 的目录、VideoSweeper 安装目录；第三个位置参数可省略。脚本会复制并重命名到 `sidecars`，保留用户的原始下载文件。
+
+## 3. 本地开发
+
+开发运行时同样从项目根目录的 `sidecars` 子目录读取用户自行准备的文件。先按上一节放入文件，再执行：
 
 ```powershell
+npm run check
 npm run tauri dev
 ```
 
-重点确认应用能启动、主题色设置可用、窗口单实例行为正常，以及 FFmpeg sidecar 可被识别。
+缺少 FFmpeg/FFprobe 时，应用将在日志和控制台输出错误信息，相关媒体功能将被禁用；ffmpegthumbnailer 缺失仅触发缩略图生成回退，不影响核心功能。
 
-## 6. 构建 NSIS 安装包
+## 4. 图标与 NSIS 构建
 
-执行：
+Tauri 打包 Windows 应用前必须存在 `src-tauri/icons/icon.ico`。可从项目根目录运行：
 
 ```powershell
+npm run tauri icon app-icon.png
 npm run tauri build
 ```
 
-项目已配置为 NSIS 当前用户安装模式。构建完成后，安装包通常位于：
+构建产物通常位于 `src-tauri/target/release/bundle/nsis/`。发布前确认安装包中不含 `ffmpeg*.exe`、`ffprobe*.exe` 或 `ffmpegthumbnailer*.exe`；用户在安装完成后再按第二节自行安装媒体工具。
 
-```text
-src-tauri/target/release/bundle/nsis/
-```
+## 5. 许可证边界
 
-发布时分发该目录中的 `.exe` 安装程序。
-
-## 7. 安装后验收
-
-在干净的 Windows 用户环境中执行安装程序，并确认：
-
-1. 安装器在所选位置创建 `VideoSweeper` 目录。
-2. 应用可以启动，且系统存在 WebView2 Runtime。
-3. 应用目录中保留 FFmpeg 和 ffprobe sidecar。
-4. 应用可在安装目录旁创建 `data` 目录。
-5. 卸载行为符合发布策略：会删除应用目录及其中数据。
-
-## 8. 发布前检查
-
-```powershell
-npm run build
-npm run tauri build
-```
-
-确认没有缺失 `icon.ico`、FFmpeg sidecar、Windows C++ 工具链或 npm 依赖后，再交付 NSIS 安装程序。
+- `LICENSE`：VideoSweeper 项目自有代码的 MIT 许可证。
+- `LICENSES/`：随应用携带的项目许可证副本，以及用户可选安装媒体工具的上游许可证说明。
+- 用户自行下载的 FFmpeg、FFprobe、ffmpegthumbnailer 不会因被本项目调用、复制或重命名而改变原有许可证。

@@ -6,9 +6,17 @@ dist/
 .npmrc
 icon.png
 
-# Local FFmpeg downloads and copied Tauri sidecars are release inputs, not source.
-ffmpeg-*-full_build/
-sidecars/*.exe
+# User-provided media tools and their downloaded archives are never project source
+# or release inputs. Keep only sidecars/README.md under version control.
+/sidecars/*
+!/sidecars/README.md
+/ffmpeg-*/
+/ffmpeg*.zip
+/ffmpeg*.7z
+/ffmpeg*.tar.*
+/ffmpeg*.exe
+/ffprobe*.exe
+/ffmpegthumbnailer*.exe
 
 src-tauri/target/
 src-tauri/gen/
