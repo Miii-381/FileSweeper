@@ -6,19 +6,19 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 
-export function useWorkspaceMonitoring({ workspace, refreshWorkspace, markUnavailable, copyDroppedVideos }: {
+export function useWorkspaceMonitoring({ workspace, refreshWorkspace, markUnavailable, copyDroppedFiles }: {
   workspace: WorkspaceListing | null;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   markUnavailable: (path: string, reason: string) => void;
-  copyDroppedVideos: (paths: string[], workspacePath: string) => Promise<void>;
+  copyDroppedFiles: (paths: string[], workspacePath: string) => Promise<void>;
 }) {
   const [isExternalDropActive, setIsExternalDropActive] = useState(false);
   const refreshRef = useRef(refreshWorkspace);
   const markUnavailableRef = useRef(markUnavailable);
-  const copyDroppedRef = useRef(copyDroppedVideos);
+  const copyDroppedRef = useRef(copyDroppedFiles);
   refreshRef.current = refreshWorkspace;
   markUnavailableRef.current = markUnavailable;
-  copyDroppedRef.current = copyDroppedVideos;
+  copyDroppedRef.current = copyDroppedFiles;
 
   useEffect(() => {
     if (!workspace?.isAvailable) return;

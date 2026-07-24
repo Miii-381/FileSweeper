@@ -1,38 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
-import type { ThumbnailBatchResult, ThumbnailResult, VideoEntry } from "../../app-types";
+import type { FileEntry, ThumbnailBatchResult, ThumbnailResult } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 import {
   clearThumbnailDataCache,
   invalidateThumbnailData,
-} from "../../components/VideoThumbnail";
+} from "../../components/FileThumbnail";
 
 export function useThumbnailQueue({
   workspacePath,
-  videos,
   concurrency,
 }: {
   workspacePath: string | null;
-  videos: VideoEntry[];
   concurrency: number;
 }) {
   const [pathOverrides, setPathOverrides] = useState<Map<string, string>>(() => new Map());
   const [visibilityRevision, setVisibilityRevision] = useState(0);
-  const currentVideoPaths = useRef<Set<string>>(new Set());
   const requests = useRef<Set<string>>(new Set());
   const pathOverrideRef = useRef<Map<string, string>>(new Map());
   const queuedPaths = useRef<Set<string>>(new Set());
-  const queue = useRef<VideoEntry[]>([]);
+  const queue = useRef<FileEntry[]>([]);
   const runQueue = useRef<() => void>(() => {});
   const dispatchScheduled = useRef(false);
   const scrollActive = useRef(false);
   const scrollTimer = useRef<number | null>(null);
   const failures = useRef<Set<string>>(new Set());
-
-  const videoPaths = useMemo(() => new Set(videos.map((video) => video.path)), [videos]);
-  currentVideoPaths.current = videoPaths;
 
   const handleViewportScroll = useCallback(() => {
     if (!scrollActive.current) {
@@ -51,10 +45,6 @@ export function useThumbnailQueue({
   }, []);
 
   const applyResult = useCallback((thumbnail: ThumbnailResult) => {
-    if (!currentVideoPaths.current.has(thumbnail.path)) {
-      writeClientLog("debug", `缩略图已写入缓存但不属于当前工作区，跳过 UI 更新：${thumbnail.path}`);
-      return;
-    }
     invalidateThumbnailData(thumbnail.thumbnailPath);
     pathOverrideRef.current.set(thumbnail.path, thumbnail.thumbnailPath);
     startTransition(() => {
@@ -64,23 +54,23 @@ export function useThumbnailQueue({
   }, []);
 
   runQueue.current = () => {
-    const tasks: VideoEntry[] = [];
+    const tasks: FileEntry[] = [];
     const transportWindow = Math.max(1, concurrency);
     while (requests.current.size + tasks.length < transportWindow) {
-      const video = queue.current.shift();
-      if (!video) {
+      const file = queue.current.shift();
+      if (!file) {
         break;
       }
-      queuedPaths.current.delete(video.path);
+      queuedPaths.current.delete(file.path);
       if (
-        video.thumbnailPath ||
-        pathOverrideRef.current.has(video.path) ||
-        requests.current.has(video.path) ||
-        failures.current.has(video.path)
+        file.thumbnailPath || file.kind === "text" || file.kind === "other" ||
+        pathOverrideRef.current.has(file.path) ||
+        requests.current.has(file.path) ||
+        failures.current.has(file.path)
       ) {
         continue;
       }
-      tasks.push(video);
+      tasks.push(file);
     }
     if (tasks.length === 0) {
       return;
@@ -90,11 +80,16 @@ export function useThumbnailQueue({
       "info",
       `分发缩略图批次：本批 ${tasks.length} 个，逻辑队列剩余 ${queue.current.length} 个，运行中 ${requests.current.size} 个`,
     );
-    tasks.forEach((video) => requests.current.add(video.path));
-    void invoke<ThumbnailBatchResult>("generate_thumbnails", {
-      paths: tasks.map((video) => video.path),
-    })
-      .then((result) => {
+    tasks.forEach((file) => requests.current.add(file.path));
+    const batches = [
+      ["generate_thumbnails", tasks.filter((file) => file.kind === "video")],
+      ["generate_image_thumbnails", tasks.filter((file) => file.kind === "image")],
+    ] as const;
+    void Promise.all(batches.filter(([, files]) => files.length > 0).map(([command, files]) =>
+      invoke<ThumbnailBatchResult>(command, { paths: files.map((file) => file.path) }),
+    ))
+      .then((results) => {
+        const result = results.reduce<ThumbnailBatchResult>((all, current) => ({ thumbnails: [...all.thumbnails, ...current.thumbnails], failures: [...all.failures, ...current.failures] }), { thumbnails: [], failures: [] });
         writeClientLog(
           result.failures.length > 0 ? "warn" : "info",
           `缩略图批次返回：成功 ${result.thumbnails.length} 个，失败 ${result.failures.length} 个`,
@@ -111,13 +106,13 @@ export function useThumbnailQueue({
       })
       .catch((batchError) => {
         const message = errorMessage(batchError);
-        tasks.forEach((video) => {
-          failures.current.add(video.path);
-          writeClientLog("error", `缩略图生成失败：${video.path}，${message}`);
+        tasks.forEach((file) => {
+          failures.current.add(file.path);
+          writeClientLog("error", `缩略图生成失败：${file.path}，${message}`);
         });
       })
       .finally(() => {
-        tasks.forEach((video) => requests.current.delete(video.path));
+        tasks.forEach((file) => requests.current.delete(file.path));
         writeClientLog(
           "debug",
           `缩略图批次清理完成：逻辑队列剩余 ${queue.current.length} 个，运行中 ${requests.current.size} 个`,
@@ -127,20 +122,18 @@ export function useThumbnailQueue({
   };
 
   const enqueue = useCallback(
-    (video: VideoEntry) => {
+    (file: FileEntry) => {
       if (
         !workspacePath ||
         scrollActive.current ||
-        video.thumbnailPath ||
-        pathOverrideRef.current.has(video.path) ||
-        requests.current.has(video.path) ||
-        queuedPaths.current.has(video.path) ||
-        failures.current.has(video.path)
+        file.kind === "text" || file.kind === "other" || file.thumbnailPath ||
+        pathOverrideRef.current.has(file.path) || requests.current.has(file.path) ||
+        queuedPaths.current.has(file.path) || failures.current.has(file.path)
       ) {
         return;
       }
-      queuedPaths.current.add(video.path);
-      queue.current.push(video);
+      queuedPaths.current.add(file.path);
+      queue.current.push(file);
       if (!dispatchScheduled.current) {
         dispatchScheduled.current = true;
         queueMicrotask(() => {

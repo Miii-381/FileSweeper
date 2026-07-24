@@ -597,6 +597,26 @@
     max-width: 62%
 }
 
+.text-preview-font-inputs {
+    justify-content: flex-end;
+    gap: 8px;
+    max-width: 62%;
+    display: flex;
+    flex-wrap: wrap
+}
+
+.text-preview-font-inputs label {
+    color: var(--text-muted);
+    align-items: center;
+    gap: 5px;
+    display: flex;
+    font-size: 12px
+}
+
+.text-preview-font-inputs .extension-input {
+    width: 132px
+}
+
 .background-name,
 .settings-description,
 .about-sidecars {

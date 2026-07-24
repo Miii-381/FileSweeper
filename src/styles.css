@@ -79,8 +79,8 @@ select:disabled {
 button,
 input,
 select,
-.video-card,
-.video-list-row,
+.file-card,
+.file-list-row,
 .tree-row {
     transition: background-color var(--motion-standard) var(--motion-standard-easing), border-color var(--motion-standard) var(--motion-standard-easing), color var(--motion-standard) var(--motion-standard-easing), box-shadow var(--motion-standard) var(--motion-standard-easing), opacity var(--motion-fast) var(--motion-standard-easing), transform var(--motion-fast) var(--motion-standard-easing)
 }
@@ -241,6 +241,11 @@ select:focus-visible {
 
 .titlebar-actions {
     gap: 8px
+}
+
+.titlebar-search {
+    flex: 0 1 360px;
+    margin: 0 auto
 }
 
 .command-button,

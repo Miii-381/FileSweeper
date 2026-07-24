@@ -11,8 +11,8 @@ describe("ThemedContextMenu", () => {
       y: 12,
       kind: "directory" as const,
       workspacePath: null,
-      paths: ["C:\\Videos\\Child"],
-      primaryPath: "C:\\Videos\\Child",
+      paths: ["C:\\files\\Child"],
+      primaryPath: "C:\\files\\Child",
     };
     const { rerender } = render(<ThemedContextMenu menu={{ ...baseMenu, canRecycleDirectory: false }} onAction={onAction} onClose={vi.fn()} />);
     expect(screen.queryByText("移到回收站")).toBeNull();

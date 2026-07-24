@@ -29,4 +29,8 @@ src-tauri/icons/icon.icns
 
 data/
 
+# Local product-design working drafts are intentionally not versioned.
+/v2.0设计草案.md
+/V2.0开发计划.md
+
 .agents

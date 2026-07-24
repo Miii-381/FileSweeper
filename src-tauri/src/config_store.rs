@@ -235,6 +235,18 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
     ) {
         return Err("Thumbnail capture position is not supported.".to_string());
     }
+    if !domain::is_supported_code_theme(&config.settings.code_theme) {
+        return Err("Code theme is not supported.".to_string());
+    }
+    config.settings.text_preview_latin_font =
+        config.settings.text_preview_latin_font.trim().to_string();
+    config.settings.text_preview_cjk_font =
+        config.settings.text_preview_cjk_font.trim().to_string();
+    if config.settings.text_preview_latin_font.is_empty()
+        || config.settings.text_preview_cjk_font.is_empty()
+    {
+        return Err("Text preview fonts cannot be empty.".to_string());
+    }
 
     config.settings.volume = config.settings.volume.min(100);
     config.settings.background_opacity = config.settings.background_opacity.min(100);
@@ -245,14 +257,20 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
             .filter(|name| *name == background)
             .is_some();
         if !valid_name {
-            return Err("The background image must be managed by VideoSweeper.".to_string());
+            return Err("The background image must be managed by FileSweeper.".to_string());
         }
     }
-    domain::normalize_extensions(&mut config.settings.video_extensions);
+    domain::normalize_extension_groups(&mut config.settings);
     domain::normalize_extensions(&mut config.settings.managed_video_extensions);
 
     if config.settings.video_extensions.is_empty() {
         return Err("At least one supported video extension is required.".to_string());
+    }
+    if !(1..=512).contains(&config.settings.image_max_megabytes) {
+        return Err("Image size protection must be between 1 and 512 MiB.".to_string());
+    }
+    if !(1..=500).contains(&config.settings.image_max_megapixels) {
+        return Err("Image pixel protection must be between 1 and 500 MP.".to_string());
     }
     for extension in &config.settings.video_extensions {
         if !config.settings.managed_video_extensions.contains(extension) {
@@ -395,6 +413,14 @@ fn load_config_from_path(path: &Path) -> Result<AppConfig, String> {
     match migrate_config_source(&source) {
         Ok((config, migrated)) => {
             if migrated {
+                let migration_backup = backup_corrupt_file(path, "config-migration")?;
+                log::info!(
+                    "Configuration migration backup created: {}",
+                    migration_backup
+                        .as_deref()
+                        .map(path_string)
+                        .unwrap_or_else(|| "<none>".to_string())
+                );
                 write_config_to_path(path, &config)?;
                 log::info!(
                     "Persisted migrated configuration: path={}",
@@ -496,7 +522,7 @@ mod tests {
 
     fn test_directory(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "video-sweeper-config-{name}-{}-{}",
+            "file-sweeper-config-{name}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -516,9 +542,9 @@ mod tests {
             ..AppConfig::default()
         };
         legacy.workspace_focus.insert(
-            "D:\\Videos".to_string(),
+            "D:\\Files".to_string(),
             WorkspaceFocus {
-                video_path: "D:\\Videos\\focused.mp4".to_string(),
+                file_path: "D:\\Files\\focused.mp4".to_string(),
             },
         );
         fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
@@ -529,7 +555,7 @@ mod tests {
             .snapshot()
             .unwrap()
             .workspace_focus
-            .contains_key("D:\\Videos"));
+            .contains_key("D:\\Files"));
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert!(persisted.get("workspaceFocus").is_none());
@@ -537,7 +563,7 @@ mod tests {
         let workspace_state: WorkspaceStateFile =
             serde_json::from_slice(&fs::read(directory.join("workspace-state.json")).unwrap())
                 .unwrap();
-        assert!(workspace_state.workspace_focus.contains_key("D:\\Videos"));
+        assert!(workspace_state.workspace_focus.contains_key("D:\\Files"));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -607,9 +633,9 @@ mod tests {
             focus_store
                 .update_workspace_state(|config| {
                     config.workspace_focus.insert(
-                        "D:\\Videos".to_string(),
+                        "D:\\Files".to_string(),
                         WorkspaceFocus {
-                            video_path: "D:\\Videos\\focused.mp4".to_string(),
+                            file_path: "D:\\Files\\focused.mp4".to_string(),
                         },
                     );
                     Ok(())
@@ -622,7 +648,7 @@ mod tests {
         let config = store.snapshot().unwrap();
         assert_eq!(config.settings.volume, 42);
         assert!(config.settings.muted);
-        assert!(config.workspace_focus.contains_key("D:\\Videos"));
+        assert!(config.workspace_focus.contains_key("D:\\Files"));
         let persisted_config: serde_json::Value =
             serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(persisted_config["settings"]["volume"], 42);
@@ -632,8 +658,8 @@ mod tests {
                 .unwrap();
         assert!(persisted_workspace.get("settings").is_none());
         assert_eq!(
-            persisted_workspace["workspaceFocus"]["D:\\Videos"]["videoPath"],
-            "D:\\Videos\\focused.mp4"
+            persisted_workspace["workspaceFocus"]["D:\\Files"]["filePath"],
+            "D:\\Files\\focused.mp4"
         );
         fs::remove_dir_all(directory).unwrap();
     }
@@ -647,6 +673,9 @@ mod tests {
             .update_config(|config| {
                 config.settings.appearance = "light".to_string();
                 config.settings.accent_theme = "sky".to_string();
+                config.settings.code_theme = "solarizedlight".to_string();
+                config.settings.text_preview_latin_font = "JetBrains Mono".to_string();
+                config.settings.text_preview_cjk_font = "Microsoft YaHei UI".to_string();
                 config.settings.thumbnail_cache_gb = 1.25;
                 config.settings.thumbnail_capture_position = "late".to_string();
                 config.settings.autoplay = false;
@@ -682,6 +711,9 @@ mod tests {
         let settings = &persisted["settings"];
         assert_eq!(settings["appearance"], "light");
         assert_eq!(settings["accentTheme"], "sky");
+        assert_eq!(settings["codeTheme"], "solarizedlight");
+        assert_eq!(settings["textPreviewLatinFont"], "JetBrains Mono");
+        assert_eq!(settings["textPreviewCjkFont"], "Microsoft YaHei UI");
         assert_eq!(settings["thumbnailCacheGb"], 1.25);
         assert_eq!(settings["thumbnailCapturePosition"], "late");
         assert_eq!(settings["autoplay"], false);

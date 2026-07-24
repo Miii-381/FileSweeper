@@ -1,4 +1,4 @@
-; VideoSweeper stores mutable data beside the executable instead of in the
+; FileSweeper stores mutable data beside the executable instead of in the
 ; Tauri default AppData locations. The generated NSIS template does not know
 ; about this directory, so remove it explicitly only for a real uninstall.
 ;
@@ -8,11 +8,11 @@
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   ${If} $UpdateMode <> 1
-    DetailPrint "Removing VideoSweeper data directory"
+    DetailPrint "Removing FileSweeper data directory"
     ClearErrors
     RMDir /r "$INSTDIR\data"
     ${If} ${Errors}
-      MessageBox MB_ICONEXCLAMATION "VideoSweeper data could not be removed. Close programs using the data directory and run the uninstaller again."
+      MessageBox MB_ICONEXCLAMATION "FileSweeper data could not be removed. Close programs using the data directory and run the uninstaller again."
       Abort
     ${EndIf}
   ${EndIf}

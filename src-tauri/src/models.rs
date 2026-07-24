@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const CONFIG_VERSION: u32 = 4;
+pub(super) const CONFIG_VERSION: u32 = 5;
 pub(super) const DEFAULT_EXTENSIONS: [&str; 14] = [
     ".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".mpeg", ".mpg", ".3gp",
     ".rm", ".rmvb", ".ts",
@@ -57,6 +57,18 @@ pub(super) fn default_thumbnail_capture_position() -> String {
     "middle".to_string()
 }
 
+pub(super) fn default_code_theme() -> String {
+    "tomorrow".to_string()
+}
+
+pub(super) fn default_text_preview_latin_font() -> String {
+    "Consolas".to_string()
+}
+
+pub(super) fn default_text_preview_cjk_font() -> String {
+    "Microsoft YaHei".to_string()
+}
+
 pub(super) fn default_remember_workspace_focus() -> bool {
     true
 }
@@ -90,11 +102,64 @@ pub(super) fn default_video_extensions() -> Vec<String> {
         .collect()
 }
 
+pub(super) fn default_image_extensions() -> Vec<String> {
+    [
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tif", ".tiff",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub(super) fn default_text_extensions() -> Vec<String> {
+    [
+        ".txt", ".md", ".json", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".yaml",
+        ".yml", ".sh", ".ps1", ".sql", ".py", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
+        ".go",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub(super) fn default_text_language_map() -> HashMap<String, String> {
+    [
+        (".html", "markup"),
+        (".htm", "markup"),
+        (".css", "css"),
+        (".js", "javascript"),
+        (".jsx", "javascript"),
+        (".ts", "typescript"),
+        (".tsx", "tsx"),
+        (".json", "json"),
+        (".md", "markdown"),
+        (".yaml", "yaml"),
+        (".yml", "yaml"),
+        (".sh", "bash"),
+        (".ps1", "powershell"),
+        (".sql", "sql"),
+        (".py", "python"),
+        (".rs", "rust"),
+        (".java", "java"),
+        (".c", "cpp"),
+        (".cc", "cpp"),
+        (".cpp", "cpp"),
+        (".h", "cpp"),
+        (".hpp", "cpp"),
+        (".go", "go"),
+    ]
+    .into_iter()
+    .map(|(extension, language)| (extension.to_string(), language.to_string()))
+    .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Preferences {
     pub(super) appearance: String,
     pub(super) accent_theme: String,
+    #[serde(default = "default_code_theme")]
+    pub(super) code_theme: String,
     pub(super) thumbnail_cache_gb: f64,
     #[serde(default = "default_thumbnail_capture_position")]
     pub(super) thumbnail_capture_position: String,
@@ -107,6 +172,20 @@ pub(super) struct Preferences {
     pub(super) show_hidden_items: bool,
     pub(super) show_nomedia_media: bool,
     pub(super) video_extensions: Vec<String>,
+    #[serde(default = "default_image_extensions")]
+    pub(super) image_extensions: Vec<String>,
+    #[serde(default = "default_text_extensions")]
+    pub(super) text_extensions: Vec<String>,
+    #[serde(default = "default_text_language_map")]
+    pub(super) text_language_map: HashMap<String, String>,
+    #[serde(default = "default_text_preview_latin_font")]
+    pub(super) text_preview_latin_font: String,
+    #[serde(default = "default_text_preview_cjk_font")]
+    pub(super) text_preview_cjk_font: String,
+    #[serde(default = "default_image_max_megabytes")]
+    pub(super) image_max_megabytes: u16,
+    #[serde(default = "default_image_max_megapixels")]
+    pub(super) image_max_megapixels: u16,
     #[serde(default = "default_video_extensions")]
     pub(super) managed_video_extensions: Vec<String>,
     #[serde(default = "recommended_background_sidecar_concurrency")]
@@ -124,6 +203,7 @@ impl Default for Preferences {
         Self {
             appearance: "dark".to_string(),
             accent_theme: "teal".to_string(),
+            code_theme: default_code_theme(),
             thumbnail_cache_gb: 0.5,
             thumbnail_capture_position: default_thumbnail_capture_position(),
             autoplay: true,
@@ -133,6 +213,13 @@ impl Default for Preferences {
             show_hidden_items: false,
             show_nomedia_media: false,
             video_extensions: default_video_extensions(),
+            image_extensions: default_image_extensions(),
+            text_extensions: default_text_extensions(),
+            text_language_map: default_text_language_map(),
+            text_preview_latin_font: default_text_preview_latin_font(),
+            text_preview_cjk_font: default_text_preview_cjk_font(),
+            image_max_megabytes: default_image_max_megabytes(),
+            image_max_megapixels: default_image_max_megapixels(),
             managed_video_extensions: default_video_extensions(),
             background_sidecar_concurrency: recommended_background_sidecar_concurrency(),
             list_columns: default_list_columns(),
@@ -142,10 +229,18 @@ impl Default for Preferences {
     }
 }
 
+pub(super) fn default_image_max_megabytes() -> u16 {
+    50
+}
+pub(super) fn default_image_max_megapixels() -> u16 {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorkspaceFocus {
-    pub(super) video_path: String,
+    #[serde(alias = "videoPath")]
+    pub(super) file_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,7 +287,8 @@ pub(super) struct DirectoryEntry {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct VideoEntry {
+pub(super) struct FileEntry {
+    pub(super) entry_type: &'static str,
     pub(super) path: String,
     pub(super) name: String,
     pub(super) extension: String,
@@ -203,6 +299,50 @@ pub(super) struct VideoEntry {
     pub(super) width: Option<u32>,
     pub(super) height: Option<u32>,
     pub(super) thumbnail_path: Option<String>,
+    pub(super) kind: FileKind,
+    pub(super) preview_capability: PreviewCapability,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FolderEntry {
+    pub(super) entry_type: &'static str,
+    pub(super) path: String,
+    pub(super) name: String,
+    pub(super) created_at: Option<u128>,
+    pub(super) modified_at: Option<u128>,
+    pub(super) can_recycle: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(super) enum DirectoryItem {
+    Folder(FolderEntry),
+    File(FileEntry),
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FolderThumbnailSources {
+    pub(super) folder_path: String,
+    pub(super) files: Vec<FileEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum FileKind {
+    Video,
+    Image,
+    Text,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum PreviewCapability {
+    Inline,
+    MetadataOnly,
+    Unavailable,
 }
 
 #[derive(Debug, Serialize)]
@@ -214,9 +354,9 @@ pub(super) struct DirectoryChildren {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct WorkspaceListing {
+pub(super) struct DirectoryListing {
     pub(super) path: String,
-    pub(super) videos: Vec<VideoEntry>,
+    pub(super) items: Vec<DirectoryItem>,
     pub(super) media_suppressed: bool,
     pub(super) is_available: bool,
 }
@@ -298,16 +438,27 @@ impl Default for WindowState {
     }
 }
 
-pub(super) const MEDIA_CACHE_VERSION: u32 = 2;
+pub(super) const MEDIA_CACHE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CachedThumbnail {
     #[serde(default = "default_thumbnail_capture_position")]
     pub(super) capture_position: String,
+    #[serde(default = "default_thumbnail_preview_type")]
+    pub(super) preview_type: String,
+    #[serde(default = "default_thumbnail_processor_version")]
+    pub(super) processor_version: String,
     pub(super) thumbnail_file: String,
     #[serde(default)]
     pub(super) last_accessed_at: u128,
+}
+
+pub(super) fn default_thumbnail_preview_type() -> String {
+    "video".to_string()
+}
+pub(super) fn default_thumbnail_processor_version() -> String {
+    "v1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,6 +653,25 @@ pub(super) struct ThumbnailData {
     pub(super) path: String,
     pub(super) thumbnail_path: String,
     pub(super) data_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TextPreviewData {
+    pub(super) content: String,
+    pub(super) encoding: String,
+    pub(super) total_bytes: u64,
+    pub(super) readable: bool,
+    pub(super) reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ImagePreviewInfo {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) allowed: bool,
+    pub(super) reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,32 +1,30 @@
 use super::*;
 
-pub(super) fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
+fn is_same_or_descendant_path(path: &Path, parent: &Path) -> bool {
+    let parent = path_string(parent)
+        .trim_end_matches(&['\\', '/'][..])
+        .to_ascii_lowercase();
+    let path = path_string(path)
+        .trim_end_matches(&['\\', '/'][..])
+        .to_ascii_lowercase();
+    path == parent
+        || path
+            .strip_prefix(&parent)
+            .is_some_and(|suffix| suffix.starts_with('\\') || suffix.starts_with('/'))
+}
+
+pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
     let requested = paths.len();
-    let config = load_config()?;
-    let extensions: HashSet<&str> = config
-        .settings
-        .video_extensions
-        .iter()
-        .map(String::as_str)
-        .collect();
     let mut seen_paths = HashSet::new();
     let mut normalized_paths = Vec::new();
 
     for path in paths {
         let normalized = fs::canonicalize(path)
-            .map_err(|error| format!("Unable to access the selected video: {error}"))?;
+            .map_err(|error| format!("Unable to access the selected item: {error}"))?;
         let metadata = fs::metadata(&normalized)
-            .map_err(|error| format!("Unable to inspect the selected video: {error}"))?;
-        if !metadata.is_file() {
-            return Err("Only video files can be moved to the Recycle Bin.".to_string());
-        }
-        let extension = normalized
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-            .unwrap_or_default();
-        if !extensions.contains(extension.as_str()) {
-            return Err("Only supported video files can be moved to the Recycle Bin.".to_string());
+            .map_err(|error| format!("Unable to inspect the selected item: {error}"))?;
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err("Only files and folders can be selected.".to_string());
         }
         if seen_paths.insert(path_string(&normalized).to_ascii_lowercase()) {
             normalized_paths.push(normalized);
@@ -34,11 +32,17 @@ pub(super) fn normalize_video_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, 
     }
 
     if normalized_paths.is_empty() {
-        log::warn!("Video path normalization produced no usable files: requested={requested}");
-        return Err("Select at least one video to move to the Recycle Bin.".to_string());
+        log::warn!("Item path normalization produced no usable items: requested={requested}");
+        return Err("Select at least one file or folder.".to_string());
     }
+    let candidates = normalized_paths.clone();
+    normalized_paths.retain(|path| {
+        !candidates
+            .iter()
+            .any(|other| other != path && other.is_dir() && is_same_or_descendant_path(path, other))
+    });
     log::debug!(
-        "Video paths normalized: requested={requested}, accepted={}",
+        "Item paths normalized: requested={requested}, accepted={}",
         normalized_paths.len()
     );
     Ok(normalized_paths)
@@ -52,7 +56,7 @@ fn validate_file_stem(new_stem: &str) -> Result<String, String> {
 fn shell_item(path: &Path) -> Result<IShellItem, String> {
     unsafe {
         SHCreateItemFromParsingName(&HSTRING::from(path_string(path)), None)
-            .map_err(|error| format!("Unable to prepare the selected video: {error}"))
+            .map_err(|error| format!("Unable to prepare the selected file: {error}"))
     }
 }
 
@@ -95,10 +99,10 @@ fn rename_path_with_shell(path: &Path, new_name: &str) -> Result<(), String> {
         let name = HSTRING::from(new_name);
         operation
             .RenameItem(&item, PCWSTR(name.as_ptr()), None)
-            .map_err(|error| format!("Unable to queue the video rename: {error}"))?;
+            .map_err(|error| format!("Unable to queue the file rename: {error}"))?;
         operation
             .PerformOperations()
-            .map_err(|error| format!("Unable to rename the selected video: {error}"))?;
+            .map_err(|error| format!("Unable to rename the selected file: {error}"))?;
         ensure_shell_operation_completed(&operation)?;
         log::debug!("Shell rename completed: source={}", path_string(path));
         Ok(())
@@ -108,7 +112,7 @@ fn rename_path_with_shell(path: &Path, new_name: &str) -> Result<(), String> {
 #[cfg(not(target_os = "windows"))]
 fn rename_path_with_shell(path: &Path, new_name: &str) -> Result<(), String> {
     fs::rename(path, path.with_file_name(new_name))
-        .map_err(|error| format!("Unable to rename the selected video: {error}"))
+        .map_err(|error| format!("Unable to rename the selected file: {error}"))
 }
 
 #[cfg(target_os = "windows")]
@@ -129,10 +133,10 @@ fn copy_path_with_shell(
         let name = HSTRING::from(destination_name);
         operation
             .CopyItem(&source_item, &destination_item, PCWSTR(name.as_ptr()), None)
-            .map_err(|error| format!("Unable to queue the video copy: {error}"))?;
+            .map_err(|error| format!("Unable to queue the file copy: {error}"))?;
         operation
             .PerformOperations()
-            .map_err(|error| format!("Unable to copy the selected video: {error}"))?;
+            .map_err(|error| format!("Unable to copy the selected file: {error}"))?;
         ensure_shell_operation_completed(&operation)?;
         log::debug!(
             "Shell copy completed: source={}, destination_directory={}, destination_name={destination_name}",
@@ -151,20 +155,23 @@ fn copy_path_with_shell(
 ) -> Result<(), String> {
     fs::copy(source, destination_directory.join(destination_name))
         .map(|_| ())
-        .map_err(|error| format!("Unable to copy the selected video: {error}"))
+        .map_err(|error| format!("Unable to copy the selected file: {error}"))
 }
 
-fn rename_video_path(path: PathBuf, new_stem: String) -> Result<RenameResult, String> {
+fn rename_item_path(path: PathBuf, new_stem: String) -> Result<RenameResult, String> {
     let stem = validate_file_stem(&new_stem)?;
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{extension}"))
-        .unwrap_or_default();
+    let extension = if path.is_file() {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!(".{extension}"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let new_name = format!("{stem}{extension}");
     let destination = path.with_file_name(&new_name);
     if destination != path && destination.exists() {
-        return Err("A file with the new name already exists in this folder.".to_string());
+        return Err("An item with the new name already exists in this folder.".to_string());
     }
     rename_path_with_shell(&path, &new_name)?;
     Ok(RenameResult {
@@ -273,12 +280,23 @@ fn copy_one_to_directory(
     source_size: u64,
 ) -> Result<PathBuf, String> {
     let target = unique_copy_destination(source_path, destination)?;
+    if source_path.is_dir() {
+        let target_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Unable to determine the destination folder name.".to_string())?;
+        copy_path_with_shell(source_path, destination, target_name)?;
+        return target
+            .exists()
+            .then_some(target)
+            .ok_or_else(|| "The copied folder was not created.".to_string());
+    }
     let temporary = target.with_file_name(format!(
-        ".{}.videosweeper-copy-{}.tmp",
+        ".{}.filesweeper-copy-{}.tmp",
         target
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("video"),
+            .unwrap_or("file"),
         current_unix_millis(),
     ));
     let temporary_name = temporary
@@ -353,7 +371,6 @@ fn transfer_one(
     source: String,
     destination: &Path,
     operation: FileTaskOperation,
-    settings: &Preferences,
 ) -> FileTaskItemResult {
     log::debug!(
         "File task item validation started: operation={operation:?}, source={source}, destination={}",
@@ -372,18 +389,13 @@ fn transfer_one(
     };
     let normalized_source = path_string(&source_path);
     let metadata = match fs::metadata(&source_path) {
-        Ok(metadata)
-            if metadata.is_file()
-                && config_store::is_supported_video_path(&source_path, settings) =>
-        {
-            metadata
-        }
+        Ok(metadata) if metadata.is_file() || metadata.is_dir() => metadata,
         Ok(_) => {
             return FileTaskItemResult {
                 source_path: normalized_source,
                 destination_path: None,
                 status: FileTaskItemStatus::Skipped,
-                error: Some("The source is not a supported video file.".to_string()),
+                error: Some("The source is not a regular file or folder.".to_string()),
             }
         }
         Err(error) => {
@@ -405,6 +417,17 @@ fn transfer_one(
             destination_path: Some(path_string(&source_path)),
             status: FileTaskItemStatus::Skipped,
             error: Some("The source is already in the destination folder.".to_string()),
+        };
+    }
+    if source_path.is_dir() && is_same_or_descendant_path(destination, &source_path) {
+        return FileTaskItemResult {
+            source_path: normalized_source,
+            destination_path: None,
+            status: FileTaskItemStatus::Failed,
+            error: Some(
+                "A folder cannot be copied or moved into itself or one of its subfolders."
+                    .to_string(),
+            ),
         };
     }
 
@@ -492,7 +515,6 @@ fn run_transfer_task(
     }
     emit_task_snapshot(&control, &app_handle);
 
-    let settings = load_config().map(|config| config.settings);
     for (index, source) in paths.iter().cloned().enumerate() {
         if control.cancel.load(Ordering::Acquire) {
             log::info!(
@@ -519,15 +541,7 @@ fn run_transfer_task(
             return;
         }
 
-        let result = match &settings {
-            Ok(settings) => transfer_one(source, &destination, operation, settings),
-            Err(error) => FileTaskItemResult {
-                source_path: source,
-                destination_path: None,
-                status: FileTaskItemStatus::Failed,
-                error: Some(error.clone()),
-            },
-        };
+        let result = transfer_one(source, &destination, operation);
         log::log!(
             if result.status == FileTaskItemStatus::Failed {
                 log::Level::Warn
@@ -630,7 +644,7 @@ fn write_file_clipboard(
     owner: Option<isize>,
 ) -> Result<(), String> {
     if paths.is_empty() {
-        return Err("Select at least one video to copy or cut.".to_string());
+        return Err("Select at least one file to copy or cut.".to_string());
     }
     let drop_effect = match operation {
         FileTaskOperation::Copy => DROPEFFECT_COPY.0,
@@ -791,12 +805,12 @@ pub(super) fn recycle_path(path: &Path) -> Result<(), String> {
             .SetOperationFlags(FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION)
             .map_err(|error| format!("Unable to configure the Recycle Bin operation: {error}"))?;
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path_string(path)), None)
-            .map_err(|error| format!("Unable to prepare the selected video: {error}"))?;
+            .map_err(|error| format!("Unable to prepare the selected file: {error}"))?;
         operation
             .DeleteItem(&item, None)
-            .map_err(|error| format!("Unable to queue the selected video for deletion: {error}"))?;
+            .map_err(|error| format!("Unable to queue the selected file for deletion: {error}"))?;
         operation.PerformOperations().map_err(|error| {
-            format!("Unable to move the selected video to the Recycle Bin: {error}")
+            format!("Unable to move the selected file to the Recycle Bin: {error}")
         })?;
         if operation
             .GetAnyOperationsAborted()
@@ -820,12 +834,12 @@ fn recycle_paths(paths: Vec<PathBuf>) -> RecycleResult {
     for path in paths {
         match recycle_path(&path) {
             Ok(()) => {
-                log::info!("Video moved to Recycle Bin: path={}", path_string(&path));
+                log::info!("File moved to Recycle Bin: path={}", path_string(&path));
                 recycled_paths.push(path_string(&path));
             }
             Err(error) => {
                 log::error!(
-                    "Unable to move video to Recycle Bin: path={}, error={error}",
+                    "Unable to move file to Recycle Bin: path={}, error={error}",
                     path_string(&path)
                 );
                 failed_paths.push(path_string(&path));
@@ -909,7 +923,7 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
                     new_stem,
                     response,
                 } => {
-                    if response.send(rename_video_path(path, new_stem)).is_err() {
+                    if response.send(rename_item_path(path, new_stem)).is_err() {
                         log::warn!("Rename operation completed but its requester no longer accepts a response");
                     }
                 }
@@ -1262,7 +1276,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "video-sweeper-{label}-{}-{suffix}",
+            "file-sweeper-{label}-{}-{suffix}",
             std::process::id()
         ));
         fs::create_dir_all(&path).unwrap();

@@ -39,6 +39,13 @@ thread_local! {
 }
 
 #[cfg(target_os = "windows")]
+#[link(name = "ole32")]
+extern "system" {
+    #[link_name = "OleIsCurrentClipboard"]
+    fn ole_is_current_clipboard(data_object: *mut std::ffi::c_void) -> HRESULT;
+}
+
+#[cfg(target_os = "windows")]
 fn parse_shell_item_id_list(path: &Path, purpose: &str) -> Result<*mut ITEMIDLIST, String> {
     unsafe {
         let mut item_id_list = std::ptr::null_mut();
@@ -53,9 +60,9 @@ fn parse_shell_item_id_list(path: &Path, purpose: &str) -> Result<*mut ITEMIDLIS
             0,
             None,
         )
-        .map_err(|error| format!("Unable to prepare the dragged video: {error}"))?;
+        .map_err(|error| format!("Unable to prepare the dragged file: {error}"))?;
         if item_id_list.is_null() {
-            return Err("Unable to prepare the dragged video.".to_string());
+            return Err("Unable to prepare the dragged file.".to_string());
         }
         log::debug!(
             "Prepared Shell item ID list for {purpose}: {}",
@@ -342,20 +349,51 @@ pub(super) fn write_windows_file_clipboard(
 
 #[cfg(target_os = "windows")]
 pub(super) fn flush_windows_file_clipboard() -> Result<(), String> {
-    unsafe {
-        OleFlushClipboard()
-            .map_err(|error| format!("Unable to flush the Explorer file clipboard: {error}"))?;
-    }
     LIVE_FILE_CLIPBOARD_OBJECT.with(|slot| {
-        slot.replace(None);
-    });
-    log::info!("Explorer file clipboard was flushed for application shutdown");
-    Ok(())
+        let mut slot = slot.borrow_mut();
+        let Some(data_object) = slot.as_ref() else {
+            log::debug!("No live Explorer file clipboard object requires shutdown handoff");
+            return Ok(());
+        };
+
+        let ownership = unsafe { ole_is_current_clipboard(data_object.as_raw()) };
+        if ownership == S_FALSE {
+            slot.take();
+            log::debug!(
+                "Explorer file clipboard was replaced before shutdown; released the stale data object"
+            );
+            return Ok(());
+        }
+        if ownership != S_OK {
+            return Err(format!(
+                "Unable to verify the Explorer file clipboard owner: {}",
+                windows::core::Error::from_hresult(ownership)
+            ));
+        }
+
+        unsafe {
+            OleFlushClipboard()
+                .map_err(|error| format!("Unable to flush the Explorer file clipboard: {error}"))?;
+        }
+        slot.take();
+        log::info!("Explorer file clipboard was materialized for application shutdown");
+        Ok(())
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
 pub(super) fn flush_windows_file_clipboard() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_flush_is_a_noop_without_a_live_clipboard_object() {
+        assert!(flush_windows_file_clipboard().is_ok());
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -392,7 +430,7 @@ pub(super) fn reveal_windows_path(_path: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 pub(super) fn start_windows_file_drag(paths: Vec<PathBuf>) -> Result<(), String> {
     unsafe {
-        log::debug!("Initializing OLE file drag for {} video(s)", paths.len());
+        log::debug!("Initializing OLE file drag for {} file(s)", paths.len());
         OleInitialize(None)
             .map_err(|error| format!("Unable to initialize Windows drag-and-drop: {error}"))?;
         log::debug!("OLE initialization succeeded for file drag");

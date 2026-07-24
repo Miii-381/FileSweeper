@@ -2,7 +2,7 @@ use super::*;
 
 fn test_directory(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
-        "video-sweeper-regression-{name}-{}-{}",
+        "file-sweeper-regression-{name}-{}-{}",
         std::process::id(),
         current_unix_millis()
     ));
@@ -22,6 +22,8 @@ fn cache_entry(
         modified_at: unix_millis(source_metadata.modified()).unwrap_or(0),
         thumbnail: Some(CachedThumbnail {
             capture_position: thumbnail_capture_cache_key("middle").to_string(),
+            preview_type: "video".to_string(),
+            processor_version: "video-thumbnailer-v1".to_string(),
             thumbnail_file: thumbnail_file.to_string(),
             last_accessed_at,
         }),
@@ -261,7 +263,7 @@ fn corrupt_media_cache_index_is_backed_up_and_rebuilt() {
 
 #[test]
 fn log_poll_returns_content_only_when_hash_changes() {
-    let path = Path::new("video-sweeper.log");
+    let path = Path::new("file-sweeper.log");
     let first = log_snapshot_from_bytes(path, b"first", None, 1024);
     assert!(first.changed);
     assert_eq!(first.content.as_deref(), Some("first"));
@@ -293,4 +295,21 @@ fn transcode_registration_tracks_video_until_owner_is_dropped() {
 fn default_thumbnail_cache_limit_is_512_mebibytes() {
     assert_eq!(Preferences::default().thumbnail_cache_gb, 0.5);
     assert_eq!(thumbnail_cache_limit_bytes(0.5), 512 * MEBIBYTE);
+}
+
+#[test]
+fn image_reader_prefers_content_signature_over_a_misleading_extension() {
+    let directory = test_directory("image-signature");
+    let path = directory.join("jpeg-content.png");
+    image::DynamicImage::new_rgb8(3, 2)
+        .save_with_format(&path, image::ImageFormat::Jpeg)
+        .unwrap();
+
+    let dimensions = media_processing::open_image_reader_by_content(&path)
+        .unwrap()
+        .into_dimensions()
+        .unwrap();
+
+    assert_eq!(dimensions, (3, 2));
+    fs::remove_dir_all(directory).unwrap();
 }

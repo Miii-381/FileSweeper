@@ -2,8 +2,9 @@ import type { ThemeId } from "./theme";
 
 export type ViewMode = "grid" | "list";
 export type ColorMode = "dark" | "light";
-export type SortKey = "createdAt" | "name" | "size" | "duration" | "resolution";
-export type ListColumnId = "name" | "size" | "duration" | "resolution" | "modifiedAt";
+export type CodeTheme = "default" | "dark" | "funky" | "okaidia" | "tomorrow" | "twilight" | "coy" | "solarizedlight";
+export type SortKey = "createdAt" | "modifiedAt" | "name" | "type" | "size" | "duration" | "resolution";
+export type ListColumnId = "name" | "type" | "size" | "duration" | "resolution" | "modifiedAt";
 export type ThumbnailCapturePosition = "opening" | "early" | "middle" | "late" | "ending";
 
 export const GRID_CARD_WIDTH = 220;
@@ -18,7 +19,10 @@ export type DirectoryEntry = {
   canRecycle: boolean;
 };
 
-export type VideoEntry = {
+export type FileKind = "video" | "image" | "text" | "other";
+export type PreviewCapability = "inline" | "metadataOnly" | "unavailable";
+
+export type FileEntry = {
   path: string;
   name: string;
   extension: string;
@@ -29,6 +33,32 @@ export type VideoEntry = {
   width: number | null;
   height: number | null;
   thumbnailPath: string | null;
+  kind: FileKind;
+  previewCapability: PreviewCapability;
+};
+
+export type FolderEntry = {
+  entryType: "folder";
+  path: string;
+  name: string;
+  createdAt: number | null;
+  modifiedAt: number | null;
+  canRecycle: boolean;
+};
+
+export type DirectoryItem = FolderEntry | (FileEntry & { entryType: "file" });
+
+export function isFileEntry(item: DirectoryItem): item is FileEntry & { entryType: "file" } {
+  return item.entryType === "file";
+}
+
+export function isFolderEntry(item: DirectoryItem): item is FolderEntry {
+  return item.entryType === "folder";
+}
+
+export type FolderThumbnailSources = {
+  folderPath: string;
+  files: FileEntry[];
 };
 
 export type WorkspaceSelectionBox = {
@@ -68,12 +98,15 @@ export type DirectoryChildren = {
   folders: DirectoryEntry[];
 };
 
-export type WorkspaceListing = {
+export type DirectoryListing = {
   path: string;
-  videos: VideoEntry[];
+  items: DirectoryItem[];
   mediaSuppressed: boolean;
   isAvailable: boolean;
 };
+
+/** @deprecated 使用 DirectoryListing。 */
+export type WorkspaceListing = DirectoryListing;
 
 export type RecycleResult = {
   recycledPaths: string[];
@@ -115,7 +148,7 @@ export type FileTaskSnapshot = {
 export type WorkspaceContextMenu = {
   x: number;
   y: number;
-  kind: "workspace" | "videos" | "directory";
+  kind: "workspace" | "files" | "directory";
   workspacePath: string | null;
   paths: string[];
   primaryPath: string | null;
@@ -162,7 +195,7 @@ export type ThumbnailData = {
 };
 
 export type ThumbnailTask = {
-  video: VideoEntry;
+  file: FileEntry;
 };
 
 export type LogSnapshot = {
@@ -176,6 +209,7 @@ export type LogSnapshot = {
 export type Preferences = {
   appearance: "system" | ColorMode;
   accentTheme: ThemeId;
+  codeTheme: CodeTheme;
   thumbnailCacheGb: number;
   thumbnailCapturePosition: ThumbnailCapturePosition;
   autoplay: boolean;
@@ -185,6 +219,13 @@ export type Preferences = {
   showHiddenItems: boolean;
   showNomediaMedia: boolean;
   videoExtensions: string[];
+  imageExtensions: string[];
+  textExtensions: string[];
+  textLanguageMap: Record<string, string>;
+  textPreviewLatinFont: string;
+  textPreviewCjkFont: string;
+  imageMaxMegabytes: number;
+  imageMaxMegapixels: number;
   managedVideoExtensions: string[];
   backgroundSidecarConcurrency: number;
   listColumns: ListColumn[];
@@ -224,7 +265,7 @@ export type FavoriteFolder = {
 };
 
 export type WorkspaceFocus = {
-  videoPath: string;
+  filePath: string;
 };
 
 export type WorkspaceSort = {
@@ -263,6 +304,7 @@ export type TreeState = Record<string, { status: TreeStatus; folders: DirectoryE
 
 export const listColumnLabels: Record<ListColumnId, string> = {
   name: "名称",
+  type: "类型",
   size: "大小",
   duration: "时长",
   resolution: "分辨率",

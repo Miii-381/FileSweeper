@@ -1,58 +1,75 @@
 import {
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   Grid2X2,
   List,
   PanelRightClose,
   PanelRightOpen,
-  Search,
 } from "lucide-react";
 
 import type { SortKey, ViewMode } from "../../app-types";
 
 export function WorkspaceToolbar({
   workspacePath,
-  searchQuery,
   sortKey,
   sortAscending,
   viewMode,
   previewOpen,
   metadataLoading,
-  onSearchChange,
   onSortKeyChange,
   onToggleSortDirection,
   onViewModeChange,
   onTogglePreview,
+  canNavigateBack,
+  canNavigateForward,
+  canNavigateUp,
+  onNavigateBack,
+  onNavigateForward,
+  onNavigateUp,
+  onNavigateTo,
 }: {
   workspacePath: string | null;
-  searchQuery: string;
   sortKey: SortKey;
   sortAscending: boolean;
   viewMode: ViewMode;
   previewOpen: boolean;
   metadataLoading: boolean;
-  onSearchChange: (query: string) => void;
   onSortKeyChange: (key: SortKey) => void;
   onToggleSortDirection: () => void;
   onViewModeChange: (mode: ViewMode) => void;
   onTogglePreview: () => void;
+  canNavigateBack: boolean;
+  canNavigateForward: boolean;
+  canNavigateUp: boolean;
+  onNavigateBack: () => void;
+  onNavigateForward: () => void;
+  onNavigateUp: () => void;
+  onNavigateTo: (path: string) => void;
 }) {
   const hasWorkspace = workspacePath !== null;
+  const breadcrumbs = workspacePath
+    ? workspacePath.replace(/\//g, "\\").replace(/[\\/]+$/, "").split("\\").filter(Boolean).map((name, index, parts) => ({
+      name,
+      path: index === 0 && name.endsWith(":") ? `${name}\\` : parts.slice(0, index + 1).join("\\"),
+    }))
+    : [];
 
   return (
     <div className="workspace-toolbar">
-      <label className="search-field">
-        <Search size={16} />
-        <input
-          type="search"
-          value={searchQuery}
-          disabled={!hasWorkspace}
-          placeholder="搜索当前文件夹"
-          aria-label="搜索当前文件夹"
-          onChange={(event) => onSearchChange(event.target.value)}
-        />
-      </label>
+      <div className="directory-navigation" aria-label="目录导航">
+        <button className="quiet-icon-button" type="button" aria-label="后退" title="后退" disabled={!canNavigateBack} onClick={onNavigateBack}><ChevronLeft size={17} /></button>
+        <button className="quiet-icon-button" type="button" aria-label="前进" title="前进" disabled={!canNavigateForward} onClick={onNavigateForward}><ChevronRight size={17} /></button>
+        <button className="quiet-icon-button" type="button" aria-label="向上一级" title="向上一级" disabled={!canNavigateUp} onClick={onNavigateUp}><ChevronUp size={17} /></button>
+      </div>
       <span className="workspace-path" title={workspacePath ?? undefined}>
-        {workspacePath ?? "未选择工作区"}
+        {breadcrumbs.length > 0 ? breadcrumbs.map((crumb, index) => (
+          <span className="breadcrumb-part" key={crumb.path}>
+            {index > 0 && <span className="breadcrumb-separator">›</span>}
+            <button type="button" onClick={() => onNavigateTo(crumb.path)}>{crumb.name}</button>
+          </span>
+        )) : "未选择文件夹"}
       </span>
       <div className="toolbar-divider" />
       <label className="sort-select">

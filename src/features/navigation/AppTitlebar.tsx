@@ -1,9 +1,11 @@
-import { FolderOpen, ScrollText, Settings, Star, StarOff, Video } from "lucide-react";
+import { File, FolderOpen, ScrollText, Search, Settings, Star, StarOff } from "lucide-react";
 
 type Props = {
   isFavorite: boolean;
   hasWorkspace: boolean;
+  searchQuery: string;
   onChooseWorkspace: () => void;
+  onSearchChange: (query: string) => void;
   onToggleFavorite: () => void;
   onOpenSettings: () => void;
   onOpenLogs: () => void;
@@ -12,7 +14,9 @@ type Props = {
 export function AppTitlebar({
   isFavorite,
   hasWorkspace,
+  searchQuery,
   onChooseWorkspace,
+  onSearchChange,
   onToggleFavorite,
   onOpenSettings,
   onOpenLogs,
@@ -21,10 +25,21 @@ export function AppTitlebar({
     <header className="titlebar">
       <div className="brand">
         <div className="brand-mark" aria-hidden="true">
-          <Video size={17} strokeWidth={2.2} />
+          <File size={17} strokeWidth={2.2} />
         </div>
-        <span>VideoSweeper</span>
+        <span>FileSweeper</span>
       </div>
+      <label className="search-field titlebar-search">
+        <Search size={16} />
+        <input
+          type="search"
+          value={searchQuery}
+          disabled={!hasWorkspace}
+          placeholder="搜索当前文件夹"
+          aria-label="搜索当前文件夹"
+          onChange={(event) => onSearchChange(event.target.value)}
+        />
+      </label>
       <div className="titlebar-actions">
         <button className="command-button" type="button" onClick={onChooseWorkspace}>
           <FolderOpen size={16} />

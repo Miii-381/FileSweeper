@@ -1,5 +1,147 @@
 use super::*;
 
+fn decode_text_preview(bytes: &[u8]) -> Result<(String, &'static str), String> {
+    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        return String::from_utf8(bytes[3..].to_vec())
+            .map(|text| (text, "UTF-8 BOM"))
+            .map_err(|_| "UTF-8 内容无效".to_string());
+    }
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        let units = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16(&units)
+            .map(|text| (text, "UTF-16 LE"))
+            .map_err(|_| "UTF-16 LE 内容无效".to_string());
+    }
+    if bytes.starts_with(&[0xfe, 0xff]) {
+        let units = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        return String::from_utf16(&units)
+            .map(|text| (text, "UTF-16 BE"))
+            .map_err(|_| "UTF-16 BE 内容无效".to_string());
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok((text.to_string(), "UTF-8"));
+    }
+    if bytes.contains(&0) {
+        return Err("文件包含二进制数据".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    let encoding = match unsafe { windows::Win32::Globalization::GetACP() } {
+        936 => encoding_rs::GBK,
+        932 => encoding_rs::SHIFT_JIS,
+        949 => encoding_rs::EUC_KR,
+        _ => encoding_rs::WINDOWS_1252,
+    };
+    #[cfg(not(target_os = "windows"))]
+    let encoding = encoding_rs::WINDOWS_1252;
+    let (text, _, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        return Err("系统 ANSI 代码页无法解码此文件".to_string());
+    }
+    Ok((text.into_owned(), "系统 ANSI"))
+}
+
+#[tauri::command]
+pub(super) async fn read_text_preview(path: String) -> Result<TextPreviewData, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = media_stream::resolve_stream_file_path(&path)?;
+        read_text_preview_file(&file)
+    })
+    .await
+    .map_err(|error| format!("The text preview worker failed: {error}"))?
+}
+
+fn read_text_preview_file(file: &Path) -> Result<TextPreviewData, String> {
+    let metadata =
+        fs::metadata(file).map_err(|error| format!("Unable to inspect the text file: {error}"))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(file)
+        .and_then(|mut handle| handle.read_to_end(&mut bytes))
+        .map_err(|error| format!("Unable to read the text file: {error}"))?;
+    match decode_text_preview(&bytes) {
+        Ok((content, encoding)) => Ok(TextPreviewData {
+            content,
+            encoding: encoding.to_string(),
+            total_bytes: metadata.len(),
+            readable: true,
+            reason: None,
+        }),
+        Err(reason) => Ok(TextPreviewData {
+            content: String::new(),
+            encoding: "unknown".to_string(),
+            total_bytes: metadata.len(),
+            readable: false,
+            reason: Some(reason),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_preview_reads_the_complete_file() {
+        let path = std::env::temp_dir().join(format!(
+            "file-sweeper-text-preview-{}-{}.html",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_len = 6 * 1024 * 1024;
+        fs::write(&path, vec![b'x'; source_len]).unwrap();
+
+        let preview = read_text_preview_file(&path).unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert!(preview.readable);
+        assert_eq!(preview.total_bytes, source_len as u64);
+        assert_eq!(preview.content.len(), source_len);
+    }
+}
+
+#[tauri::command]
+pub(super) async fn inspect_image_preview(path: String) -> Result<ImagePreviewInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = media_stream::resolve_stream_file_path(&path)?;
+        let settings = load_config()?.settings;
+        let metadata =
+            fs::metadata(&file).map_err(|error| format!("Unable to inspect the image: {error}"))?;
+        if metadata.len() > u64::from(settings.image_max_megabytes) * 1024 * 1024 {
+            return Ok(ImagePreviewInfo {
+                width: 0,
+                height: 0,
+                allowed: false,
+                reason: Some(format!(
+                    "图片超过 {} MiB 保护上限",
+                    settings.image_max_megabytes
+                )),
+            });
+        }
+        let dimensions = media_processing::open_image_reader_by_content(&file)?
+            .into_dimensions()
+            .map_err(|error| format!("Unable to read image dimensions: {error}"))?;
+        let pixels = u64::from(dimensions.0) * u64::from(dimensions.1);
+        let maximum = u64::from(settings.image_max_megapixels) * 1_000_000;
+        Ok(ImagePreviewInfo {
+            width: dimensions.0,
+            height: dimensions.1,
+            allowed: pixels <= maximum,
+            reason: (pixels > maximum)
+                .then(|| format!("图片超过 {} MP 像素保护上限", settings.image_max_megapixels)),
+        })
+    })
+    .await
+    .map_err(|error| format!("The image inspector worker failed: {error}"))?
+}
+
 #[tauri::command]
 pub(super) async fn generate_thumbnails(
     paths: Vec<String>,
@@ -46,6 +188,26 @@ pub(super) async fn generate_thumbnails(
 }
 
 #[tauri::command]
+pub(super) async fn generate_image_thumbnails(
+    paths: Vec<String>,
+    app_handle: tauri::AppHandle,
+    thumbnail_cache: tauri::State<'_, ThumbnailCacheMaintenanceState>,
+) -> Result<ThumbnailBatchResult, String> {
+    let cache = thumbnail_cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_config()?.settings;
+        media_processing::generate_image_thumbnail_batch_impl(
+            paths,
+            cache,
+            thumbnail_cache_limit_bytes(settings.thumbnail_cache_gb),
+            app_handle,
+        )
+    })
+    .await
+    .map_err(|error| format!("The image thumbnail worker failed: {error}"))?
+}
+
+#[tauri::command]
 pub(super) async fn probe_video_metadata_batch_command(
     paths: Vec<String>,
     media_sidecar_pool: tauri::State<'_, MediaSidecarPool>,
@@ -85,7 +247,21 @@ pub(super) async fn read_thumbnail(
     let thumbnail_index = Arc::clone(&thumbnail_index.0);
     let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let capture_position = load_config()?.settings.thumbnail_capture_position;
+        let settings = load_config()?.settings;
+        let extension = Path::new(&path)
+            .extension()
+            .and_then(|item| item.to_str())
+            .map(|item| format!(".{}", item.to_ascii_lowercase()))
+            .unwrap_or_default();
+        let capture_position = if settings
+            .image_extensions
+            .iter()
+            .any(|item| item == &extension)
+        {
+            "image-v1".to_string()
+        } else {
+            settings.thumbnail_capture_position
+        };
         thumbnail_data_impl(
             Path::new(&path),
             &thumbnail_index,
@@ -107,6 +283,22 @@ pub(super) async fn read_thumbnail(
         Err(error) => log::warn!("Thumbnail cache read failed: path={log_path}, error={error}"),
     }
     result
+}
+
+#[tauri::command]
+pub(super) fn get_preview_file_url(
+    path: String,
+    video_stream_server: tauri::State<VideoStreamServer>,
+) -> Result<String, String> {
+    let file = media_stream::resolve_stream_file_path(&path)?;
+    let base_url = video_stream_server
+        .base_url
+        .as_ref()
+        .ok_or_else(|| "The local preview service is unavailable.".to_string())?;
+    Ok(format!(
+        "{base_url}?path={}",
+        media_stream::encode_query_component(&path_string(&file))
+    ))
 }
 
 #[tauri::command]

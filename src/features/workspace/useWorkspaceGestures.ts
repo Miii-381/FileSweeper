@@ -9,7 +9,7 @@ import type {
 
 import type {
   FileDragGesture,
-  VideoEntry,
+  DirectoryItem,
   ViewMode,
   WorkspaceSelectionBox,
   WorkspaceSelectionGesture,
@@ -18,9 +18,9 @@ import { errorMessage, writeClientLog } from "../../app-utils";
 
 export function useWorkspaceGestures({
   hasWorkspace,
-  videos,
-  selectedVideos,
-  setSelectedVideos,
+  files,
+  selectedFiles,
+  setSelectedFiles,
   selectionAnchor,
   setSelectionAnchor,
   setSuppressPreviewAutoplay,
@@ -28,9 +28,9 @@ export function useWorkspaceGestures({
   notify,
 }: {
   hasWorkspace: boolean;
-  videos: VideoEntry[];
-  selectedVideos: Set<string>;
-  setSelectedVideos: Dispatch<SetStateAction<Set<string>>>;
+  files: DirectoryItem[];
+  selectedFiles: Set<string>;
+  setSelectedFiles: Dispatch<SetStateAction<Set<string>>>;
   selectionAnchor: string | null;
   setSelectionAnchor: Dispatch<SetStateAction<string | null>>;
   setSuppressPreviewAutoplay: Dispatch<SetStateAction<boolean>>;
@@ -43,46 +43,46 @@ export function useWorkspaceGestures({
   const suppressBackgroundClear = useRef(false);
   const fileDragGesture = useRef<FileDragGesture | null>(null);
 
-  const selectVideo = useCallback(
+  const selectFile = useCallback(
     (event: ReactMouseEvent<HTMLElement>, path: string) => {
       setSuppressPreviewAutoplay(false);
       if (event.shiftKey && selectionAnchor) {
-        const start = videos.findIndex((video) => video.path === selectionAnchor);
-        const end = videos.findIndex((video) => video.path === path);
+        const start = files.findIndex((file) => file.path === selectionAnchor);
+        const end = files.findIndex((file) => file.path === path);
         if (start !== -1 && end !== -1) {
-          const range = videos.slice(Math.min(start, end), Math.max(start, end) + 1).map((video) => video.path);
-          setSelectedVideos(new Set(range));
-          writeClientLog("debug", `范围选择视频：起点 ${selectionAnchor}，终点 ${path}，数量 ${range.length}`);
+          const range = files.slice(Math.min(start, end), Math.max(start, end) + 1).map((file) => file.path);
+          setSelectedFiles(new Set(range));
+          writeClientLog("debug", `范围选择文件：起点 ${selectionAnchor}，终点 ${path}，数量 ${range.length}`);
           return;
         }
       }
       if (event.ctrlKey || event.metaKey) {
-        setSelectedVideos((current) => {
+        setSelectedFiles((current) => {
           const next = new Set(current);
           if (next.has(path)) {
             next.delete(path);
           } else {
             next.add(path);
           }
-          writeClientLog("debug", `切换视频选择：${path}，选择后数量 ${next.size}`);
+          writeClientLog("debug", `切换文件选择：${path}，选择后数量 ${next.size}`);
           return next;
         });
       } else {
-        setSelectedVideos(new Set([path]));
-        writeClientLog("debug", `选择单个视频：${path}`);
+        setSelectedFiles(new Set([path]));
+        writeClientLog("debug", `选择单个文件：${path}`);
       }
       setSelectionAnchor(path);
     },
-    [selectionAnchor, setSelectedVideos, setSelectionAnchor, setSuppressPreviewAutoplay, videos],
+    [selectionAnchor, setSelectedFiles, setSelectionAnchor, setSuppressPreviewAutoplay, files],
   );
 
   const clearSelection = useCallback(() => {
-    if (selectedVideos.size > 0) {
-      writeClientLog("debug", `清空工作区选择：原选中 ${selectedVideos.size} 个视频`);
+    if (selectedFiles.size > 0) {
+      writeClientLog("debug", `清空工作区选择：原选中 ${selectedFiles.size} 个文件`);
     }
-    setSelectedVideos(new Set());
+    setSelectedFiles(new Set());
     setSelectionAnchor(null);
-  }, [selectedVideos.size, setSelectedVideos, setSelectionAnchor]);
+  }, [selectedFiles.size, setSelectedFiles, setSelectionAnchor]);
 
   const clearSelectionFromBackground = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
@@ -91,7 +91,7 @@ export function useWorkspaceGestures({
         return;
       }
       const target = event.target;
-      if (!(target instanceof Element) || target.closest(".video-card, .video-list-row, .video-list-header")) {
+      if (!(target instanceof Element) || target.closest(".file-card, .file-list-row, .file-list-header")) {
         return;
       }
       clearSelection();
@@ -101,7 +101,7 @@ export function useWorkspaceGestures({
 
   const selectionPathsIntersecting = (root: HTMLDivElement, selectionRect: DOMRect) => {
     const paths = new Set<string>();
-    root.querySelectorAll<HTMLElement>(".video-card[data-video-path], .video-list-row[data-video-path]").forEach((item) => {
+    root.querySelectorAll<HTMLElement>(".file-card[data-file-path], .file-list-row[data-file-path]").forEach((item) => {
       const itemRect = item.getBoundingClientRect();
       const intersects =
         itemRect.left < selectionRect.right &&
@@ -109,7 +109,7 @@ export function useWorkspaceGestures({
         itemRect.top < selectionRect.bottom &&
         itemRect.bottom > selectionRect.top;
       if (intersects) {
-        const path = item.dataset.videoPath;
+        const path = item.dataset.filePath;
         if (path) {
           paths.add(path);
         }
@@ -155,8 +155,8 @@ export function useWorkspaceGestures({
     }
     const nextSelection = gesture.additive ? new Set(gesture.initialSelection) : new Set<string>();
     gesture.intersectedPaths.forEach((path) => nextSelection.add(path));
-    setSelectedVideos(nextSelection);
-    const nextAnchor = videos.find((video) => gesture.intersectedPaths.has(video.path))?.path;
+    setSelectedFiles(nextSelection);
+    const nextAnchor = files.find((file) => gesture.intersectedPaths.has(file.path))?.path;
     if (nextAnchor) {
       setSelectionAnchor(nextAnchor);
     } else if (nextSelection.size === 0) {
@@ -203,13 +203,13 @@ export function useWorkspaceGestures({
   };
 
   const startRectangleSelection = (event: ReactPointerEvent<HTMLDivElement>, mode: ViewMode) => {
-    if (event.button !== 0 || !hasWorkspace || videos.length === 0) {
+    if (event.button !== 0 || !hasWorkspace || files.length === 0) {
       return;
     }
     const target = event.target;
     if (
       target instanceof Element &&
-      target.closest(".video-card, .video-list-row, .video-list-header, input, button, select, a, [contenteditable='true']")
+      target.closest(".file-card, .file-list-row, .file-list-header, input, button, select, a, [contenteditable='true']")
     ) {
       return;
     }
@@ -228,7 +228,7 @@ export function useWorkspaceGestures({
       startClientY: event.clientY,
       lastClientX: event.clientX,
       lastClientY: event.clientY,
-      initialSelection: new Set(selectedVideos),
+      initialSelection: new Set(selectedFiles),
       intersectedPaths: new Set(),
       additive: event.ctrlKey || event.metaKey || event.shiftKey,
       moved: false,
@@ -263,7 +263,7 @@ export function useWorkspaceGestures({
       window.setTimeout(() => {
         suppressBackgroundClear.current = false;
       }, 0);
-      writeClientLog("debug", `完成框选：${gesture.viewMode}，当前选中 ${selectedVideos.size} 个视频`);
+      writeClientLog("debug", `完成框选：${gesture.viewMode}，当前选中 ${selectedFiles.size} 个文件`);
     } else {
       clearSelection();
     }
@@ -279,12 +279,12 @@ export function useWorkspaceGestures({
       root: event.currentTarget,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      paths: selectedVideos.has(path) ? [...selectedVideos] : [path],
+      paths: selectedFiles.has(path) ? [...selectedFiles] : [path],
       started: false,
     };
     writeClientLog(
       "debug",
-      `准备文件拖出：候选 ${selectedVideos.has(path) ? selectedVideos.size : 1} 个，起点 (${event.clientX}, ${event.clientY})，路径 ${path}`,
+      `准备文件拖出：候选 ${selectedFiles.has(path) ? selectedFiles.size : 1} 个，起点 (${event.clientX}, ${event.clientY})，路径 ${path}`,
     );
   };
 
@@ -303,7 +303,7 @@ export function useWorkspaceGestures({
     if (gesture.root.hasPointerCapture(event.pointerId)) {
       gesture.root.releasePointerCapture(event.pointerId);
     }
-    setSelectedVideos(new Set(gesture.paths));
+    setSelectedFiles(new Set(gesture.paths));
     setSelectionAnchor(gesture.paths[0] ?? null);
     writeClientLog(
       "debug",
@@ -333,7 +333,7 @@ export function useWorkspaceGestures({
 
   return {
     selectionBox,
-    selectVideo,
+    selectFile,
     clearSelection,
     clearSelectionFromBackground,
     startRectangleSelection,

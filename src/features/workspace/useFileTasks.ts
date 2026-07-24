@@ -9,7 +9,7 @@ import type {
   FileTaskSnapshot,
   RecycleResult,
   RenameResult,
-  VideoEntry,
+  FileEntry,
   WorkspaceListing,
 } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
@@ -18,10 +18,10 @@ import type { PreviewPlayerHandle } from "../../components/PreviewPlayer";
 export function useFileTasks({
   workspace,
   setWorkspace,
-  selectedVideos,
-  setSelectedVideos,
+  selectedFiles,
+  setSelectedFiles,
   setSelectionAnchor,
-  selectedVideo,
+  selectedFile,
   previewPlayerRef,
   refreshWorkspace,
   notify,
@@ -29,10 +29,10 @@ export function useFileTasks({
 }: {
   workspace: WorkspaceListing | null;
   setWorkspace: Dispatch<SetStateAction<WorkspaceListing | null>>;
-  selectedVideos: Set<string>;
-  setSelectedVideos: Dispatch<SetStateAction<Set<string>>>;
+  selectedFiles: Set<string>;
+  setSelectedFiles: Dispatch<SetStateAction<Set<string>>>;
   setSelectionAnchor: Dispatch<SetStateAction<string | null>>;
-  selectedVideo: VideoEntry | null;
+  selectedFile: FileEntry | null;
   previewPlayerRef: RefObject<PreviewPlayerHandle | null>;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   notify: (message: string) => void;
@@ -56,41 +56,41 @@ export function useFileTasks({
     (result: RecycleResult) => {
       const recycledPaths = new Set(result.recycledPaths);
       setWorkspace((current) =>
-        current ? { ...current, videos: current.videos.filter((video) => !recycledPaths.has(video.path)) } : current,
+        current ? { ...current, items: current.items.filter((item) => !recycledPaths.has(item.path)) } : current,
       );
-      setSelectedVideos((current) => new Set([...current].filter((path) => !recycledPaths.has(path))));
+      setSelectedFiles((current) => new Set([...current].filter((path) => !recycledPaths.has(path))));
       setSelectionAnchor((current) => (current && recycledPaths.has(current) ? null : current));
       if (result.failedPaths.length > 0) {
-        notifyRef.current(`已移到回收站 ${result.recycledPaths.length} 个视频，${result.failedPaths.length} 个失败`);
+        notifyRef.current(`已移到回收站 ${result.recycledPaths.length} 个项目，${result.failedPaths.length} 个失败`);
         writeClientLog("warn", `回收站操作部分失败：成功 ${result.recycledPaths.length}，失败 ${result.failedPaths.length}`);
       } else {
-        notifyRef.current(`已将 ${result.recycledPaths.length} 个视频移到回收站`);
-        writeClientLog("info", `回收站操作完成：${result.recycledPaths.length} 个视频`);
+        notifyRef.current(`已将 ${result.recycledPaths.length} 个项目移到回收站`);
+        writeClientLog("info", `回收站操作完成：${result.recycledPaths.length} 个文件`);
       }
     },
-    [setSelectedVideos, setSelectionAnchor, setWorkspace],
+    [setSelectedFiles, setSelectionAnchor, setWorkspace],
   );
 
-  const recycleVideos = useCallback(
+  const recycleFiles = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0) {
-        writeClientLog("debug", "回收站操作被忽略：没有视频路径");
+        writeClientLog("debug", "回收站操作被忽略：没有文件路径");
         return;
       }
-      if (!await confirmRecycle(`将 ${paths.length} 个视频移到回收站？`)) {
-        writeClientLog("info", `用户取消回收站操作：${paths.length} 个视频`);
+      if (!await confirmRecycle(`将 ${paths.length} 个文件移到回收站？`)) {
+        writeClientLog("info", `用户取消回收站操作：${paths.length} 个文件`);
         return;
       }
-      writeClientLog("info", `开始回收站操作：${paths.length} 个视频`);
+      writeClientLog("info", `开始回收站操作：${paths.length} 个文件`);
       try {
-        const focusedVideoPath = selectedVideo && paths.includes(selectedVideo.path) ? selectedVideo.path : null;
-        if (focusedVideoPath) {
-          writeClientLog("debug", `删除前停止焦点视频预览：${focusedVideoPath}`);
+        const focusedFilePath = selectedFile && paths.includes(selectedFile.path) ? selectedFile.path : null;
+        if (focusedFilePath && selectedFile?.kind === "video") {
+          writeClientLog("debug", `删除前停止焦点文件预览：${focusedFilePath}`);
           previewPlayerRef.current?.stopPlayback();
-          await invoke("stop_transcoded_preview", { path: focusedVideoPath });
+          await invoke("stop_transcoded_preview", { path: focusedFilePath });
           previewPlayerRef.current?.releasePlayback();
         }
-        const result = await invoke<RecycleResult>("recycle_videos", { paths, focusedVideoPath });
+        const result = await invoke<RecycleResult>("recycle_items", { paths, focusedFilePath });
         applyRecycleResult(result);
       } catch (recycleError) {
         const message = errorMessage(recycleError);
@@ -98,32 +98,32 @@ export function useFileTasks({
         writeClientLog("error", `回收站操作失败：${message}`);
       }
     },
-    [applyRecycleResult, confirmRecycle, previewPlayerRef, selectedVideo],
+    [applyRecycleResult, confirmRecycle, previewPlayerRef, selectedFile],
   );
 
-  const recycleSelectedVideos = useCallback(
-    () => recycleVideos([...selectedVideos]),
-    [recycleVideos, selectedVideos],
+  const recycleSelectedFiles = useCallback(
+    () => recycleFiles([...selectedFiles]),
+    [recycleFiles, selectedFiles],
   );
 
   const startInlineRename = useCallback(
     (path: string) => {
-      if (selectedVideos.size !== 1 || !workspace) {
-        writeClientLog("debug", `重命名入口被忽略：选择数量 ${selectedVideos.size}，工作区 ${Boolean(workspace)}`);
+      if (selectedFiles.size !== 1 || !workspace) {
+        writeClientLog("debug", `重命名入口被忽略：选择数量 ${selectedFiles.size}，工作区 ${Boolean(workspace)}`);
         return;
       }
-      const selected = workspace.videos.find((video) => video.path === path);
+      const selected = workspace.items.find((item) => item.path === path);
       if (!selected) {
-        writeClientLog("warn", `重命名入口未找到工作区视频：${path}`);
+        writeClientLog("warn", `重命名入口未找到工作区文件：${path}`);
         return;
       }
-      const currentStem = selected.extension.length > 0 ? selected.name.slice(0, -selected.extension.length) : selected.name;
+      const currentStem = "extension" in selected && selected.extension.length > 0 ? selected.name.slice(0, -selected.extension.length) : selected.name;
       renameCancelling.current = false;
       setRenameDraft(currentStem);
       setRenamingPath(selected.path);
       writeClientLog("info", `开始原位重命名：${selected.path}`);
     },
-    [selectedVideos.size, workspace],
+    [selectedFiles.size, workspace],
   );
 
   const cancelInlineRename = useCallback(() => {
@@ -142,14 +142,15 @@ export function useFileTasks({
     if (renameCancelling.current || renameSubmitting.current || !renamingPath || !workspace) {
       return;
     }
-    const selected = workspace.videos.find((video) => video.path === renamingPath);
+    const selected = workspace.items.find((item) => item.path === renamingPath);
     if (!selected) {
-      writeClientLog("warn", `提交重命名时视频已不在工作区：${renamingPath}`);
+      writeClientLog("warn", `提交重命名时文件已不在工作区：${renamingPath}`);
       cancelInlineRename();
       return;
     }
     const newStem = renameDraft.trim();
-    const currentStem = selected.extension.length > 0 ? selected.name.slice(0, -selected.extension.length) : selected.name;
+    const extension = "extension" in selected ? selected.extension : "";
+    const currentStem = extension.length > 0 ? selected.name.slice(0, -extension.length) : selected.name;
     if (newStem === currentStem) {
       writeClientLog("debug", `重命名内容未变化，取消提交：${selected.path}`);
       cancelInlineRename();
@@ -158,27 +159,27 @@ export function useFileTasks({
     renameSubmitting.current = true;
     setRenamingPath(null);
     const renamedWorkspacePath = workspace.path;
-    writeClientLog("info", `提交视频重命名：${selected.path} -> ${newStem}${selected.extension}`);
+    writeClientLog("info", `提交项目重命名：${selected.path} -> ${newStem}${extension}`);
     try {
-      const result = await invoke<RenameResult>("rename_video", { path: selected.path, newStem });
+      const result = await invoke<RenameResult>("rename_item", { path: selected.path, newStem });
       await refreshWorkspaceRef.current(renamedWorkspacePath, "重命名");
       if (workspacePathRef.current?.toLocaleLowerCase() === renamedWorkspacePath.toLocaleLowerCase()) {
-        setSelectedVideos(new Set([result.newPath]));
+        setSelectedFiles(new Set([result.newPath]));
         setSelectionAnchor(result.newPath);
       } else {
         writeClientLog("debug", `重命名完成时工作区已切换，跳过选择更新：原工作区 ${renamedWorkspacePath}，当前 ${workspacePathRef.current ?? "无"}`);
       }
       notifyRef.current(`已重命名为 ${result.name}`);
-      writeClientLog("info", `重命名视频：${result.oldPath} -> ${result.newPath}`);
+      writeClientLog("info", `重命名项目：${result.oldPath} -> ${result.newPath}`);
     } catch (renameError) {
       const message = errorMessage(renameError);
       notifyRef.current(message);
-      writeClientLog("error", `重命名视频失败：${selected.path}，${message}`);
+      writeClientLog("error", `重命名项目失败：${selected.path}，${message}`);
     } finally {
       renameSubmitting.current = false;
       setRenameDraft("");
     }
-  }, [cancelInlineRename, renameDraft, renamingPath, setSelectedVideos, setSelectionAnchor, workspace]);
+  }, [cancelInlineRename, renameDraft, renamingPath, setSelectedFiles, setSelectionAnchor, workspace]);
 
   const startTransferTask = useCallback(async (
     paths: string[],
@@ -206,22 +207,22 @@ export function useFileTasks({
     }
   }, []);
 
-  const copyDroppedVideos = useCallback(
+  const copyDroppedFiles = useCallback(
     async (paths: string[], workspacePath: string) => {
       await startTransferTask(paths, workspacePath, "copy");
     },
     [startTransferTask],
   );
 
-  const copyVideosToDirectory = useCallback(async (paths: string[]) => {
+  const copyFilesToDirectory = useCallback(async (paths: string[]) => {
     if (paths.length === 0) {
       return;
     }
     try {
-      writeClientLog("info", `打开“复制到”目录选择器：${paths.length} 个视频`);
-      const destination = await open({ directory: true, multiple: false, title: "复制视频到" });
+      writeClientLog("info", `打开“复制到”目录选择器：${paths.length} 个文件`);
+      const destination = await open({ directory: true, multiple: false, title: "复制文件到" });
       if (typeof destination !== "string") {
-        writeClientLog("debug", `用户取消“复制到”操作：${paths.length} 个视频`);
+        writeClientLog("debug", `用户取消“复制到”操作：${paths.length} 个文件`);
         return;
       }
       writeClientLog("info", `“复制到”目标已选择：${destination}`);
@@ -238,9 +239,9 @@ export function useFileTasks({
       return;
     }
     try {
-      await invoke("write_files_to_clipboard", { paths, operation });
-      notifyRef.current(`已${operation === "move" ? "剪切" : "复制"} ${paths.length} 个视频，可粘贴到本应用或资源管理器`);
-      writeClientLog("info", `写入系统文件剪贴板：${operation} ${paths.length} 个视频`);
+      await invoke("write_items_to_clipboard", { paths, operation });
+      notifyRef.current(`已${operation === "move" ? "剪切" : "复制"} ${paths.length} 个文件，可粘贴到本应用或资源管理器`);
+      writeClientLog("info", `写入系统文件剪贴板：${operation} ${paths.length} 个文件`);
     } catch (clipboardError) {
       const message = errorMessage(clipboardError);
       notifyRef.current(message);
@@ -249,8 +250,8 @@ export function useFileTasks({
   }, []);
 
   const writeSelectionToFileClipboard = useCallback(
-    (operation: FileTaskOperation) => writeFilesToClipboard([...selectedVideos], operation),
-    [selectedVideos, writeFilesToClipboard],
+    (operation: FileTaskOperation) => writeFilesToClipboard([...selectedFiles], operation),
+    [selectedFiles, writeFilesToClipboard],
   );
 
   const pasteFileClipboard = useCallback(async () => {
@@ -347,14 +348,14 @@ export function useFileTasks({
     renameDraft,
     setRenameDraft,
     activeFileTask,
-    recycleVideos,
-    recycleSelectedVideos,
+    recycleFiles,
+    recycleSelectedFiles,
     startInlineRename,
     cancelInlineRename,
     submitInlineRename,
     startTransferTask,
-    copyDroppedVideos,
-    copyVideosToDirectory,
+    copyDroppedFiles,
+    copyFilesToDirectory,
     writeFilesToClipboard,
     writeSelectionToFileClipboard,
     pasteFileClipboard,

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::{default_list_columns, ListColumn};
+use super::{default_list_columns, ListColumn, Preferences};
 
 pub(super) fn normalize_extensions(extensions: &mut Vec<String>) {
     *extensions = extensions
@@ -17,6 +17,66 @@ pub(super) fn normalize_extensions(extensions: &mut Vec<String>) {
         .collect();
     extensions.sort();
     extensions.dedup();
+}
+
+pub(super) fn normalize_extension_groups(settings: &mut Preferences) {
+    normalize_extensions(&mut settings.video_extensions);
+    normalize_extensions(&mut settings.image_extensions);
+    normalize_extensions(&mut settings.text_extensions);
+    let mut occupied = HashSet::new();
+    settings
+        .video_extensions
+        .retain(|extension| occupied.insert(extension.clone()));
+    settings
+        .image_extensions
+        .retain(|extension| occupied.insert(extension.clone()));
+    settings
+        .text_extensions
+        .retain(|extension| occupied.insert(extension.clone()));
+    settings.text_language_map.retain(|extension, language| {
+        !extension.is_empty()
+            && settings.text_extensions.contains(extension)
+            && is_supported_prism_language(language)
+    });
+}
+
+pub(super) fn is_supported_prism_language(language: &str) -> bool {
+    matches!(
+        language,
+        "plain"
+            | "markup"
+            | "html"
+            | "css"
+            | "javascript"
+            | "typescript"
+            | "tsx"
+            | "json"
+            | "markdown"
+            | "yaml"
+            | "bash"
+            | "powershell"
+            | "sql"
+            | "python"
+            | "rust"
+            | "java"
+            | "c"
+            | "cpp"
+            | "go"
+    )
+}
+
+pub(super) fn is_supported_code_theme(theme: &str) -> bool {
+    matches!(
+        theme,
+        "default"
+            | "dark"
+            | "funky"
+            | "okaidia"
+            | "tomorrow"
+            | "twilight"
+            | "coy"
+            | "solarizedlight"
+    )
 }
 
 pub(super) fn normalize_list_columns(columns: &mut Vec<ListColumn>) {
@@ -99,7 +159,7 @@ pub(super) fn thumbnail_capture_cache_key(position: &str) -> &'static str {
 pub(super) fn is_supported_sort_key(key: &str) -> bool {
     matches!(
         key,
-        "createdAt" | "name" | "size" | "duration" | "resolution"
+        "createdAt" | "modifiedAt" | "name" | "type" | "size" | "duration" | "resolution"
     )
 }
 
@@ -180,7 +240,7 @@ mod tests {
         for key in ["createdAt", "name", "size", "duration", "resolution"] {
             assert!(is_supported_sort_key(key));
         }
-        assert!(!is_supported_sort_key("modifiedAt"));
+        assert!(is_supported_sort_key("modifiedAt"));
         assert!(!is_supported_sort_key(""));
     }
 }

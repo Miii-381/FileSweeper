@@ -1,9 +1,20 @@
 import { ArrowDown, ArrowUp, Monitor, Moon, Plus, Sun, X } from "lucide-react";
 import { useState } from "react";
 
-import { listColumnLabels, type AboutInfo, type DataManagementSummary, type ListColumn, type ListColumnId, type Preferences, type SettingsLimits, type ThumbnailCapturePosition } from "../../app-types";
+import { listColumnLabels, type AboutInfo, type CodeTheme, type DataManagementSummary, type ListColumn, type ListColumnId, type Preferences, type SettingsLimits, type ThumbnailCapturePosition } from "../../app-types";
 import { writeClientLog } from "../../app-utils";
 import { themePresets } from "../../theme";
+
+const codeThemeOptions: Array<{ id: CodeTheme; name: string }> = [
+  { id: "tomorrow", name: "Tomorrow Night" },
+  { id: "default", name: "默认（浅色）" },
+  { id: "dark", name: "Prism Dark" },
+  { id: "funky", name: "Funky" },
+  { id: "okaidia", name: "Okaidia" },
+  { id: "twilight", name: "Twilight" },
+  { id: "coy", name: "Coy" },
+  { id: "solarizedlight", name: "Solarized Light" },
+];
 
 export function SettingsDialog({
   settings,
@@ -38,6 +49,9 @@ export function SettingsDialog({
     ...settings,
     videoExtensions: [...settings.videoExtensions],
     managedVideoExtensions: [...settings.managedVideoExtensions],
+    imageExtensions: [...settings.imageExtensions],
+    textExtensions: [...settings.textExtensions],
+    textLanguageMap: { ...settings.textLanguageMap },
     listColumns: settings.listColumns.map((column) => ({ ...column })),
   }));
   const [newVideoExtension, setNewVideoExtension] = useState("");
@@ -217,6 +231,42 @@ export function SettingsDialog({
                     ))}
                   </div>
                 </div>
+                <label className="setting-row">
+                  <span>代码配色</span>
+                  <select
+                    className="thumbnail-position-select"
+                    aria-label="代码配色主题"
+                    value={settingsDraft.codeTheme}
+                    onChange={(event) => setSettingsDraft((draft) => ({ ...draft, codeTheme: event.target.value as CodeTheme }))}
+                  >
+                    {codeThemeOptions.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
+                  </select>
+                </label>
+                <div className="setting-row extension-setting">
+                  <span>文本预览字体</span>
+                  <div className="text-preview-font-inputs">
+                    <label>
+                      <span>英文</span>
+                      <input
+                        className="extension-input"
+                        aria-label="文本预览英文字体"
+                        value={settingsDraft.textPreviewLatinFont}
+                        placeholder="Consolas"
+                        onChange={(event) => setSettingsDraft((draft) => ({ ...draft, textPreviewLatinFont: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>中文</span>
+                      <input
+                        className="extension-input"
+                        aria-label="文本预览中文字体"
+                        value={settingsDraft.textPreviewCjkFont}
+                        placeholder="Microsoft YaHei"
+                        onChange={(event) => setSettingsDraft((draft) => ({ ...draft, textPreviewCjkFont: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                </div>
                 <div className="setting-row extension-setting">
                   <span>全局背景图</span>
                   <div className="background-setting-actions">
@@ -230,6 +280,38 @@ export function SettingsDialog({
                     }}>移除</button>}
                   </div>
                 </div>
+                <label className="setting-row">
+                  <span>图片格式</span>
+                  <input
+                    className="extension-input"
+                    value={settingsDraft.imageExtensions.join(", ")}
+                    aria-label="图片扩展名"
+                    onChange={(event) => setSettingsDraft((draft) => ({
+                      ...draft,
+                      imageExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
+                    }))}
+                  />
+                </label>
+                <label className="setting-row">
+                  <span>文本格式</span>
+                  <input
+                    className="extension-input"
+                    value={settingsDraft.textExtensions.join(", ")}
+                    aria-label="文本扩展名"
+                    onChange={(event) => setSettingsDraft((draft) => ({
+                      ...draft,
+                      textExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
+                    }))}
+                  />
+                </label>
+                <label className="setting-row">
+                  <span>图片大小上限</span>
+                  <span className="number-input"><input type="number" min="1" max="512" value={settingsDraft.imageMaxMegabytes} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, imageMaxMegabytes: Number(event.target.value) }))} /><em>MiB</em></span>
+                </label>
+                <label className="setting-row">
+                  <span>图片像素上限</span>
+                  <span className="number-input"><input type="number" min="1" max="500" value={settingsDraft.imageMaxMegapixels} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, imageMaxMegapixels: Number(event.target.value) }))} /><em>MP</em></span>
+                </label>
                 <label className="setting-row">
                   <span>背景图透明度</span>
                   <span className="opacity-input">
@@ -494,7 +576,7 @@ export function SettingsDialog({
 
               <section className="settings-section">
                 <h3>关于与诊断</h3>
-                <p className="settings-description">VideoSweeper {aboutInfo?.appVersion ?? "正在读取版本信息"}</p>
+                <p className="settings-description">FileSweeper {aboutInfo?.appVersion ?? "正在读取版本信息"}</p>
                 {aboutInfo && <div className="about-sidecars">{Object.entries(aboutInfo.sidecars).map(([name, version]) => <span key={name}>{name}: {version}</span>)}</div>}
                 <div className="settings-action-row">
                   <button type="button" className="command-button" onClick={() => void onExportDiagnostics()}>导出诊断信息</button>

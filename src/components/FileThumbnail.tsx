@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Video } from "lucide-react";
+import { File, FileText, Image } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 
-import type { ThumbnailData, VideoEntry } from "../app-types";
+import type { FileEntry, ThumbnailData } from "../app-types";
 import { errorMessage, writeClientLog } from "../app-utils";
 
 const thumbnailDataUrls = new Map<string, string>();
@@ -69,7 +69,7 @@ export function clearThumbnailDataCache() {
 }
 
 
-export function loadThumbnailData(video: VideoEntry, thumbnailPath: string | null) {
+export function loadThumbnailData(file: FileEntry, thumbnailPath: string | null) {
   if (!thumbnailPath) {
     return Promise.resolve<string | null>(null);
   }
@@ -85,7 +85,7 @@ export function loadThumbnailData(video: VideoEntry, thumbnailPath: string | nul
     return pending;
   }
 
-  const request = invoke<ThumbnailData>("read_thumbnail", { path: video.path })
+  const request = invoke<ThumbnailData>("read_thumbnail", { path: file.path })
     .then((result) => {
       cacheThumbnailData(result.thumbnailPath, result.dataUrl);
       return result.dataUrl;
@@ -97,18 +97,18 @@ export function loadThumbnailData(video: VideoEntry, thumbnailPath: string | nul
   return request;
 }
 
-export const VideoThumbnail = memo(function VideoThumbnail({
-  video,
+export const FileThumbnail = memo(function FileThumbnail({
+  file,
   thumbnailPath,
   visibilityRevision,
   compact = false,
   onVisible,
 }: {
-  video: VideoEntry;
+  file: FileEntry;
   thumbnailPath: string | null;
   visibilityRevision: number;
   compact?: boolean;
-  onVisible?: (video: VideoEntry) => void;
+  onVisible?: (file: FileEntry) => void;
 }) {
   const thumbnailElement = useRef<HTMLSpanElement>(null);
   const [failedPath, setFailedPath] = useState<string | null>(null);
@@ -136,7 +136,7 @@ export const VideoThumbnail = memo(function VideoThumbnail({
     }
 
     setThumbnailSrc(null);
-    void loadThumbnailData(video, thumbnailPath)
+    void loadThumbnailData(file, thumbnailPath)
       .then((source) => {
         if (active) {
           setThumbnailSrc(source);
@@ -152,7 +152,7 @@ export const VideoThumbnail = memo(function VideoThumbnail({
     return () => {
       active = false;
     };
-  }, [thumbnailPath, video.path]);
+  }, [thumbnailPath, file.path]);
 
   useEffect(() => {
     if (thumbnailPath || !onVisible) {
@@ -164,15 +164,15 @@ export const VideoThumbnail = memo(function VideoThumbnail({
       return;
     }
     if (!("IntersectionObserver" in window)) {
-      writeClientLog("warn", `浏览器不支持 IntersectionObserver，回退为立即请求缩略图：${video.path}`);
-      onVisible(video);
+      writeClientLog("warn", `浏览器不支持 IntersectionObserver，回退为立即请求缩略图：${file.path}`);
+      onVisible(file);
       return;
     }
 
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
-          onVisible(video);
+          onVisible(file);
           observer.disconnect();
         }
       },
@@ -180,14 +180,14 @@ export const VideoThumbnail = memo(function VideoThumbnail({
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [onVisible, thumbnailPath, video, visibilityRevision]);
+  }, [onVisible, thumbnailPath, file, visibilityRevision]);
 
   const hasImage = thumbnailSrc !== null && thumbnailPath !== failedPath;
 
   return (
     <span
       ref={thumbnailElement}
-      className={`video-thumbnail ${compact ? "compact-thumbnail" : ""} ${hasImage ? "has-image" : ""}`}
+      className={`file-thumbnail ${compact ? "compact-thumbnail" : ""} ${hasImage ? "has-image" : ""}`}
     >
       {hasImage ? (
         <img
@@ -202,8 +202,8 @@ export const VideoThumbnail = memo(function VideoThumbnail({
         />
       ) : (
         <>
-          <Video size={compact ? 15 : 26} />
-          {!compact && <span>{video.extension.slice(1).toUpperCase()}</span>}
+          {file.kind === "image" ? <Image size={compact ? 15 : 26} /> : file.kind === "text" ? <FileText size={compact ? 15 : 26} /> : <File size={compact ? 15 : 26} />}
+          {!compact && <span>{file.extension.slice(1).toUpperCase()}</span>}
         </>
       )}
     </span>

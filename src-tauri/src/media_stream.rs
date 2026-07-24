@@ -181,7 +181,7 @@ pub(super) fn resolve_stream_video_path(path: &str) -> Result<PathBuf, String> {
     resolve_stream_video_path_with_settings(path, &load_config()?.settings)
 }
 
-fn resolve_stream_file_path(path: &str) -> Result<PathBuf, String> {
+pub(super) fn resolve_stream_file_path(path: &str) -> Result<PathBuf, String> {
     if !Path::new(path).is_absolute() {
         return Err("The requested video path must be absolute.".to_string());
     }
@@ -234,15 +234,15 @@ async fn serve_video_stream(
         query.path
     );
     // The loopback HTTP boundary validates the path independently of the IPC command.
-    let video_path = match resolve_stream_video_path(&query.path) {
+    let video_path = match if query.mode == VideoStreamMode::Transcode {
+        resolve_stream_video_path(&query.path)
+    } else {
+        resolve_stream_file_path(&query.path)
+    } {
         Ok(path) => path,
         Err(error) => {
             log::warn!("Rejected local video stream request: {error}");
-            return (
-                StatusCode::BAD_REQUEST,
-                "A valid enabled video file is required.",
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, "A valid file is required.").into_response();
         }
     };
 
@@ -530,7 +530,7 @@ mod tests {
 
     fn test_directory(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
-            "video-sweeper-stream-{name}-{}-{}",
+            "file-sweeper-stream-{name}-{}-{}",
             std::process::id(),
             current_unix_millis()
         ));

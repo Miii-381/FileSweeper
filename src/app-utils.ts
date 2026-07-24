@@ -7,7 +7,7 @@ import {
 
 export type LogMinimumLevel = "warn" | "info" | "debug";
 
-type VideoDimensions = {
+type FileDimensions = {
   width: number | null;
   height: number | null;
 };
@@ -42,8 +42,8 @@ export function formatDuration(duration: number | null) {
   return duration === null ? "-" : formatPlaybackTime(duration);
 }
 
-export function formatResolution(video: VideoDimensions) {
-  return video.width && video.height ? `${video.width} × ${video.height}` : "-";
+export function formatResolution(file: FileDimensions) {
+  return file.width && file.height ? `${file.width} × ${file.height}` : "-";
 }
 
 export function formatPlaybackTime(value: number) {

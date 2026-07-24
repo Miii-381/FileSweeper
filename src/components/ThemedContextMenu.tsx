@@ -93,8 +93,8 @@ export function ThemedContextMenu({
       <div className="workspace-context-menu-title">
         {menu.kind === "directory"
           ? "目录"
-          : menu.kind === "videos"
-            ? `已选择 ${menu.paths.length} 个视频`
+          : menu.kind === "files"
+            ? `已选择 ${menu.paths.length} 个项目`
             : "当前工作区"}
       </div>
       {menu.kind === "directory" && (
@@ -107,9 +107,9 @@ export function ThemedContextMenu({
           </>}
         </>
       )}
-      {menu.kind === "videos" && (
+      {menu.kind === "files" && (
         <>
-          {item("open", <Play size={16} />, "使用默认应用打开")}
+          {item("open", <Play size={16} />, "打开")}
           {item("reveal", <FolderOpen size={16} />, "在资源管理器中显示")}
           {item("clipboardCopy", <ClipboardCopy size={16} />, <>复制 <span className="menu-shortcut">Ctrl+C</span></>)}
           {item("clipboardCut", <Scissors size={16} />, <>剪切 <span className="menu-shortcut">Ctrl+X</span></>)}

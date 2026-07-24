@@ -102,22 +102,22 @@ pub(super) async fn workspace_is_accessible(
 }
 
 #[tauri::command]
-pub(super) async fn scan_workspace(
+pub(super) async fn list_directory(
     path: String,
     request_id: u64,
     thumbnail_index: tauri::State<'_, MediaCacheIndexState>,
     thumbnail_cache_directory: tauri::State<'_, ThumbnailCacheDirectory>,
     watch_state: tauri::State<'_, WorkspaceWatchState>,
     app_handle: tauri::AppHandle,
-) -> Result<WorkspaceListing, String> {
+) -> Result<DirectoryListing, String> {
     watch_state.begin(request_id);
     let latest_request = watch_state.cancellation_token();
     let thumbnail_index = Arc::clone(&thumbnail_index.0);
     let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        log::info!("Scanning workspace: {path}");
+        log::info!("Listing directory: {path}");
         let config = load_config()?;
-        let listing = scan_workspace_impl(
+        let listing = list_directory_impl(
             &path,
             &config.settings,
             &thumbnail_index,
@@ -125,12 +125,12 @@ pub(super) async fn scan_workspace(
             &|| latest_request.load(Ordering::Acquire) != request_id,
         )?;
         log::info!(
-            "Scanned workspace: {} videos={}, media_suppressed={}",
+            "Listed directory: {} items={}, media_suppressed={}",
             listing.path,
-            listing.videos.len(),
+            listing.items.len(),
             listing.media_suppressed
         );
-        Ok::<WorkspaceListing, String>(listing)
+        Ok::<DirectoryListing, String>(listing)
     })
     .await
     .map_err(|error| format!("The workspace worker failed: {error}"))?;
@@ -138,9 +138,9 @@ pub(super) async fn scan_workspace(
         Ok(listing) => {
             watch_state.watch_if_latest(request_id, Path::new(&listing.path), &app_handle)?;
             log::debug!(
-                "Workspace scan command completed: request_id={request_id}, path={}, videos={}",
+                "Directory listing command completed: request_id={request_id}, path={}, items={}",
                 listing.path,
-                listing.videos.len()
+                listing.items.len()
             );
             Ok(listing)
         }
@@ -154,6 +154,27 @@ pub(super) async fn scan_workspace(
             Err(error)
         }
     }
+}
+
+#[tauri::command]
+pub(super) async fn list_folder_thumbnail_sources(
+    paths: Vec<String>,
+    thumbnail_index: tauri::State<'_, MediaCacheIndexState>,
+    thumbnail_cache_directory: tauri::State<'_, ThumbnailCacheDirectory>,
+) -> Result<Vec<FolderThumbnailSources>, String> {
+    let thumbnail_index = Arc::clone(&thumbnail_index.0);
+    let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_config()?.settings;
+        Ok::<_, String>(list_folder_thumbnail_sources_impl(
+            paths,
+            &settings,
+            &thumbnail_index,
+            &thumbnail_cache_dir,
+        ))
+    })
+    .await
+    .map_err(|error| format!("The folder thumbnail worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -285,14 +306,11 @@ pub(super) fn set_last_workspace(path: Option<String>) -> Result<AppConfig, Stri
 }
 
 #[tauri::command]
-pub(super) fn set_workspace_focus(
-    workspace_path: String,
-    video_path: String,
-) -> Result<(), String> {
+pub(super) fn set_workspace_focus(workspace_path: String, file_path: String) -> Result<(), String> {
     log::debug!(
-        "Persisting workspace focus request: workspace={}, video={}",
+        "Persisting workspace focus request: workspace={}, file={}",
         workspace_path,
-        video_path
+        file_path
     );
     let workspace = fs::canonicalize(workspace_path).map_err(|error| {
         log::warn!("Unable to resolve focus workspace: {error}");
@@ -305,46 +323,46 @@ pub(super) fn set_workspace_focus(
         );
         return Err("The focus workspace is not a folder.".to_string());
     }
-    let video = fs::canonicalize(video_path).map_err(|error| {
-        log::warn!("Unable to resolve focused video: {error}");
-        format!("Unable to access the focused video: {error}")
+    let file = fs::canonicalize(file_path).map_err(|error| {
+        log::warn!("Unable to resolve focused file: {error}");
+        format!("Unable to access the focused file: {error}")
     })?;
-    if !video.is_file() {
+    if !file.is_file() {
         log::warn!(
-            "Rejected focus video because it is not a regular file: {:?}",
-            video
+            "Rejected focus file because it is not a regular file: {:?}",
+            file
         );
         return Err("The focused item is not a regular file.".to_string());
     }
-    let parent = video.parent().ok_or_else(|| {
-        log::warn!("Focused video has no parent folder: {:?}", video);
-        "Unable to resolve the focused video's parent folder.".to_string()
+    let parent = file.parent().ok_or_else(|| {
+        log::warn!("Focused file has no parent folder: {:?}", file);
+        "Unable to resolve the focused file's parent folder.".to_string()
     })?;
-    let video_parent = fs::canonicalize(parent).map_err(|error| {
+    let file_parent = fs::canonicalize(parent).map_err(|error| {
         log::warn!(
-            "Unable to resolve parent folder for focused video: video={:?}, error={error}",
-            video
+            "Unable to resolve parent folder for focused file: file={:?}, error={error}",
+            file
         );
-        format!("Unable to resolve the focused video's parent folder: {error}")
+        format!("Unable to resolve the focused file's parent folder: {error}")
     })?;
-    if video_parent != workspace {
+    if file_parent != workspace {
         log::warn!(
-            "Rejected focus video outside workspace: workspace={:?}, video_parent={:?}",
+            "Rejected focus file outside workspace: workspace={:?}, file_parent={:?}",
             workspace,
-            video_parent
+            file_parent
         );
-        return Err("The focused video is not a direct item of the workspace.".to_string());
+        return Err("The focused file is not a direct item of the workspace.".to_string());
     }
 
     let normalized_workspace = path_string(&workspace);
-    let normalized_video = path_string(&video);
+    let normalized_file = path_string(&file);
     let log_workspace = normalized_workspace.clone();
-    let log_video = normalized_video.clone();
+    let log_file = normalized_file.clone();
     update_workspace_state(move |config| {
         config.workspace_focus.insert(
             normalized_workspace,
             WorkspaceFocus {
-                video_path: normalized_video,
+                file_path: normalized_file,
             },
         );
         Ok(())
@@ -352,7 +370,7 @@ pub(super) fn set_workspace_focus(
     log::debug!(
         "Persisted workspace focus: workspace={}, current={}",
         log_workspace,
-        log_video
+        log_file
     );
     Ok(())
 }

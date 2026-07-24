@@ -15,6 +15,15 @@ pub(super) struct MediaSidecarPermit {
     pool: Arc<MediaSidecarPermits>,
 }
 
+pub(super) fn open_image_reader_by_content(
+    path: &Path,
+) -> Result<image::ImageReader<std::io::BufReader<fs::File>>, String> {
+    image::ImageReader::open(path)
+        .map_err(|error| format!("Unable to open image: {error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("Unable to identify image format: {error}"))
+}
+
 impl MediaSidecarPermits {
     pub(super) fn new(maximum: usize) -> Self {
         let maximum = maximum.max(1);
@@ -757,6 +766,97 @@ pub(super) fn generate_thumbnail_batch_impl(
         thumbnails.len(),
         failures.len()
     );
+    Ok(ThumbnailBatchResult {
+        thumbnails,
+        failures,
+    })
+}
+
+pub(super) fn generate_image_thumbnail_batch_impl(
+    paths: Vec<String>,
+    thumbnail_cache: ThumbnailCacheMaintenanceState,
+    cache_limit_bytes: u64,
+    app_handle: tauri::AppHandle,
+) -> Result<ThumbnailBatchResult, String> {
+    let settings = load_config()?.settings;
+    let mut thumbnails = Vec::new();
+    let mut failures = Vec::new();
+    for path in paths {
+        let result = (|| {
+            let image_path = fs::canonicalize(&path)
+                .map_err(|error| format!("Unable to access this image: {error}"))?;
+            let metadata = fs::metadata(&image_path)
+                .map_err(|error| format!("Unable to inspect this image: {error}"))?;
+            if metadata.len() > u64::from(settings.image_max_megabytes) * 1024 * 1024 {
+                return Err("Image exceeds the configured size protection limit.".to_string());
+            }
+            if let Some(cached) = cached_thumbnail_path(
+                &image_path,
+                &metadata,
+                &thumbnail_cache.index,
+                &thumbnail_cache.directory,
+                "image-v1",
+            ) {
+                return Ok(cached);
+            }
+            let (width, height) = open_image_reader_by_content(&image_path)?
+                .into_dimensions()
+                .map_err(|error| format!("Unable to read image dimensions: {error}"))?;
+            if u64::from(width) * u64::from(height)
+                > u64::from(settings.image_max_megapixels) * 1_000_000
+            {
+                return Err("Image exceeds the configured pixel protection limit.".to_string());
+            }
+            let decoded = open_image_reader_by_content(&image_path)?
+                .decode()
+                .map_err(|error| format!("Unable to decode image: {error}"))?;
+            let output = thumbnail_path_for(&image_path)?;
+            let temporary = output.with_extension("tmp.jpg");
+            decoded
+                .thumbnail(320, 320)
+                .to_rgb8()
+                .save_with_format(&temporary, image::ImageFormat::Jpeg)
+                .map_err(|error| format!("Unable to write image thumbnail: {error}"))?;
+            let _maintenance = thumbnail_cache.lock.lock().map_err(|_| {
+                "Unable to access the thumbnail cache maintenance lock.".to_string()
+            })?;
+            if output.exists() {
+                fs::remove_file(&output)
+                    .map_err(|error| format!("Unable to replace the cached thumbnail: {error}"))?;
+            }
+            fs::rename(&temporary, &output)
+                .map_err(|error| format!("Unable to commit image thumbnail: {error}"))?;
+            record_thumbnail_cache(
+                &image_path,
+                &metadata,
+                &output,
+                &thumbnail_cache.index,
+                "image-v1",
+                true,
+            )?;
+            Ok(path_string(&output))
+        })();
+        match result {
+            Ok(thumbnail_path) => {
+                let normalized = fs::canonicalize(&path)
+                    .map(|item| path_string(&item))
+                    .unwrap_or(path);
+                let result = ThumbnailResult {
+                    path: normalized,
+                    thumbnail_path,
+                };
+                let _ = app_handle.emit("thumbnail-generated", &result);
+                thumbnails.push(result);
+            }
+            Err(error) => failures.push(ThumbnailFailure { path, error }),
+        }
+    }
+    maintain_thumbnail_cache(
+        &thumbnail_cache.directory,
+        &thumbnail_cache.index,
+        &thumbnail_cache.lock,
+        cache_limit_bytes,
+    )?;
     Ok(ThumbnailBatchResult {
         thumbnails,
         failures,

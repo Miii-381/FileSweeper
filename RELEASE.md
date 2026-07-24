@@ -1,8 +1,8 @@
-# VideoSweeper 发布清单
+# FileSweeper 发布清单
 
 ## 用户自行安装的媒体工具
 
-VideoSweeper 的 Git 仓库、NSIS 安装包、更新包和本项目脚本均不包含、不下载、不镜像 FFmpeg、FFprobe 或 ffmpegthumbnailer 二进制文件。用户必须自行从上游或可信发行方下载，并对所选构建的许可证负责。
+FileSweeper 的 Git 仓库、NSIS 安装包、更新包和本项目脚本均不包含、不下载、不镜像 FFmpeg、FFprobe 或 ffmpegthumbnailer 二进制文件。用户必须自行从上游或可信发行方下载，并对所选构建的许可证负责。
 
 兼容性说明、建议下载地址、文件名和复制方式位于 `README.md`。发布前应检查安装包清单，确认其中没有 `ffmpeg*.exe`、`ffprobe*.exe` 或 `ffmpegthumbnailer*.exe`。
 

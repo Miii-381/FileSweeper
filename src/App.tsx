@@ -54,6 +54,18 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
+const WORKSPACE_CARD_WIDTH = 220;
+const WORKSPACE_GRID_HORIZONTAL_PADDING = 32;
+const WORKSPACE_GRID_SCROLLBAR_GUTTER = 10;
+const PANEL_RESIZE_HANDLE_WIDTH = 12;
+
+function workspaceMinimumSize(groupWidth: number, previewOpen: boolean) {
+  const handleCount = previewOpen ? 2 : 1;
+  const panelWidth = Math.max(1, groupWidth - handleCount * PANEL_RESIZE_HANDLE_WIDTH);
+  const minimumWidth = WORKSPACE_CARD_WIDTH + WORKSPACE_GRID_HORIZONTAL_PADDING + WORKSPACE_GRID_SCROLLBAR_GUTTER;
+  return Math.min(100, (minimumWidth / panelWidth) * 100);
+}
+
 function isSameOrDescendantPath(path: string, parent: string) {
   const normalizedParent = parent.replace(/[\\/]+$/, "").toLocaleLowerCase();
   const normalizedPath = path.replace(/[\\/]+$/, "").toLocaleLowerCase();
@@ -62,6 +74,7 @@ function isSameOrDescendantPath(path: string, parent: string) {
 
 function parentDirectoryPath(path: string) {
   const normalized = path.replace(/[\\/]+$/, "");
+  if (/^[a-z]:$/i.test(normalized)) return null;
   const separator = Math.max(normalized.lastIndexOf("\\"), normalized.lastIndexOf("/"));
   if (separator < 0) return null;
   return separator <= 2 ? normalized.slice(0, separator + 1) : normalized.slice(0, separator);
@@ -102,12 +115,12 @@ export default function App() {
     return <main className="app-loading-shell" role="alert">应用初始化失败：{initializationError}</main>;
   }
   if (!initialState) {
-    return <main className="app-loading-shell" aria-busy="true">正在加载 VideoSweeper…</main>;
+    return <main className="app-loading-shell" aria-busy="true">正在加载 FileSweeper…</main>;
   }
-  return <VideoSweeperApp initialState={initialState} />;
+  return <FileSweeperApp initialState={initialState} />;
 }
 
-function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
+function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [config, setConfig] = useState<AppConfig>(initialState.config);
   const [roots] = useState<DirectoryEntry[]>(initialState.roots);
   const settingsLimits: SettingsLimits = initialState.settingsLimits;
@@ -118,7 +131,9 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [workspace, setWorkspace] = useState<WorkspaceListing | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [navigationHistory, setNavigationHistory] = useState<string[]>([]);
+  const [navigationIndex, setNavigationIndex] = useState(-1);
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(true);
   const [leftPanelSize, setLeftPanelSize] = useState(20);
@@ -130,7 +145,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [systemColorMode, setSystemColorMode] = useState<ColorMode>("dark");
   const { toast, notify } = useToast();
   const [suppressPreviewAutoplay, setSuppressPreviewAutoplay] = useState(false);
-  const [workspaceMinSize, setWorkspaceMinSize] = useState(34);
+  const [workspaceMinSize, setWorkspaceMinSize] = useState(() => workspaceMinimumSize(window.innerWidth, true));
   const probedMetadataPaths = useRef<Set<string>>(new Set());
   const renameInputRef = useRef<HTMLInputElement>(null);
   const previewPlayerRef = useRef<PreviewPlayerHandle>(null);
@@ -154,8 +169,9 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     sortKey,
     sortAscending,
     gridColumns,
-    selectedVideo,
-    visibleVideos,
+    selectedItem,
+    selectedFile,
+    visibleFiles,
     visibleListColumns,
     listGridStyle,
     gridRowVirtualizer,
@@ -177,7 +193,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     config,
     setConfig,
     workspace,
-    selectedVideos,
+    selectedFiles,
     selectionAnchor,
     probedMetadataPaths,
     notify,
@@ -192,7 +208,6 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     resetForCapturePosition: resetThumbnailsForCapturePosition,
   } = useThumbnailQueue({
     workspacePath: workspace?.path ?? null,
-    videos: workspace?.videos ?? [],
     concurrency: config.settings.backgroundSidecarConcurrency,
   });
 
@@ -225,7 +240,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   } = useMediaMetadata({
     workspace,
     setWorkspace,
-    selectedVideo,
+    selectedFile,
     sortKey,
     concurrency: config.settings.backgroundSidecarConcurrency,
     probedPaths: probedMetadataPaths,
@@ -289,8 +304,8 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     setConfig,
     workspace,
     setWorkspace,
-    selectedVideos,
-    setSelectedVideos,
+    selectedFiles,
+    setSelectedFiles,
     selectionAnchor,
     setSelectionAnchor,
     setSelectedPath,
@@ -305,19 +320,49 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     notify,
   });
 
+  const navigateDirectory = useCallback(async (path: string, historyIndex: number | null = null) => {
+    const opened = await activateWorkspace(path);
+    if (!opened) return;
+    if (historyIndex !== null) {
+      setNavigationIndex(historyIndex);
+      return;
+    }
+    const base = navigationIndex >= 0 ? navigationHistory.slice(0, navigationIndex + 1) : [];
+    if (base.at(-1)?.toLocaleLowerCase() !== path.toLocaleLowerCase()) {
+      setNavigationHistory([...base, path]);
+    }
+    setNavigationIndex(Math.max(0, base.length - (base.at(-1)?.toLocaleLowerCase() === path.toLocaleLowerCase() ? 1 : 0)));
+  }, [activateWorkspace, navigationHistory, navigationIndex]);
+
+  const navigateBack = useCallback(() => {
+    if (navigationIndex <= 0) return;
+    void navigateDirectory(navigationHistory[navigationIndex - 1], navigationIndex - 1);
+  }, [navigateDirectory, navigationHistory, navigationIndex]);
+
+  const navigateForward = useCallback(() => {
+    if (navigationIndex < 0 || navigationIndex >= navigationHistory.length - 1) return;
+    void navigateDirectory(navigationHistory[navigationIndex + 1], navigationIndex + 1);
+  }, [navigateDirectory, navigationHistory, navigationIndex]);
+
+  const navigateUp = useCallback(() => {
+    if (!workspace) return;
+    const parent = parentDirectoryPath(workspace.path);
+    if (parent && parent.toLocaleLowerCase() !== workspace.path.toLocaleLowerCase()) void navigateDirectory(parent);
+  }, [navigateDirectory, workspace]);
+
 
   const {
     renamingPath,
     renameDraft,
     setRenameDraft,
     activeFileTask,
-    recycleVideos,
-    recycleSelectedVideos,
+    recycleFiles,
+    recycleSelectedFiles,
     startInlineRename,
     cancelInlineRename,
     submitInlineRename,
-    copyDroppedVideos,
-    copyVideosToDirectory,
+    copyDroppedFiles,
+    copyFilesToDirectory,
     writeFilesToClipboard,
     writeSelectionToFileClipboard,
     pasteFileClipboard,
@@ -325,10 +370,10 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   } = useFileTasks({
     workspace,
     setWorkspace,
-    selectedVideos,
-    setSelectedVideos,
+    selectedFiles,
+    setSelectedFiles,
     setSelectionAnchor,
-    selectedVideo,
+    selectedFile,
     previewPlayerRef,
     refreshWorkspace,
     notify,
@@ -357,7 +402,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
         resetMetadata();
         setWorkspace(null);
         setWorkspaceLoading(false);
-        setSelectedVideos(new Set());
+        setSelectedFiles(new Set());
         setSelectionAnchor(null);
         setSuppressPreviewAutoplay(true);
         writeClientLog("info", `已清空被删除目录中的当前工作区：${deletedPath}`);
@@ -376,24 +421,24 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       notify(message);
       writeClientLog("error", `目录回收站操作失败，已保留界面状态：${path}，${message}`);
     }
-  }, [confirmRecycle, loadTreeChildren, notify, refreshWorkspace, resetMetadata, setConfig, setSelectedVideos, setSelectionAnchor, setSuppressPreviewAutoplay, setWorkspace, workspace]);
+  }, [confirmRecycle, loadTreeChildren, notify, refreshWorkspace, resetMetadata, setConfig, setSelectedFiles, setSelectionAnchor, setSuppressPreviewAutoplay, setWorkspace, workspace]);
 
   const {
     selectionBox: workspaceSelectionBox,
-    selectVideo,
+    selectFile,
     clearSelection: clearWorkspaceSelection,
     clearSelectionFromBackground,
     startRectangleSelection: startWorkspaceRectangleSelection,
     updateRectangleSelection: updateWorkspaceRectangleSelection,
     finishRectangleSelection: finishWorkspaceRectangleSelection,
-    startFileDrag: startVideoFileDrag,
-    updateFileDrag: updateVideoFileDrag,
-    finishFileDrag: finishVideoFileDrag,
+    startFileDrag: startWorkspaceFileDrag,
+    updateFileDrag: updateWorkspaceFileDrag,
+    finishFileDrag: finishWorkspaceFileDrag,
   } = useWorkspaceGestures({
     hasWorkspace: Boolean(workspace),
-    videos: visibleVideos,
-    selectedVideos,
-    setSelectedVideos,
+    files: visibleFiles,
+    selectedFiles,
+    setSelectedFiles,
     selectionAnchor,
     setSelectionAnchor,
     setSuppressPreviewAutoplay,
@@ -410,11 +455,11 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   } = useWorkspaceMenu({
     workspace,
     refreshWorkspace,
-    activateWorkspace,
-    copyVideosToDirectory,
+    activateWorkspace: navigateDirectory,
+    copyFilesToDirectory,
     writeFilesToClipboard,
     pasteFileClipboard,
-    recycleVideos,
+    recycleFiles,
     recycleDirectory,
     notify,
   });
@@ -469,7 +514,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     config,
     setConfig,
     workspace,
-    activateWorkspace,
+    activateWorkspace: async (...args) => { await activateWorkspace(...args); },
     resetThumbnails: resetThumbnailsForCapturePosition,
     notify,
   });
@@ -560,22 +605,23 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
     workspace,
     refreshWorkspace,
     markUnavailable: markWorkspaceUnavailable,
-    copyDroppedVideos,
+    copyDroppedFiles,
   });
 
   useWorkspaceKeyboard({
     disabled: metadataLoading || isSettingsOpen,
     workspaceAvailable: Boolean(workspace?.isAvailable),
-    videos: visibleVideos,
-    selectedVideos,
-    setSelectedVideos,
+    files: visibleFiles,
+    selectedFiles,
+    setSelectedFiles,
     selectionAnchor,
     setSelectionAnchor,
     setSuppressPreviewAutoplay,
     writeClipboard: writeSelectionToFileClipboard,
     pasteClipboard: pasteFileClipboard,
-    recycleSelected: recycleSelectedVideos,
+    recycleSelected: recycleSelectedFiles,
     startRename: startInlineRename,
+    openFolder: (path) => void navigateDirectory(path),
   });
 
   const toggleTreeNode = (path: string) => {
@@ -616,9 +662,9 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
           favorites: nextConfig.favorites,
         }));
         writeClientLog("info", `目录已加入收藏并准备打开：${selected}`);
-        await activateWorkspace(selected);
+        await navigateDirectory(selected);
       } else {
-        await activateWorkspace(selected);
+        await navigateDirectory(selected);
       }
     } catch (error) {
       const message = errorMessage(error);
@@ -667,14 +713,13 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       return;
     }
     const syncWorkspaceMinimum = () => {
-      // Preserve enough room for one fixed card and the grid's horizontal padding.
-      setWorkspaceMinSize(Math.min(100, (252 / Math.max(group.clientWidth, 1)) * 100));
+      setWorkspaceMinSize(workspaceMinimumSize(group.clientWidth, isPreviewOpen));
     };
     const observer = new ResizeObserver(syncWorkspaceMinimum);
     observer.observe(group);
     syncWorkspaceMinimum();
     return () => observer.disconnect();
-  }, []);
+  }, [isPreviewOpen]);
 
 
 
@@ -718,10 +763,8 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       }
       if (initialState.config.lastWorkspace) {
         writeClientLog("info", `恢复上次工作区：${initialState.config.lastWorkspace}`);
-        await activateWorkspace(
+        await navigateDirectory(
           initialState.config.lastWorkspace,
-          false,
-          initialState.config.settings.rememberWorkspaceFocus,
         );
       } else {
         writeClientLog("info", "没有可恢复的上次工作区，显示空工作区界面");
@@ -741,9 +784,9 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
   };
 
 
-  const showVideoContextMenu = (event: ReactMouseEvent<HTMLElement>, path: string) => {
-    const operationPaths = selectedVideos.has(path) ? [...selectedVideos] : [path];
-    setSelectedVideos(new Set(operationPaths));
+  const showFileContextMenu = (event: ReactMouseEvent<HTMLElement>, path: string) => {
+    const operationPaths = selectedFiles.has(path) ? [...selectedFiles] : [path];
+    setSelectedFiles(new Set(operationPaths));
     setSelectionAnchor(path);
     showWorkspaceContextMenu(event, operationPaths);
   };
@@ -762,7 +805,9 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       <AppTitlebar
         isFavorite={isFavorite}
         hasWorkspace={Boolean(workspace)}
+        searchQuery={searchQuery}
         onChooseWorkspace={() => void chooseFolder("workspace")}
+        onSearchChange={setSearchQuery}
         onToggleFavorite={() => void toggleFavorite()}
         onOpenSettings={openSettings}
         onOpenLogs={openLogs}
@@ -771,7 +816,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       <div className="application-panels" ref={panelGroupRef}>
       <PanelGroup
         className="panel-group"
-        autoSaveId={isPreviewOpen ? "video-sweeper-three-panels" : "video-sweeper-two-panels"}
+        autoSaveId={isPreviewOpen ? "file-sweeper-three-panels" : "file-sweeper-two-panels"}
         direction="horizontal"
         onLayout={(sizes) => setLeftPanelSize(sizes[0] ?? 20)}
       >
@@ -783,7 +828,7 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
         expandedPaths={expandedPaths}
         treeState={treeState}
         onChooseFavorite={() => void chooseFolder("favorite")}
-        onSelectPath={(path) => void activateWorkspace(path)}
+        onSelectPath={(path) => void navigateDirectory(path)}
         onTogglePath={toggleTreeNode}
         onContextMenu={showPathContextMenu}
         onOpenSettings={openSettings}
@@ -798,7 +843,6 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
         workspace={workspace}
         workspaceLoading={workspaceLoading}
         searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
         sortKey={sortKey}
         sortAscending={sortAscending}
         viewMode={viewMode}
@@ -807,8 +851,16 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
         toggleWorkspaceSortDirection={toggleWorkspaceSortDirection}
         changeWorkspaceViewMode={changeWorkspaceViewMode}
         togglePreviewPanel={togglePreviewPanel}
+        canNavigateBack={navigationIndex > 0}
+        canNavigateForward={navigationIndex >= 0 && navigationIndex < navigationHistory.length - 1}
+        canNavigateUp={Boolean(workspace && parentDirectoryPath(workspace.path))}
+        navigateBack={navigateBack}
+        navigateForward={navigateForward}
+        navigateUp={navigateUp}
+        navigateTo={(path) => void navigateDirectory(path)}
         chooseWorkspaceFolder={() => void chooseFolder("workspace")}
-        visibleVideos={visibleVideos}
+        visibleFiles={visibleFiles}
+        openFolder={(path) => void navigateDirectory(path)}
         clearWorkspaceSelection={clearWorkspaceSelection}
         showWorkspaceContextMenu={showWorkspaceContextMenu}
         setGridScrollRef={setGridScrollRef}
@@ -819,13 +871,13 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
         finishWorkspaceRectangleSelection={finishWorkspaceRectangleSelection}
         gridRowVirtualizer={gridRowVirtualizer}
         gridColumns={gridColumns}
-        selectedVideos={selectedVideos}
+        selectedFiles={selectedFiles}
         renamingPath={renamingPath}
-        startVideoFileDrag={startVideoFileDrag}
-        updateVideoFileDrag={updateVideoFileDrag}
-        finishVideoFileDrag={finishVideoFileDrag}
-        selectVideo={selectVideo}
-        showVideoContextMenu={showVideoContextMenu}
+        startWorkspaceFileDrag={startWorkspaceFileDrag}
+        updateWorkspaceFileDrag={updateWorkspaceFileDrag}
+        finishWorkspaceFileDrag={finishWorkspaceFileDrag}
+        selectFile={selectFile}
+        showFileContextMenu={showFileContextMenu}
         thumbnailPathOverrides={thumbnailPathOverrides}
         thumbnailVisibilityRevision={thumbnailVisibilityRevision}
         enqueueThumbnail={enqueueThumbnail}
@@ -852,14 +904,18 @@ function VideoSweeperApp({ initialState }: { initialState: ApplicationState }) {
       {isPreviewOpen && (
         <PreviewPanel
           playerRef={previewPlayerRef}
-          video={selectedVideo}
-          thumbnailPath={selectedVideo ? thumbnailPathOverrides.get(selectedVideo.path) ?? selectedVideo.thumbnailPath : null}
-          autoplay={config.settings.autoplay && selectedVideos.size === 1 && !suppressPreviewAutoplay}
+          item={selectedItem}
+          thumbnailPath={selectedFile ? thumbnailPathOverrides.get(selectedFile.path) ?? selectedFile.thumbnailPath : null}
+          autoplay={config.settings.autoplay && selectedFiles.size === 1 && !suppressPreviewAutoplay}
           volume={config.settings.volume}
           muted={config.settings.muted}
           metadataLoading={selectedMetadataLoading}
           onEnsureThumbnail={enqueueThumbnail}
-          onAudioPreferenceChange={updateAudioPreferences}
+            onAudioPreferenceChange={updateAudioPreferences}
+            textLanguageMap={config.settings.textLanguageMap}
+            codeTheme={config.settings.codeTheme}
+            textPreviewLatinFont={config.settings.textPreviewLatinFont}
+            textPreviewCjkFont={config.settings.textPreviewCjkFont}
         />
       )}
       </PanelGroup>

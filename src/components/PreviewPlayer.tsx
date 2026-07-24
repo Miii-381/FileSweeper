@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { Maximize2, Minimize2, MonitorPlay, Pause, Play, Video, Volume2, VolumeX } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
-import type { VideoEntry, VideoStreamUrl } from "../app-types";
+import type { FileEntry, VideoStreamUrl } from "../app-types";
 import { errorMessage, formatPlaybackTime, writeClientLog } from "../app-utils";
-import { loadThumbnailData } from "./VideoThumbnail";
+import { loadThumbnailData } from "./FileThumbnail";
 
 export type PreviewPlayerHandle = {
   togglePlayback: () => void;
@@ -14,12 +14,12 @@ export type PreviewPlayerHandle = {
 };
 
 type PreviewPlayerProps = {
-  video: VideoEntry | null;
+  video: FileEntry | null;
   thumbnailPath: string | null;
   autoplay: boolean;
   volume: number;
   muted: boolean;
-  onEnsureThumbnail: (video: VideoEntry) => void;
+  onEnsureThumbnail: (video: FileEntry) => void;
   onAudioPreferenceChange: (volume: number, muted: boolean, persistImmediately?: boolean) => void;
 };
 
@@ -350,7 +350,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       return;
     }
     writeClientLog("info", `播放器错误恢复：使用系统默认应用打开 ${video.path}`);
-    void invoke("open_video_externally", { path: video.path })
+    void invoke("open_file_externally", { path: video.path })
       .then(() => writeClientLog("info", `已将视频交给系统默认应用：${video.path}`))
       .catch((error: unknown) => {
         writeClientLog("error", `使用外部播放器打开失败：${video.path}，${errorMessage(error)}`);

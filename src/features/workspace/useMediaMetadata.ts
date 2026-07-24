@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import type { MetadataBatchResult, SortKey, VideoEntry, VideoMetadata, WorkspaceListing } from "../../app-types";
+import { isFileEntry, type MetadataBatchResult, type SortKey, type FileEntry, type VideoMetadata, type WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 
-export function useMediaMetadata({ workspace, setWorkspace, selectedVideo, sortKey, concurrency, probedPaths, notify }: {
+export function useMediaMetadata({ workspace, setWorkspace, selectedFile, sortKey, concurrency, probedPaths, notify }: {
   workspace: WorkspaceListing | null;
   setWorkspace: Dispatch<SetStateAction<WorkspaceListing | null>>;
-  selectedVideo: VideoEntry | null;
+  selectedFile: FileEntry | null;
   sortKey: SortKey;
   concurrency: number;
   probedPaths: RefObject<Set<string>>;
@@ -28,7 +28,7 @@ export function useMediaMetadata({ workspace, setWorkspace, selectedVideo, sortK
 
   const loadWorkspaceMetadata = useCallback(async () => {
     if (!workspace || metadataLoading) return;
-    const paths = workspace.videos.map((video) => video.path).filter((path) => !probedPaths.current.has(path));
+    const paths = workspace.items.filter(isFileEntry).filter((file) => file.kind === "video").map((file) => file.path).filter((path) => !probedPaths.current.has(path));
     if (paths.length === 0) return;
     const requestId = ++batchRequest.current;
     const workspacePath = workspace.path;
@@ -47,9 +47,10 @@ export function useMediaMetadata({ workspace, setWorkspace, selectedVideo, sortK
         writeClientLog(result.failedPaths.length > 0 ? "warn" : "debug", `媒体信息批次返回：成功 ${result.metadata.length} 个，失败 ${result.failedPaths.length} 个`);
       }
       if (requestId === batchRequest.current) {
-        setWorkspace((current) => !current || current.path !== workspacePath ? current : ({ ...current, videos: current.videos.map((video) => {
-          const metadata = metadataByPath.get(video.path);
-          return metadata ? { ...video, duration: metadata.duration, width: metadata.width, height: metadata.height } : video;
+        setWorkspace((current) => !current || current.path !== workspacePath ? current : ({ ...current, items: current.items.map((item) => {
+          if (!isFileEntry(item)) return item;
+          const metadata = metadataByPath.get(item.path);
+          return metadata ? { ...item, duration: metadata.duration, width: metadata.width, height: metadata.height } : item;
         }) }));
         writeClientLog("info", `媒体信息读取完成：${paths.length} 个视频`);
       }
@@ -66,23 +67,23 @@ export function useMediaMetadata({ workspace, setWorkspace, selectedVideo, sortK
 
   useEffect(() => {
     const requestId = ++selectedRequest.current;
-    const currentVideo = selectedVideo;
+    const currentFile = selectedFile;
     const workspacePath = workspace?.path;
-    const requiresProbe = currentVideo && (currentVideo.duration === null || currentVideo.width === null || currentVideo.height === null);
-    if (!currentVideo || !workspacePath || !requiresProbe || probedPaths.current.has(currentVideo.path)) { setSelectedMetadataLoading(false); return; }
+    const requiresProbe = currentFile && (currentFile.duration === null || currentFile.width === null || currentFile.height === null);
+    if (!currentFile || !workspacePath || !requiresProbe || probedPaths.current.has(currentFile.path)) { setSelectedMetadataLoading(false); return; }
     setSelectedMetadataLoading(true);
-    writeClientLog("debug", `补充读取右栏媒体信息：${currentVideo.path}`);
-    void invoke<MetadataBatchResult>("probe_video_metadata_batch_command", { paths: [currentVideo.path] }).then((result) => {
-      if (requestId !== selectedRequest.current) { writeClientLog("debug", `右栏媒体信息结果已过期，忽略：${currentVideo.path}`); return; }
-      probedPaths.current.add(currentVideo.path);
-      const metadata = result.metadata.find((item) => item.path === currentVideo.path);
-      if (!metadata) { writeClientLog("warn", `无法读取右栏媒体信息：${currentVideo.path}`); return; }
-      setWorkspace((current) => !current || current.path !== workspacePath ? current : ({ ...current, videos: current.videos.map((video) => video.path === currentVideo.path ? { ...video, duration: metadata.duration ?? video.duration, width: metadata.width ?? video.width, height: metadata.height ?? video.height } : video) }));
-      writeClientLog("debug", `右栏媒体信息读取完成：${currentVideo.path}`);
+    writeClientLog("debug", `补充读取右栏媒体信息：${currentFile.path}`);
+    void invoke<MetadataBatchResult>("probe_video_metadata_batch_command", { paths: [currentFile.path] }).then((result) => {
+      if (requestId !== selectedRequest.current) { writeClientLog("debug", `右栏媒体信息结果已过期，忽略：${currentFile.path}`); return; }
+      probedPaths.current.add(currentFile.path);
+      const metadata = result.metadata.find((item) => item.path === currentFile.path);
+      if (!metadata) { writeClientLog("warn", `无法读取右栏媒体信息：${currentFile.path}`); return; }
+      setWorkspace((current) => !current || current.path !== workspacePath ? current : ({ ...current, items: current.items.map((item) => isFileEntry(item) && item.path === currentFile.path ? { ...item, duration: metadata.duration ?? item.duration, width: metadata.width ?? item.width, height: metadata.height ?? item.height } : item) }));
+      writeClientLog("debug", `右栏媒体信息读取完成：${currentFile.path}`);
     }).catch((probeError: unknown) => {
-      if (requestId === selectedRequest.current) { probedPaths.current.add(currentVideo.path); writeClientLog("warn", `右栏媒体信息读取失败：${currentVideo.path}，${errorMessage(probeError)}`); }
+      if (requestId === selectedRequest.current) { probedPaths.current.add(currentFile.path); writeClientLog("warn", `右栏媒体信息读取失败：${currentFile.path}，${errorMessage(probeError)}`); }
     }).finally(() => { if (requestId === selectedRequest.current) setSelectedMetadataLoading(false); });
-  }, [probedPaths, selectedVideo, setWorkspace, workspace?.path]);
+  }, [probedPaths, selectedFile, setWorkspace, workspace?.path]);
 
   return { metadataLoading, selectedMetadataLoading, reset };
 }

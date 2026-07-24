@@ -25,7 +25,7 @@ export function useSettingsController({ config, setConfig, workspace, activateWo
 
   const apply = useCallback(async (settings: Preferences): Promise<boolean> => {
     const thumbnailPositionChanged = config.settings.thumbnailCapturePosition !== settings.thumbnailCapturePosition;
-    writeClientLog("info", `提交偏好设置：主题 ${settings.appearance}/${settings.accentTheme}，缓存 ${settings.thumbnailCacheGb} GiB，取帧 ${settings.thumbnailCapturePosition}，后台并发 ${settings.backgroundSidecarConcurrency}，扩展名 ${settings.videoExtensions.length} 个`);
+    writeClientLog("info", `提交偏好设置：主题 ${settings.appearance}/${settings.accentTheme}，代码配色 ${settings.codeTheme}，文本字体 ${settings.textPreviewLatinFont}/${settings.textPreviewCjkFont}，缓存 ${settings.thumbnailCacheGb} GiB，取帧 ${settings.thumbnailCapturePosition}，后台并发 ${settings.backgroundSidecarConcurrency}，扩展名 ${settings.videoExtensions.length} 个`);
     try {
       const nextConfig = await invoke<AppConfig>("save_configuration", { settings });
       setConfig((current) => ({ ...current, version: nextConfig.version, settings: nextConfig.settings }));

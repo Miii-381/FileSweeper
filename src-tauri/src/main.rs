@@ -31,8 +31,9 @@ use runtime_api::*;
 use sidecar::{configure_sidecar_command, resolve_sidecar, wait_for_child};
 use storage::*;
 use workspace::{
-    available_roots, is_recyclable_directory, list_subdirectories_impl, scan_workspace_impl,
-    DirectoryTreeWatchState, WorkspaceWatchState, WORKSPACE_SCAN_CANCELLED,
+    available_roots, is_recyclable_directory, list_directory_impl,
+    list_folder_thumbnail_sources_impl, list_subdirectories_impl, DirectoryTreeWatchState,
+    WorkspaceWatchState, WORKSPACE_SCAN_CANCELLED,
 };
 
 use axum::{
@@ -68,11 +69,11 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 #[cfg(target_os = "windows")]
 use windows::{
-    core::{HRESULT, HSTRING, PCWSTR},
+    core::{Interface, HRESULT, HSTRING, PCWSTR},
     Win32::{
         Foundation::{
             GlobalFree, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, HGLOBAL,
-            HWND, LPARAM, S_OK, WPARAM,
+            HWND, LPARAM, S_FALSE, S_OK, WPARAM,
         },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::Com::{
@@ -112,20 +113,20 @@ use windows::{
 
 fn main() {
     let configuration = config_store::ConfigStore::open(
-        config_path().expect("failed to resolve VideoSweeper configuration path"),
+        config_path().expect("failed to resolve FileSweeper configuration path"),
     )
-    .expect("failed to initialize VideoSweeper configuration");
+    .expect("failed to initialize FileSweeper configuration");
     CONFIG_STORE
         .set(configuration)
-        .unwrap_or_else(|_| panic!("VideoSweeper configuration was initialized more than once"));
-    let log_directory = log_dir().expect("failed to create VideoSweeper log directory");
+        .unwrap_or_else(|_| panic!("FileSweeper configuration was initialized more than once"));
+    let log_directory = log_dir().expect("failed to create FileSweeper log directory");
     let thumbnail_cache_directory =
-        thumbnail_cache_dir().expect("failed to create VideoSweeper thumbnail cache directory");
+        thumbnail_cache_dir().expect("failed to create FileSweeper thumbnail cache directory");
     let (loaded_thumbnail_index, media_cache_load_diagnostic) =
         load_thumbnail_index_with_diagnostic(&thumbnail_cache_directory);
     let thumbnail_index = Arc::new(Mutex::new(loaded_thumbnail_index));
     let thumbnail_cache_maintenance_lock = Arc::new(Mutex::new(()));
-    let initial_config = load_config().expect("failed to load VideoSweeper configuration");
+    let initial_config = load_config().expect("failed to load FileSweeper configuration");
     let cache_limit_bytes = thumbnail_cache_limit_bytes(initial_config.settings.thumbnail_cache_gb);
     let initial_cache_maintenance_error = maintain_thumbnail_cache(
         &thumbnail_cache_directory,
@@ -185,7 +186,7 @@ fn main() {
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::Folder {
                         path: log_directory,
-                        file_name: Some("video-sweeper".to_string()),
+                        file_name: Some("file-sweeper".to_string()),
                     }),
                 ])
                 .build(),
@@ -208,7 +209,7 @@ fn main() {
             }
             match load_config() {
                 Ok(config) => log::info!(
-                    "VideoSweeper backend initialized: version={}, last_workspace={}, favorites={}, sidecar_concurrency={}",
+                    "FileSweeper backend initialized: version={}, last_workspace={}, favorites={}, sidecar_concurrency={}",
                     env!("CARGO_PKG_VERSION"),
                     config.last_workspace.as_deref().unwrap_or("<none>"),
                     config.favorites.len(),
@@ -258,7 +259,8 @@ fn main() {
             application_commands::list_subdirectories,
             application_commands::set_directory_tree_watch_paths,
             application_commands::workspace_is_accessible,
-            application_commands::scan_workspace,
+            application_commands::list_directory,
+            application_commands::list_folder_thumbnail_sources,
             application_commands::save_configuration,
             application_commands::set_audio_preferences,
             application_commands::set_list_columns,
@@ -267,20 +269,24 @@ fn main() {
             application_commands::set_workspace_sort,
             application_commands::toggle_favorite,
             media_commands::generate_thumbnails,
+            media_commands::generate_image_thumbnails,
             media_commands::probe_video_metadata_batch_command,
             media_commands::read_thumbnail,
+            media_commands::read_text_preview,
+            media_commands::inspect_image_preview,
+            media_commands::get_preview_file_url,
             media_commands::get_video_stream_url,
             media_commands::stop_transcoded_preview,
-            file_commands::open_video_externally,
+            file_commands::open_file_externally,
             file_commands::start_file_drag,
             log_commands::poll_log_file,
-            file_commands::recycle_videos,
+            file_commands::recycle_items,
             file_commands::recycle_directory,
-            file_commands::rename_video,
+            file_commands::rename_item,
             file_commands::start_file_task,
             file_commands::get_file_task,
             file_commands::cancel_file_task,
-            file_commands::write_files_to_clipboard,
+            file_commands::write_items_to_clipboard,
             file_commands::paste_files_from_clipboard,
             file_commands::reveal_path,
             maintenance_commands::get_data_management_summary,
@@ -294,5 +300,5 @@ fn main() {
             window_state::save_window_layout
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run VideoSweeper");
+        .expect("failed to run FileSweeper");
 }

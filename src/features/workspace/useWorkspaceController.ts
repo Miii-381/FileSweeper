@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useRef, type Dispatch, type SetStateAction } from "react";
-import type { AppConfig, SortKey, VideoEntry, WorkspaceListing } from "../../app-types";
+import { isFileEntry, type AppConfig, type SortKey, type DirectoryItem, type WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 
 type Props = {
@@ -8,8 +8,8 @@ type Props = {
   setConfig: Dispatch<SetStateAction<AppConfig>>;
   workspace: WorkspaceListing | null;
   setWorkspace: Dispatch<SetStateAction<WorkspaceListing | null>>;
-  selectedVideos: Set<string>;
-  setSelectedVideos: Dispatch<SetStateAction<Set<string>>>;
+  selectedFiles: Set<string>;
+  setSelectedFiles: Dispatch<SetStateAction<Set<string>>>;
   selectionAnchor: string | null;
   setSelectionAnchor: Dispatch<SetStateAction<string | null>>;
   setSelectedPath: Dispatch<SetStateAction<string | null>>;
@@ -17,8 +17,8 @@ type Props = {
   setSuppressPreviewAutoplay: Dispatch<SetStateAction<boolean>>;
   resetMetadata: () => void;
   clearThumbnailDisplayOverrides: () => void;
-  prepareWorkspaceView: (listing: WorkspaceListing, memoryEnabled: boolean) => VideoEntry | null;
-  persistWorkspaceFocus: (workspacePath: string, videoPath: string) => Promise<void>;
+  prepareWorkspaceView: (listing: WorkspaceListing, memoryEnabled: boolean) => DirectoryItem | null;
+  persistWorkspaceFocus: (workspacePath: string, filePath: string) => Promise<void>;
   persistWorkspaceSort: (workspacePath: string, key: SortKey, ascending: boolean) => Promise<void>;
   getActiveSort: () => { key: SortKey; ascending: boolean };
   notify: (message: string) => void;
@@ -29,8 +29,8 @@ export function useWorkspaceController({
   setConfig,
   workspace,
   setWorkspace,
-  selectedVideos,
-  setSelectedVideos,
+  selectedFiles,
+  setSelectedFiles,
   selectionAnchor,
   setSelectionAnchor,
   setSelectedPath,
@@ -60,8 +60,8 @@ export function useWorkspaceController({
     resetMetadata();
     try {
       if (workspaceMemoryEnabled && workspace) {
-        if (selectionAnchor && selectedVideos.has(selectionAnchor)) {
-          writeClientLog("debug", `切换工作区前保存当前焦点：工作区 ${workspace.path}，视频 ${selectionAnchor}`);
+        if (selectionAnchor && selectedFiles.has(selectionAnchor)) {
+          writeClientLog("debug", `切换工作区前保存当前焦点：工作区 ${workspace.path}，文件 ${selectionAnchor}`);
           await persistWorkspaceFocus(workspace.path, selectionAnchor);
         }
         const activeSort = getActiveSort();
@@ -76,33 +76,33 @@ export function useWorkspaceController({
       } else {
         writeClientLog("debug", `旧工作区状态保存失败响应已过期，忽略：${errorMessage(error)}`);
       }
-      return;
+      return false;
     }
     if (requestId !== workspaceRequest.current) {
       writeClientLog("debug", `工作区切换响应已过期，忽略：${requestedPath}`);
-      return;
+      return false;
     }
 
     const scanRequestId = ++workspaceScanRequest.current;
     setWorkspaceLoading(true);
     writeClientLog("info", `打开工作区：${requestedPath}`);
     try {
-      const listing = await invoke<WorkspaceListing>("scan_workspace", {
+      const listing = await invoke<WorkspaceListing>("list_directory", {
         path: requestedPath,
         requestId: scanRequestId,
       });
       if (requestId !== workspaceRequest.current || scanRequestId !== workspaceScanRequest.current) {
         writeClientLog("debug", `工作区扫描响应已过期，忽略：${requestedPath}`);
-        return;
+        return false;
       }
       clearThumbnailDisplayOverrides();
-      const rememberedVideo = prepareWorkspaceView(listing, workspaceMemoryEnabled);
-      setSuppressPreviewAutoplay(Boolean(rememberedVideo));
+      const rememberedFile = prepareWorkspaceView(listing, workspaceMemoryEnabled);
+      setSuppressPreviewAutoplay(Boolean(rememberedFile));
       setWorkspace(listing);
       setSelectedPath(listing.path);
-      setSelectedVideos(rememberedVideo ? new Set([rememberedVideo.path]) : new Set());
-      setSelectionAnchor(rememberedVideo?.path ?? null);
-      writeClientLog("info", `工作区读取完成：${listing.path}，视频 ${listing.videos.length} 个`);
+      setSelectedFiles(rememberedFile ? new Set([rememberedFile.path]) : new Set());
+      setSelectionAnchor(rememberedFile?.path ?? null);
+      writeClientLog("info", `目录读取完成：${listing.path}，项目 ${listing.items.length} 个`);
       if (persist) {
         const nextConfig = await invoke<AppConfig>("set_last_workspace", { path: listing.path });
         if (requestId === workspaceRequest.current) {
@@ -113,12 +113,13 @@ export function useWorkspaceController({
           }));
         }
       }
+      return true;
     } catch (error) {
       if (requestId === workspaceRequest.current && scanRequestId === workspaceScanRequest.current) {
         const message = errorMessage(error);
-        setWorkspace({ path: requestedPath, videos: [], mediaSuppressed: false, isAvailable: false });
+        setWorkspace({ path: requestedPath, items: [], mediaSuppressed: false, isAvailable: false });
         setSelectedPath(requestedPath);
-        setSelectedVideos(new Set());
+        setSelectedFiles(new Set());
         setSelectionAnchor(null);
         notify(message);
         writeClientLog("warn", `工作区暂不可用，已保留位置等待恢复：${requestedPath}，${message}`);
@@ -131,6 +132,7 @@ export function useWorkspaceController({
         workspaceNavigationPending.current = false;
       }
     }
+    return false;
   };
 
   const markWorkspaceUnavailable = (path: string, reason: string) => {
@@ -140,10 +142,10 @@ export function useWorkspaceController({
     }
     setWorkspace((current) =>
       current && current.path.toLocaleLowerCase() === path.toLocaleLowerCase()
-        ? { ...current, videos: [], mediaSuppressed: false, isAvailable: false }
+        ? { ...current, items: [], mediaSuppressed: false, isAvailable: false }
         : current,
     );
-    setSelectedVideos(new Set());
+    setSelectedFiles(new Set());
     setSelectionAnchor(null);
     writeClientLog("warn", `工作区连接中断，已停止预览并等待恢复：${reason}`);
   };
@@ -155,7 +157,7 @@ export function useWorkspaceController({
     }
     const scanRequestId = ++workspaceScanRequest.current;
     try {
-      const listing = await invoke<WorkspaceListing>("scan_workspace", { path, requestId: scanRequestId });
+      const listing = await invoke<WorkspaceListing>("list_directory", { path, requestId: scanRequestId });
       if (scanRequestId !== workspaceScanRequest.current) {
         writeClientLog("debug", `工作区刷新响应已过期，忽略：${path}，${reason}`);
         return;
@@ -168,21 +170,22 @@ export function useWorkspaceController({
         if (!current || current.path.toLocaleLowerCase() !== path.toLocaleLowerCase()) {
           return current;
         }
-        const previousByPath = new Map(current.videos.map((video) => [video.path, video]));
+        const previousByPath = new Map(current.items.filter(isFileEntry).map((file) => [file.path, file]));
         return {
           ...listing,
-          videos: listing.videos.map((video) => {
-            const previous = previousByPath.get(video.path);
+          items: listing.items.map((item) => {
+            if (!isFileEntry(item)) return item;
+            const previous = previousByPath.get(item.path);
             return previous
-              ? { ...video, duration: previous.duration, width: previous.width, height: previous.height }
-              : video;
+              ? { ...item, duration: previous.duration, width: previous.width, height: previous.height }
+              : item;
           }),
         };
       });
-      const nextPaths = new Set(listing.videos.map((video) => video.path));
-      setSelectedVideos((current) => new Set([...current].filter((path) => nextPaths.has(path))));
+      const nextPaths = new Set(listing.items.map((item) => item.path));
+      setSelectedFiles((current) => new Set([...current].filter((path) => nextPaths.has(path))));
       setSelectionAnchor((current) => (current && nextPaths.has(current) ? current : null));
-      writeClientLog("debug", `工作区已刷新：${reason}，视频 ${listing.videos.length} 个`);
+      writeClientLog("debug", `目录已刷新：${reason}，项目 ${listing.items.length} 个`);
     } catch (error) {
       if (scanRequestId !== workspaceScanRequest.current) {
         writeClientLog("debug", `工作区刷新失败响应已过期，忽略：${path}，${reason}，${errorMessage(error)}`);

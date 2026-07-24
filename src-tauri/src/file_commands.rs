@@ -44,20 +44,20 @@ fn purge_deleted_directory_references(directory: &Path) -> Result<AppConfig, Str
 }
 
 #[tauri::command]
-pub(super) fn recycle_videos(
+pub(super) fn recycle_items(
     paths: Vec<String>,
-    focused_video_path: Option<String>,
+    focused_file_path: Option<String>,
     queue: tauri::State<FileOperationQueue>,
     video_stream_server: tauri::State<VideoStreamServer>,
 ) -> Result<RecycleResult, String> {
-    log::info!("Recycling {} video(s)", paths.len());
-    let normalized_paths = file_operations::normalize_video_paths(paths).map_err(|error| {
+    log::info!("Recycling {} item(s)", paths.len());
+    let normalized_paths = file_operations::normalize_item_paths(paths).map_err(|error| {
         log::warn!("Recycle request rejected during path validation: {error}");
         error
     })?;
-    if let Some(focused_video_path) = focused_video_path {
-        let focused_path = fs::canonicalize(focused_video_path).map_err(|error| {
-            format!("Unable to access the focused video before deletion: {error}")
+    if let Some(focused_file_path) = focused_file_path {
+        let focused_path = fs::canonicalize(focused_file_path).map_err(|error| {
+            format!("Unable to access the focused file before deletion: {error}")
         })?;
         if normalized_paths.iter().any(|path| path == &focused_path) {
             let stopped = video_stream_server
@@ -78,15 +78,22 @@ pub(super) fn recycle_videos(
             }
         }
     }
-    file_operations::enqueue_recycle(normalized_paths, &queue)
-        .inspect(|result| {
-            log::info!(
-                "Recycle request completed: recycled={}, failed={}",
-                result.recycled_paths.len(),
-                result.failed_paths.len()
-            );
-        })
-        .inspect_err(|error| log::error!("Recycle request failed: {error}"))
+    let recycled_directories = normalized_paths
+        .iter()
+        .filter(|path| path.is_dir())
+        .cloned()
+        .collect::<Vec<_>>();
+    let result = file_operations::enqueue_recycle(normalized_paths, &queue)?;
+    for directory in recycled_directories {
+        if result
+            .recycled_paths
+            .iter()
+            .any(|path| path.eq_ignore_ascii_case(&path_string(&directory)))
+        {
+            let _ = purge_deleted_directory_references(&directory);
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -131,30 +138,30 @@ pub(super) fn recycle_directory(
 }
 
 #[tauri::command]
-pub(super) fn rename_video(
+pub(super) fn rename_item(
     path: String,
     new_stem: String,
     queue: tauri::State<FileOperationQueue>,
 ) -> Result<RenameResult, String> {
-    log::info!("Renaming video: path={path}, requested_stem={new_stem}");
-    let paths = file_operations::normalize_video_paths(vec![path]).map_err(|error| {
+    log::info!("Renaming item: path={path}, requested_stem={new_stem}");
+    let paths = file_operations::normalize_item_paths(vec![path]).map_err(|error| {
         log::warn!("Rename request rejected during path validation: {error}");
         error
     })?;
     file_operations::enqueue_rename(
-        paths.into_iter().next().expect("one normalized video path"),
+        paths.into_iter().next().expect("one normalized item path"),
         new_stem,
         &queue,
     )
     .inspect(|result| {
         log::info!(
-            "Video renamed: old_path={}, new_path={}, name={}",
+            "Item renamed: old_path={}, new_path={}, name={}",
             result.old_path,
             result.new_path,
             result.name
         );
     })
-    .inspect_err(|error| log::error!("Video rename failed: {error}"))
+    .inspect_err(|error| log::error!("Item rename failed: {error}"))
 }
 
 fn normalize_transfer_destination(path: String) -> Result<PathBuf, String> {
@@ -182,6 +189,10 @@ pub(super) fn start_file_task(
         log::warn!("File task destination rejected: {error}");
         error
     })?;
+    let paths = file_operations::normalize_item_paths(paths)?
+        .into_iter()
+        .map(|path| path_string(&path))
+        .collect();
     file_operations::start_transfer_task(paths, destination, operation, app_handle, &queue)
         .inspect(|snapshot| log::info!("File task accepted: task_id={}", snapshot.id))
         .inspect_err(|error| log::error!("Unable to start file task: {error}"))
@@ -214,7 +225,7 @@ pub(super) fn cancel_file_task(
 }
 
 #[tauri::command]
-pub(super) fn write_files_to_clipboard(
+pub(super) fn write_items_to_clipboard(
     paths: Vec<String>,
     operation: FileTaskOperation,
     window: tauri::WebviewWindow,
@@ -224,7 +235,7 @@ pub(super) fn write_files_to_clipboard(
         "Received file clipboard write request: operation={operation:?}, requested_paths={}",
         paths.len()
     );
-    let paths = file_operations::normalize_video_paths(paths).map_err(|error| {
+    let paths = file_operations::normalize_item_paths(paths).map_err(|error| {
         log::warn!("File clipboard write rejected during path validation: {error}");
         error
     })?;
@@ -279,21 +290,21 @@ pub(super) fn paste_files_from_clipboard(
 }
 
 #[tauri::command]
-pub(super) fn open_video_externally(path: String) -> Result<(), String> {
-    log::info!("Opening video with the system default application: requested_path={path}");
-    let video_path = media_stream::resolve_stream_video_path(&path).map_err(|error| {
-        log::warn!("External video open rejected: path={path}, error={error}");
+pub(super) fn open_file_externally(path: String) -> Result<(), String> {
+    log::info!("Opening file with the system default application: requested_path={path}");
+    let file_path = media_stream::resolve_stream_file_path(&path).map_err(|error| {
+        log::warn!("External file open rejected: path={path}, error={error}");
         error
     })?;
-    let normalized = path_string(&video_path);
+    let normalized = path_string(&file_path);
     Command::new("explorer.exe")
-        .arg(&video_path)
+        .arg(&file_path)
         .spawn()
         .map_err(|error| {
-            log::error!("Unable to launch system default video application: path={normalized}, error={error}");
-            format!("Unable to open the selected video externally: {error}")
+            log::error!("Unable to launch system default file application: path={normalized}, error={error}");
+            format!("Unable to open the selected file externally: {error}")
         })?;
-    log::info!("Video handed to system default application: path={normalized}");
+    log::info!("File handed to system default application: path={normalized}");
     Ok(())
 }
 
@@ -337,11 +348,11 @@ pub(super) fn reveal_path(path: String) -> Result<(), String> {
 pub(super) fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
     let requested = paths.len();
     log::info!("Received file-drag request: requested_paths={requested}");
-    let paths = file_operations::normalize_video_paths(paths).map_err(|error| {
+    let paths = file_operations::normalize_item_paths(paths).map_err(|error| {
         log::warn!("File-drag request rejected during path validation: {error}");
         error
     })?;
-    log::debug!("Received file-drag command for {} video(s)", paths.len());
+    log::debug!("Received file-drag command for {} file(s)", paths.len());
     windows_shell::start_windows_file_drag(paths)
         .inspect(|_| log::info!("File-drag session completed: paths={requested}"))
         .inspect_err(|error| {
@@ -355,13 +366,13 @@ mod tests {
 
     #[test]
     fn directory_reference_cleanup_matches_only_whole_path_segments() {
-        let deleted = Path::new(r"C:\\Videos\\Archive");
-        assert!(is_same_or_descendant(r"C:\\Videos\\Archive", deleted));
+        let deleted = Path::new(r"C:\\Files\\Archive");
+        assert!(is_same_or_descendant(r"C:\\Files\\Archive", deleted));
         assert!(is_same_or_descendant(
-            r"c:\\videos\\archive\\nested",
+            r"c:\\files\\archive\\nested",
             deleted
         ));
-        assert!(!is_same_or_descendant(r"C:\\Videos\\Archived", deleted));
-        assert!(!is_same_or_descendant(r"C:\\Videos", deleted));
+        assert!(!is_same_or_descendant(r"C:\\Files\\Archived", deleted));
+        assert!(!is_same_or_descendant(r"C:\\Files", deleted));
     }
 }

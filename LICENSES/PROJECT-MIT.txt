@@ -1,4 +1,4 @@
-VideoSweeper project source code is licensed under the MIT License.
+FileSweeper project source code is licensed under the MIT License.
 
 Copyright (c) 2026 Ayanami
 

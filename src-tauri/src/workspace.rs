@@ -244,7 +244,7 @@ pub(super) fn cleanup_interrupted_copy_files(directory: &Path) {
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
-        if name.starts_with('.') && name.contains(".videosweeper-copy-") && name.ends_with(".tmp") {
+        if name.starts_with('.') && name.contains(".filesweeper-copy-") && name.ends_with(".tmp") {
             if let Err(error) = fs::remove_file(entry.path()) {
                 log::warn!(
                     "Unable to remove interrupted copy file {}: {error}",
@@ -368,13 +368,13 @@ pub(super) fn has_nomedia_ancestor(directory: &Path) -> bool {
         .any(|ancestor| ancestor.join(".nomedia").is_file())
 }
 
-pub(super) fn scan_workspace_impl(
+pub(super) fn list_directory_impl(
     path: &str,
     settings: &Preferences,
     thumbnail_index: &Arc<Mutex<MediaCacheIndex>>,
     thumbnail_cache_dir: &Path,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<WorkspaceListing, String> {
+) -> Result<DirectoryListing, String> {
     if is_cancelled() {
         log::debug!("Workspace scan cancelled before path resolution: requested_path={path}");
         return Err(WORKSPACE_SCAN_CANCELLED.to_string());
@@ -389,90 +389,177 @@ pub(super) fn scan_workspace_impl(
             path_string(&directory)
         );
     }
-    let extensions: HashSet<&str> = settings
+    let video_extensions: HashSet<&str> = settings
         .video_extensions
         .iter()
         .map(String::as_str)
         .collect();
-    let mut videos = Vec::new();
+    let image_extensions: HashSet<&str> = settings
+        .image_extensions
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let text_extensions: HashSet<&str> = settings
+        .text_extensions
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut items = Vec::new();
 
-    if !media_suppressed {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| format!("Unable to enumerate this folder: {error}"))?
-        {
-            if is_cancelled() {
-                log::debug!(
-                    "Workspace scan cancelled during enumeration: path={}, videos_collected={}",
-                    path_string(&directory),
-                    videos.len()
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| format!("Unable to enumerate this folder: {error}"))?
+    {
+        if is_cancelled() {
+            log::debug!(
+                "Directory listing cancelled during enumeration: path={}, items_collected={}",
+                path_string(&directory),
+                items.len()
+            );
+            return Err(WORKSPACE_SCAN_CANCELLED.to_string());
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                log::warn!(
+                    "Unable to read workspace entry; skipping it: workspace={}, error={error}",
+                    path_string(&directory)
                 );
-                return Err(WORKSPACE_SCAN_CANCELLED.to_string());
-            }
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    log::warn!(
-                        "Unable to read workspace entry; skipping it: workspace={}, error={error}",
-                        path_string(&directory)
-                    );
-                    continue;
-                }
-            };
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    log::warn!(
-                        "Unable to read workspace item metadata; skipping it: path={}, error={error}",
-                        path_string(&entry.path())
-                    );
-                    continue;
-                }
-            };
-            if !metadata.is_file()
-                || (!settings.show_hidden_items && is_hidden_or_system(&metadata))
-            {
                 continue;
             }
-
-            let entry_path = entry.path();
-            let extension = entry_path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-                .unwrap_or_default();
-            if !extensions.contains(extension.as_str()) {
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                log::warn!(
+                    "Unable to read workspace item metadata; skipping it: path={}, error={error}",
+                    path_string(&entry.path())
+                );
                 continue;
             }
+        };
+        if !settings.show_hidden_items && is_hidden_or_system(&metadata) {
+            continue;
+        }
 
-            let cached_metadata = cached_media_metadata(&entry_path, &metadata, thumbnail_index);
-            videos.push(VideoEntry {
+        let entry_path = entry.path();
+        if metadata.is_dir() {
+            items.push(DirectoryItem::Folder(FolderEntry {
+                entry_type: "folder",
                 path: path_string(&entry_path),
                 name: folder_name(&entry_path),
-                extension,
-                size: metadata.len(),
                 created_at: unix_millis(metadata.created()),
                 modified_at: unix_millis(metadata.modified()),
-                duration: cached_metadata.as_ref().and_then(|value| value.duration),
-                width: cached_metadata.as_ref().and_then(|value| value.width),
-                height: cached_metadata.as_ref().and_then(|value| value.height),
-                thumbnail_path: cached_thumbnail_path(
+                can_recycle: is_recyclable_directory(&entry_path),
+            }));
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let extension = entry_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+            .unwrap_or_default();
+        let kind = if video_extensions.contains(extension.as_str()) {
+            FileKind::Video
+        } else if image_extensions.contains(extension.as_str()) {
+            FileKind::Image
+        } else if text_extensions.contains(extension.as_str()) {
+            FileKind::Text
+        } else {
+            FileKind::Other
+        };
+        if media_suppressed && matches!(kind, FileKind::Video | FileKind::Image) {
+            continue;
+        }
+        let cached_metadata = matches!(kind, FileKind::Video)
+            .then(|| cached_media_metadata(&entry_path, &metadata, thumbnail_index))
+            .flatten();
+        items.push(DirectoryItem::File(FileEntry {
+            entry_type: "file",
+            path: path_string(&entry_path),
+            name: folder_name(&entry_path),
+            extension,
+            size: metadata.len(),
+            created_at: unix_millis(metadata.created()),
+            modified_at: unix_millis(metadata.modified()),
+            duration: cached_metadata.as_ref().and_then(|value| value.duration),
+            width: cached_metadata.as_ref().and_then(|value| value.width),
+            height: cached_metadata.as_ref().and_then(|value| value.height),
+            thumbnail_path: match kind {
+                FileKind::Video => cached_thumbnail_path(
                     &entry_path,
                     &metadata,
                     thumbnail_index,
                     thumbnail_cache_dir,
                     &settings.thumbnail_capture_position,
                 ),
-            });
-        }
+                FileKind::Image => cached_thumbnail_path(
+                    &entry_path,
+                    &metadata,
+                    thumbnail_index,
+                    thumbnail_cache_dir,
+                    "image-v1",
+                ),
+                FileKind::Text | FileKind::Other => None,
+            },
+            kind,
+            preview_capability: match kind {
+                FileKind::Video | FileKind::Image | FileKind::Text => PreviewCapability::Inline,
+                FileKind::Other => PreviewCapability::MetadataOnly,
+            },
+        }));
     }
 
-    videos.sort_by_key(|video| video.name.to_lowercase());
-    Ok(WorkspaceListing {
+    items.sort_by_key(|item| match item {
+        DirectoryItem::Folder(folder) => folder.name.to_lowercase(),
+        DirectoryItem::File(file) => file.name.to_lowercase(),
+    });
+    Ok(DirectoryListing {
         path: path_string(&directory),
-        videos,
+        items,
         media_suppressed,
         is_available: true,
     })
+}
+
+pub(super) fn list_folder_thumbnail_sources_impl(
+    paths: Vec<String>,
+    settings: &Preferences,
+    thumbnail_index: &Arc<Mutex<MediaCacheIndex>>,
+    thumbnail_cache_dir: &Path,
+) -> Vec<FolderThumbnailSources> {
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let listing = list_directory_impl(
+                &path,
+                settings,
+                thumbnail_index,
+                thumbnail_cache_dir,
+                &|| false,
+            )
+            .ok()?;
+            let files = listing
+                .items
+                .into_iter()
+                .filter_map(|item| match item {
+                    DirectoryItem::File(file)
+                        if matches!(file.kind, FileKind::Image | FileKind::Video) =>
+                    {
+                        Some(file)
+                    }
+                    DirectoryItem::Folder(_) | DirectoryItem::File(_) => None,
+                })
+                .take(4)
+                .collect();
+            Some(FolderThumbnailSources {
+                folder_path: listing.path,
+                files,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -481,7 +568,7 @@ mod tests {
 
     fn test_directory(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "video-sweeper-workspace-{name}-{}-{}",
+            "file-sweeper-workspace-{name}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -501,7 +588,7 @@ mod tests {
         fs::write(child.join("sample.mp4"), b"video").unwrap();
         let index = Arc::new(Mutex::new(MediaCacheIndex::default()));
 
-        let listing = scan_workspace_impl(
+        let listing = list_directory_impl(
             child.to_str().unwrap(),
             &Preferences::default(),
             &index,
@@ -510,7 +597,7 @@ mod tests {
         )
         .unwrap();
         assert!(listing.media_suppressed);
-        assert!(listing.videos.is_empty());
+        assert!(listing.items.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -528,10 +615,10 @@ mod tests {
         };
 
         let listing =
-            scan_workspace_impl(child.to_str().unwrap(), &settings, &index, &root, &|| false)
+            list_directory_impl(child.to_str().unwrap(), &settings, &index, &root, &|| false)
                 .unwrap();
         assert!(!listing.media_suppressed);
-        assert_eq!(listing.videos.len(), 1);
+        assert_eq!(listing.items.len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -559,12 +646,69 @@ mod tests {
     }
 
     #[test]
+    fn directory_listing_includes_direct_folders_and_files() {
+        let root = test_directory("mixed-items");
+        fs::create_dir(root.join("album")).unwrap();
+        fs::write(root.join("note.txt"), b"notes").unwrap();
+        let index = Arc::new(Mutex::new(MediaCacheIndex::default()));
+
+        let listing = list_directory_impl(
+            root.to_str().unwrap(),
+            &Preferences::default(),
+            &index,
+            &root,
+            &|| false,
+        )
+        .unwrap();
+        assert!(listing
+            .items
+            .iter()
+            .any(|item| matches!(item, DirectoryItem::Folder(folder) if folder.name == "album")));
+        assert!(listing
+            .items
+            .iter()
+            .any(|item| matches!(item, DirectoryItem::File(file) if file.name == "note.txt")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_thumbnail_sources_are_limited_to_direct_visual_files() {
+        let root = test_directory("folder-thumbnail-sources");
+        let album = root.join("album");
+        fs::create_dir_all(album.join("nested")).unwrap();
+        for index in 0..5 {
+            fs::write(album.join(format!("image-{index}.png")), b"png").unwrap();
+        }
+        fs::write(album.join("nested").join("ignored.jpg"), b"jpg").unwrap();
+        fs::write(album.join("notes.txt"), b"notes").unwrap();
+        let index = Arc::new(Mutex::new(MediaCacheIndex::default()));
+
+        let sources = list_folder_thumbnail_sources_impl(
+            vec![path_string(&album)],
+            &Preferences::default(),
+            &index,
+            &root,
+        );
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].files.len(), 4);
+        assert!(sources[0]
+            .files
+            .iter()
+            .all(|file| matches!(file.kind, FileKind::Image | FileKind::Video)));
+        assert!(sources[0]
+            .files
+            .iter()
+            .all(|file| !file.path.contains("nested")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn workspace_scan_observes_cancellation_before_enumeration() {
         let root = test_directory("cancelled");
         fs::write(root.join("sample.mp4"), b"video").unwrap();
         let index = Arc::new(Mutex::new(MediaCacheIndex::default()));
 
-        let result = scan_workspace_impl(
+        let result = list_directory_impl(
             root.to_str().unwrap(),
             &Preferences::default(),
             &index,

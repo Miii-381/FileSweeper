@@ -1,6 +1,6 @@
-# VideoSweeper
+# FileSweeper
 
-VideoSweeper 是一个 **Windows 端** 本地视频管理应用。本项目的自有源代码使用 [MIT 许可证](LICENSE)。
+FileSweeper 是一个 **Windows 端** 本地文件管理应用。本项目的自有源代码使用 [MIT 许可证](LICENSE)。
 
 > 项目仓库、NSIS 安装包、更新包和安装脚本均不包含、不下载、不镜像 FFmpeg、FFprobe 或 ffmpegthumbnailer 二进制文件。用户自行取得、安装并承担所选二进制文件的许可证义务。
 
@@ -38,10 +38,10 @@ FFmpeg 和 FFprobe 是完整媒体预览、元数据读取与缩略图回退所�
 
 ### 安装位置与文件名
 
-将已下载的可执行文件复制到 **VideoSweeper 安装目录** 下的 `sidecars` 目录。默认当前用户安装通常位于 `%LOCALAPPDATA%\VideoSweeper`；使用自定义安装位置时，以你实际选择的 `VideoSweeper` 目录为准。
+将已下载的可执行文件复制到 **FileSweeper 安装目录** 下的 `sidecars` 目录。默认当前用户安装通常位于 `%LOCALAPPDATA%\FileSweeper`；使用自定义安装位置时，以你实际选择的 `FileSweeper` 目录为准。
 
 ```text
-<VideoSweeper 安装目录>\sidecars\
+<FileSweeper 安装目录>\sidecars\
   ffmpeg-x86_64-pc-windows-msvc.exe
   ffprobe-x86_64-pc-windows-msvc.exe
   ffmpegthumbnailer-x86_64-pc-windows-msvc.exe   （可选）
@@ -54,14 +54,14 @@ FFmpeg 和 FFprobe 是完整媒体预览、元数据读取与缩略图回退所�
 仓库提供的脚本只复制你已经手动下载的文件，不访问网络也不下载任何二进制。以 PowerShell 7 为例：
 
 ```powershell
-# 参数说明：<FFmpeg bin目录> <VideoSweeper安装目录> [ffmpegthumbnailer路径]
+# 参数说明：<FFmpeg bin目录> <FileSweeper安装目录> [ffmpegthumbnailer路径]
 pwsh -File .\scripts\install-local-media-tools.ps1 `
   "C:\Users\你的用户名\Downloads\ffmpeg\bin" `
-  "$env:LOCALAPPDATA\VideoSweeper" `
+  "$env:LOCALAPPDATA\FileSweeper" `
   "C:\Users\你的用户名\Downloads\ffmpegthumbnailer.exe"
 ```
 
-前两个位置参数分别为包含 `ffmpeg.exe` 与 `ffprobe.exe` 的目录、VideoSweeper 安装目录；第三个位置参数可省略。脚本会复制并重命名到 `sidecars`，保留用户的原始下载文件。
+前两个位置参数分别为包含 `ffmpeg.exe` 与 `ffprobe.exe` 的目录、FileSweeper 安装目录；第三个位置参数可省略。脚本会复制并重命名到 `sidecars`，保留用户的原始下载文件。
 
 ## 3. 本地开发
 
@@ -87,6 +87,6 @@ npm run tauri build
 
 ## 5. 许可证边界
 
-- `LICENSE`：VideoSweeper 项目自有代码的 MIT 许可证。
+- `LICENSE`：FileSweeper 项目自有代码的 MIT 许可证。
 - `LICENSES/`：随应用携带的项目许可证副本，以及用户可选安装媒体工具的上游许可证说明。
 - 用户自行下载的 FFmpeg、FFprobe、ffmpegthumbnailer 不会因被本项目调用、复制或重命名而改变原有许可证。

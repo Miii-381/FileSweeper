@@ -1,11 +1,12 @@
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { Panel } from "react-resizable-panels";
-import { ChevronsUp, CircleDot, Folder, FolderOpen, Video } from "lucide-react";
+import { ChevronsUp, CircleDot, File, Folder, FolderOpen } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
 
-import { listColumnLabels, type ListColumn, type ListColumnId, type SortKey, type VideoEntry, type ViewMode, type WorkspaceListing, type WorkspaceSelectionBox } from "../../app-types";
+import { isFileEntry, isFolderEntry, listColumnLabels, type FileEntry, type ListColumn, type ListColumnId, type SortKey, type DirectoryItem, type ViewMode, type WorkspaceListing, type WorkspaceSelectionBox } from "../../app-types";
 import { formatBytes, formatDate, formatDuration, formatResolution, writeClientLog } from "../../app-utils";
-import { VideoThumbnail } from "../../components/VideoThumbnail";
+import { FileThumbnail } from "../../components/FileThumbnail";
+import { FolderThumbnail } from "../../components/FolderThumbnail";
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
 
 type WorkspacePanelProps = {
@@ -14,7 +15,6 @@ type WorkspacePanelProps = {
   workspace: WorkspaceListing | null;
   workspaceLoading: boolean;
   searchQuery: string;
-  setSearchQuery: (value: string) => void;
   sortKey: SortKey;
   sortAscending: boolean;
   viewMode: ViewMode;
@@ -23,8 +23,16 @@ type WorkspacePanelProps = {
   toggleWorkspaceSortDirection: () => void;
   changeWorkspaceViewMode: (mode: ViewMode) => void;
   togglePreviewPanel: () => void;
+  canNavigateBack: boolean;
+  canNavigateForward: boolean;
+  canNavigateUp: boolean;
+  navigateBack: () => void;
+  navigateForward: () => void;
+  navigateUp: () => void;
+  navigateTo: (path: string) => void;
   chooseWorkspaceFolder: () => void;
-  visibleVideos: VideoEntry[];
+  visibleFiles: DirectoryItem[];
+  openFolder: (path: string) => void;
   clearWorkspaceSelection: () => void;
   showWorkspaceContextMenu: (event: ReactMouseEvent<HTMLElement>, paths?: string[]) => void;
   setGridScrollRef: (element: HTMLDivElement | null) => void;
@@ -35,16 +43,16 @@ type WorkspacePanelProps = {
   finishWorkspaceRectangleSelection: (event: ReactPointerEvent<HTMLDivElement>) => void;
   gridRowVirtualizer: Virtualizer<HTMLDivElement, Element>;
   gridColumns: number;
-  selectedVideos: Set<string>;
+  selectedFiles: Set<string>;
   renamingPath: string | null;
-  startVideoFileDrag: (event: ReactPointerEvent<HTMLDivElement>, path: string) => void;
-  updateVideoFileDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
-  finishVideoFileDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
-  selectVideo: (event: ReactMouseEvent<HTMLElement>, path: string) => void;
-  showVideoContextMenu: (event: ReactMouseEvent<HTMLElement>, path: string) => void;
+  startWorkspaceFileDrag: (event: ReactPointerEvent<HTMLDivElement>, path: string) => void;
+  updateWorkspaceFileDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  finishWorkspaceFileDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  selectFile: (event: ReactMouseEvent<HTMLElement>, path: string) => void;
+  showFileContextMenu: (event: ReactMouseEvent<HTMLElement>, path: string) => void;
   thumbnailPathOverrides: Map<string, string>;
   thumbnailVisibilityRevision: number;
-  enqueueThumbnail: (video: VideoEntry) => void;
+  enqueueThumbnail: (file: FileEntry) => void;
   renameInputRef: RefObject<HTMLInputElement | null>;
   renameDraft: string;
   setRenameDraft: (value: string) => void;
@@ -67,14 +75,15 @@ type WorkspacePanelProps = {
 
 export function WorkspacePanel(props: WorkspacePanelProps) {
   const {
-    isPreviewOpen, workspaceMinSize, workspace, workspaceLoading, searchQuery, setSearchQuery,
+    isPreviewOpen, workspaceMinSize, workspace, workspaceLoading, searchQuery,
     sortKey, sortAscending, viewMode, metadataLoading, changeWorkspaceSortKey,
     toggleWorkspaceSortDirection, changeWorkspaceViewMode, togglePreviewPanel, chooseWorkspaceFolder,
-    visibleVideos, clearWorkspaceSelection, showWorkspaceContextMenu, setGridScrollRef,
+    canNavigateBack, canNavigateForward, canNavigateUp, navigateBack, navigateForward, navigateUp, navigateTo,
+    visibleFiles, openFolder, clearWorkspaceSelection, showWorkspaceContextMenu, setGridScrollRef,
     handleThumbnailViewportScroll, clearSelectionFromBackground, startWorkspaceRectangleSelection,
     updateWorkspaceRectangleSelection, finishWorkspaceRectangleSelection, gridRowVirtualizer,
-    gridColumns, selectedVideos, renamingPath, startVideoFileDrag, updateVideoFileDrag,
-    finishVideoFileDrag, selectVideo, showVideoContextMenu, thumbnailPathOverrides,
+    gridColumns, selectedFiles, renamingPath, startWorkspaceFileDrag, updateWorkspaceFileDrag,
+    finishWorkspaceFileDrag, selectFile, showFileContextMenu, thumbnailPathOverrides,
     thumbnailVisibilityRevision, enqueueThumbnail, renameInputRef, renameDraft, setRenameDraft,
     submitInlineRename, cancelInlineRename, workspaceSelectionBox, listScrollElement, listGridStyle,
     visibleListColumns, draggedListColumn, listColumnDropTarget, listColumnDropPosition,
@@ -87,17 +96,22 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
       <section className="workspace">
         <WorkspaceToolbar
           workspacePath={workspace?.path ?? null}
-          searchQuery={searchQuery}
           sortKey={sortKey}
           sortAscending={sortAscending}
           viewMode={viewMode}
           previewOpen={isPreviewOpen}
           metadataLoading={metadataLoading}
-          onSearchChange={setSearchQuery}
           onSortKeyChange={changeWorkspaceSortKey}
           onToggleSortDirection={toggleWorkspaceSortDirection}
           onViewModeChange={changeWorkspaceViewMode}
           onTogglePreview={togglePreviewPanel}
+          canNavigateBack={canNavigateBack}
+          canNavigateForward={canNavigateForward}
+          canNavigateUp={canNavigateUp}
+          onNavigateBack={navigateBack}
+          onNavigateForward={navigateForward}
+          onNavigateUp={navigateUp}
+          onNavigateTo={navigateTo}
         />
 
         {!workspace || workspaceLoading ? (
@@ -113,31 +127,31 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
               </button>
             )}
           </div>
-        ) : visibleVideos.length === 0 ? (
+        ) : visibleFiles.length === 0 ? (
           <div
             className="empty-workspace compact-empty"
             onClick={clearWorkspaceSelection}
             onContextMenu={(event) => showWorkspaceContextMenu(event)}
           >
             <div className="empty-symbol" aria-hidden="true">
-              <Video size={28} />
+              <File size={28} />
             </div>
             <h1>
               {!workspace.isAvailable
                 ? "此位置暂不可用，正在等待设备或网络位置恢复"
                 : workspace.mediaSuppressed
-                ? "此目录的媒体已被 .nomedia 隐藏"
+                ? "此目录中的媒体已被 .nomedia 隐藏"
                 : searchQuery
-                  ? "没有匹配的视频"
-                  : "此目录没有受支持的视频"}
+                  ? "没有匹配的文件"
+                  : "此目录没有文件"}
             </h1>
           </div>
         ) : viewMode === "grid" ? (
           <div
             ref={setGridScrollRef}
-            className="video-grid"
+            className="file-grid"
             role="list"
-            aria-label="视频文件"
+            aria-label="文件"
             onScroll={handleThumbnailViewportScroll}
             onClick={clearSelectionFromBackground}
             onContextMenu={(event) => showWorkspaceContextMenu(event)}
@@ -146,45 +160,55 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
             onPointerUp={finishWorkspaceRectangleSelection}
             onPointerCancel={finishWorkspaceRectangleSelection}
           >
-            <div className="video-grid-virtualizer" style={{ height: gridRowVirtualizer.getTotalSize() }}>
+            <div className="file-grid-virtualizer" style={{ height: gridRowVirtualizer.getTotalSize() }}>
               {gridRowVirtualizer.getVirtualItems().map((virtualRow) => (
                 <div
-                  className="video-grid-row"
+                  className="file-grid-row"
                   key={virtualRow.key}
                   style={{
                     "--grid-columns": String(gridColumns),
                     transform: `translateY(${virtualRow.start}px)`,
                   } as CSSProperties}
                 >
-                  {visibleVideos
+                  {visibleFiles
                     .slice(virtualRow.index * gridColumns, (virtualRow.index + 1) * gridColumns)
-                    .map((video) => (
+                    .map((file) => (
                       <div
-                        className={`video-card ${selectedVideos.has(video.path) ? "selected" : ""}`}
-                        key={video.path}
-                        data-video-path={video.path}
+                        className={`file-card ${selectedFiles.has(file.path) ? "selected" : ""}`}
+                        key={file.path}
+                        data-file-path={file.path}
                         draggable={false}
                         role="listitem"
                         tabIndex={0}
-                        title={renamingPath === video.path ? undefined : video.name}
-                        onPointerDown={(event) => startVideoFileDrag(event, video.path)}
-                        onPointerMove={updateVideoFileDrag}
-                        onPointerUp={finishVideoFileDrag}
-                        onPointerCancel={finishVideoFileDrag}
+                        title={renamingPath === file.path ? undefined : file.name}
+                        onPointerDown={(event) => startWorkspaceFileDrag(event, file.path)}
+                        onPointerMove={updateWorkspaceFileDrag}
+                        onPointerUp={finishWorkspaceFileDrag}
+                        onPointerCancel={finishWorkspaceFileDrag}
                         onDragStart={(event) => {
                           event.preventDefault();
-                          writeClientLog("debug", `已阻止浏览器原生缩略图拖拽：${video.path}`);
+                          writeClientLog("debug", `已阻止浏览器原生缩略图拖拽：${file.path}`);
                         }}
-                        onClick={(event) => selectVideo(event, video.path)}
-                        onContextMenu={(event) => showVideoContextMenu(event, video.path)}
+                        onClick={(event) => selectFile(event, file.path)}
+                        onDoubleClick={() => { if (isFolderEntry(file)) openFolder(file.path); }}
+                        onContextMenu={(event) => showFileContextMenu(event, file.path)}
                       >
-                        <VideoThumbnail
-                          video={video}
-                          thumbnailPath={thumbnailPathOverrides.get(video.path) ?? video.thumbnailPath}
-                          visibilityRevision={thumbnailVisibilityRevision}
-                          onVisible={enqueueThumbnail}
-                        />
-                        {renamingPath === video.path ? (
+                        {isFolderEntry(file) ? (
+                          <FolderThumbnail
+                            folder={file}
+                            thumbnailPathOverrides={thumbnailPathOverrides}
+                            visibilityRevision={thumbnailVisibilityRevision}
+                            onEnsureThumbnail={enqueueThumbnail}
+                          />
+                        ) : (
+                          <FileThumbnail
+                            file={file}
+                            thumbnailPath={thumbnailPathOverrides.get(file.path) ?? file.thumbnailPath}
+                            visibilityRevision={thumbnailVisibilityRevision}
+                            onVisible={enqueueThumbnail}
+                          />
+                        )}
+                        {renamingPath === file.path ? (
                           <span className="inline-rename" onClick={(event) => event.stopPropagation()}>
                             <input
                               ref={renameInputRef}
@@ -202,13 +226,13 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
                               }}
                               onBlur={() => void submitInlineRename()}
                             />
-                            <span className="rename-extension">{video.extension}</span>
+                            <span className="rename-extension">{isFileEntry(file) ? file.extension : ""}</span>
                           </span>
                         ) : (
-                          <span className="video-name">{video.name}</span>
+                          <span className="file-name">{file.name}</span>
                         )}
-                        <span className="video-meta">
-                          {formatBytes(video.size)} · {formatDate(video.createdAt)}
+                        <span className="file-meta">
+                          {isFolderEntry(file) ? `文件夹 · ${formatDate(file.modifiedAt)}` : `${formatBytes(file.size)} · ${formatDate(file.createdAt)}`}
                         </span>
                       </div>
                     ))}
@@ -231,9 +255,9 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
         ) : (
           <div
             ref={listScrollElement}
-            className="video-list"
+            className="file-list"
             role="table"
-            aria-label="视频文件"
+            aria-label="文件"
             style={listGridStyle}
             onScroll={handleThumbnailViewportScroll}
             onClick={clearSelectionFromBackground}
@@ -243,7 +267,7 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
             onPointerUp={finishWorkspaceRectangleSelection}
             onPointerCancel={finishWorkspaceRectangleSelection}
           >
-            <div className="video-list-header" role="row">
+            <div className="file-list-header" role="row">
               {visibleListColumns.map((column) => (
                 <span
                   className={`list-header-cell ${draggedListColumn === column.id ? "dragging" : ""} ${
@@ -265,41 +289,44 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
                 </span>
               ))}
             </div>
-            <div className="video-list-virtualizer" style={{ height: listRowVirtualizer.getTotalSize() }}>
+            <div className="file-list-virtualizer" style={{ height: listRowVirtualizer.getTotalSize() }}>
               {listRowVirtualizer.getVirtualItems().map((virtualRow) => {
-                const video = visibleVideos[virtualRow.index];
+                const file = visibleFiles[virtualRow.index];
                 return (
                   <div
-                    className={`video-list-row ${selectedVideos.has(video.path) ? "selected" : ""}`}
+                    className={`file-list-row ${selectedFiles.has(file.path) ? "selected" : ""}`}
                     role="row"
-                    key={video.path}
-                    data-video-path={video.path}
+                    key={file.path}
+                    data-file-path={file.path}
                     draggable={false}
                     tabIndex={0}
                     style={{ ...listGridStyle, transform: `translateY(${virtualRow.start}px)` }}
-                    onPointerDown={(event) => startVideoFileDrag(event, video.path)}
-                    onPointerMove={updateVideoFileDrag}
-                    onPointerUp={finishVideoFileDrag}
-                    onPointerCancel={finishVideoFileDrag}
+                    onPointerDown={(event) => startWorkspaceFileDrag(event, file.path)}
+                    onPointerMove={updateWorkspaceFileDrag}
+                    onPointerUp={finishWorkspaceFileDrag}
+                    onPointerCancel={finishWorkspaceFileDrag}
                     onDragStart={(event) => {
                       event.preventDefault();
-                      writeClientLog("debug", `已阻止浏览器原生缩略图拖拽：${video.path}`);
+                      writeClientLog("debug", `已阻止浏览器原生缩略图拖拽：${file.path}`);
                     }}
-                    onClick={(event) => selectVideo(event, video.path)}
-                    onContextMenu={(event) => showVideoContextMenu(event, video.path)}
+                    onClick={(event) => selectFile(event, file.path)}
+                    onDoubleClick={() => { if (isFolderEntry(file)) openFolder(file.path); }}
+                    onContextMenu={(event) => showFileContextMenu(event, file.path)}
                   >
                     {visibleListColumns.map((column) => {
                       if (column.id === "name") {
                         return (
                           <span className="list-name" key={column.id}>
-                            <VideoThumbnail
-                              video={video}
-                              thumbnailPath={thumbnailPathOverrides.get(video.path) ?? video.thumbnailPath}
-                              visibilityRevision={thumbnailVisibilityRevision}
-                              compact
-                              onVisible={enqueueThumbnail}
-                            />
-                            {renamingPath === video.path ? (
+                            {isFolderEntry(file) ? <Folder size={17} /> : (
+                              <FileThumbnail
+                                file={file}
+                                thumbnailPath={thumbnailPathOverrides.get(file.path) ?? file.thumbnailPath}
+                                visibilityRevision={thumbnailVisibilityRevision}
+                                compact
+                                onVisible={enqueueThumbnail}
+                              />
+                            )}
+                            {renamingPath === file.path ? (
                               <span className="inline-rename" onClick={(event) => event.stopPropagation()}>
                                 <input
                                   ref={renameInputRef}
@@ -317,25 +344,28 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
                                   }}
                                   onBlur={() => void submitInlineRename()}
                                 />
-                                <span className="rename-extension">{video.extension}</span>
+                                <span className="rename-extension">{isFileEntry(file) ? file.extension : ""}</span>
                               </span>
                             ) : (
-                              <span title={video.name}>{video.name}</span>
+                              <span title={file.name}>{file.name}</span>
                             )}
                           </span>
                         );
                       }
                       if (column.id === "size") {
-                        return <span key={column.id}>{formatBytes(video.size)}</span>;
+                        return <span key={column.id}>{isFileEntry(file) ? formatBytes(file.size) : "—"}</span>;
+                      }
+                      if (column.id === "type") {
+                        return <span key={column.id}>{isFolderEntry(file) ? "文件夹" : file.kind === "video" ? "视频" : file.kind === "image" ? "图片" : file.kind === "text" ? "文本" : "其他"}</span>;
                       }
                       if (column.id === "modifiedAt") {
-                        return <span key={column.id}>{formatDate(video.modifiedAt)}</span>;
+                        return <span key={column.id}>{formatDate(file.modifiedAt)}</span>;
                       }
                       if (column.id === "duration") {
-                        return <span key={column.id}>{formatDuration(video.duration)}</span>;
+                        return <span key={column.id}>{isFileEntry(file) ? formatDuration(file.duration) : "—"}</span>;
                       }
                       if (column.id === "resolution") {
-                        return <span key={column.id}>{formatResolution(video)}</span>;
+                        return <span key={column.id}>{isFileEntry(file) ? formatResolution(file) : "—"}</span>;
                       }
                       return <span key={column.id}>-</span>;
                     })}
@@ -357,7 +387,7 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
             )}
           </div>
         )}
-        {workspace && visibleVideos.length > 0 && (
+        {workspace && visibleFiles.length > 0 && (
           <div className="workspace-scroll-actions" aria-label="工作区快速滚动">
             <button
               className="workspace-scroll-action"
@@ -382,7 +412,7 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
         {isExternalDropActive && workspace && (
           <div className="workspace-drop-indicator" aria-hidden="true">
             <FolderOpen size={26} />
-            <span>松开以复制视频到当前工作区</span>
+            <span>松开以复制文件到当前工作区</span>
           </div>
         )}
       </section>

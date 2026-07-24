@@ -6,14 +6,14 @@ import { PreviewPlayer } from "./PreviewPlayer";
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("./VideoThumbnail", () => ({ loadThumbnailData: vi.fn() }));
+vi.mock("./FileThumbnail", () => ({ loadThumbnailData: vi.fn() }));
 vi.mock("../app-utils", async () => {
   const actual = await vi.importActual<typeof import("../app-utils")>("../app-utils");
   return { ...actual, writeClientLog: vi.fn() };
 });
 
 const video = {
-  path: "C:\\Videos\\sample.mp4",
+  path: "C:\\Files\\sample.mp4",
   name: "sample.mp4",
   extension: ".mp4",
   size: 1,
@@ -23,6 +23,8 @@ const video = {
   width: null,
   height: null,
   thumbnailPath: null,
+  kind: "video" as const,
+  previewCapability: "inline" as const,
 };
 
 describe("PreviewPlayer", () => {

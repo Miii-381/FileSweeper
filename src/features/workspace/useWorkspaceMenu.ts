@@ -2,18 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { DirectoryEntry, FileTaskOperation, WorkspaceContextMenu, WorkspaceListing } from "../../app-types";
+import { isFolderEntry, type DirectoryEntry, type FileTaskOperation, type WorkspaceContextMenu, type WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 import type { ContextMenuAction } from "../../components/ThemedContextMenu";
 
-export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspace, copyVideosToDirectory, writeFilesToClipboard, pasteFileClipboard, recycleVideos, recycleDirectory, notify }: {
+export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspace, copyFilesToDirectory, writeFilesToClipboard, pasteFileClipboard, recycleFiles, recycleDirectory, notify }: {
   workspace: WorkspaceListing | null;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   activateWorkspace: (path: string) => Promise<void>;
-  copyVideosToDirectory: (paths: string[]) => Promise<void>;
+  copyFilesToDirectory: (paths: string[]) => Promise<void>;
   writeFilesToClipboard: (paths: string[], operation: FileTaskOperation) => Promise<void>;
   pasteFileClipboard: () => Promise<void>;
-  recycleVideos: (paths: string[]) => Promise<void>;
+  recycleFiles: (paths: string[]) => Promise<void>;
   recycleDirectory: (path: string) => Promise<void>;
   notify: (message: string) => void;
 }) {
@@ -30,8 +30,8 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
     if (!workspace) return;
     event.preventDefault();
     event.stopPropagation();
-    writeClientLog("debug", `打开${paths.length > 0 ? "视频" : "工作区"}菜单：工作区 ${workspace.path}，视频 ${paths.length} 个`);
-    setMenu({ x: Math.max(12, Math.min(event.clientX, window.innerWidth - 252)), y: Math.max(12, Math.min(event.clientY, window.innerHeight - (paths.length > 0 ? 342 : 190))), kind: paths.length > 0 ? "videos" : "workspace", workspacePath: workspace.path, paths, primaryPath: paths[0] ?? null });
+    writeClientLog("debug", `打开${paths.length > 0 ? "文件" : "工作区"}菜单：工作区 ${workspace.path}，文件 ${paths.length} 个`);
+    setMenu({ x: Math.max(12, Math.min(event.clientX, window.innerWidth - 252)), y: Math.max(12, Math.min(event.clientY, window.innerHeight - (paths.length > 0 ? 342 : 190))), kind: paths.length > 0 ? "files" : "workspace", workspacePath: workspace.path, paths, primaryPath: paths[0] ?? null });
   }, [workspace]);
 
   const runAction = useCallback(async (action: ContextMenuAction) => {
@@ -44,16 +44,16 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
     writeClientLog("info", `执行菜单动作：目标 ${current.kind}，动作 ${action}，路径 ${current.paths.length} 个，主路径 ${current.primaryPath ?? current.workspacePath ?? "无"}`);
     try {
       if (action === "refresh" && current.workspacePath) await refreshWorkspace(current.workspacePath, "右键手动刷新");
-      else if (action === "open" && current.kind === "directory" && current.primaryPath) await activateWorkspace(current.primaryPath);
-      else if (action === "open" && current.primaryPath) await invoke("open_video_externally", { path: current.primaryPath });
+      else if (action === "open" && current.primaryPath && (current.kind === "directory" || workspace?.items.find((item) => item.path === current.primaryPath && isFolderEntry(item)))) await activateWorkspace(current.primaryPath);
+      else if (action === "open" && current.primaryPath) await invoke("open_file_externally", { path: current.primaryPath });
       else if (action === "reveal") {
         const path = current.primaryPath ?? current.workspacePath;
         if (path) await invoke("reveal_path", { path });
-      } else if (action === "copyTo" && current.paths.length > 0) await copyVideosToDirectory(current.paths);
+      } else if (action === "copyTo" && current.paths.length > 0) await copyFilesToDirectory(current.paths);
       else if (action === "clipboardCopy" && current.paths.length > 0) await writeFilesToClipboard(current.paths, "copy");
       else if (action === "clipboardCut" && current.paths.length > 0) await writeFilesToClipboard(current.paths, "move");
       else if (action === "paste") await pasteFileClipboard();
-      else if (action === "delete" && current.paths.length > 0) await recycleVideos(current.paths);
+      else if (action === "delete" && current.paths.length > 0) await recycleFiles(current.paths);
       else if (action === "deleteDirectory" && current.kind === "directory" && current.primaryPath && current.canRecycleDirectory) await recycleDirectory(current.primaryPath);
       writeClientLog("info", `菜单动作完成：目标 ${current.kind}，动作 ${action}`);
     } catch (actionError) {
@@ -61,7 +61,7 @@ export function useWorkspaceMenu({ workspace, refreshWorkspace, activateWorkspac
       notify(message);
       writeClientLog("error", `执行工作区右键菜单操作失败：${message}`);
     }
-  }, [activateWorkspace, copyVideosToDirectory, menu, notify, pasteFileClipboard, recycleDirectory, recycleVideos, refreshWorkspace, writeFilesToClipboard]);
+  }, [activateWorkspace, copyFilesToDirectory, menu, notify, pasteFileClipboard, recycleDirectory, recycleFiles, refreshWorkspace, workspace, writeFilesToClipboard]);
 
   useEffect(() => {
     if (!menu) return;

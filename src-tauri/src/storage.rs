@@ -27,7 +27,7 @@ pub(super) fn log_dir() -> Result<PathBuf, String> {
 }
 
 pub(super) fn log_path() -> Result<PathBuf, String> {
-    Ok(log_dir()?.join("video-sweeper.log"))
+    Ok(log_dir()?.join("file-sweeper.log"))
 }
 
 pub(super) fn backgrounds_dir() -> Result<PathBuf, String> {
@@ -160,9 +160,8 @@ pub(super) fn load_thumbnail_index_with_diagnostic(
                 path_string(&path)
             )
         })?;
-        if value.get("version").and_then(serde_json::Value::as_u64)
-            == Some(u64::from(MEDIA_CACHE_VERSION))
-        {
+        let version = value.get("version").and_then(serde_json::Value::as_u64);
+        if version == Some(u64::from(MEDIA_CACHE_VERSION)) {
             serde_json::from_value::<MediaCacheIndex>(value)
                 .map(|index| (index, false))
                 .map_err(|error| {
@@ -171,6 +170,15 @@ pub(super) fn load_thumbnail_index_with_diagnostic(
                         path_string(&path)
                     )
                 })
+        } else if version == Some(2) {
+            let mut index = serde_json::from_value::<MediaCacheIndex>(value).map_err(|error| {
+                format!(
+                    "Unable to decode v2 media cache index {}: {error}",
+                    path_string(&path)
+                )
+            })?;
+            index.version = MEDIA_CACHE_VERSION;
+            Ok((index, true))
         } else {
             let legacy =
                 serde_json::from_value::<LegacyThumbnailIndex>(value).map_err(|error| {
@@ -193,6 +201,8 @@ pub(super) fn load_thumbnail_index_with_diagnostic(
                                     modified_at: entry.modified_at,
                                     thumbnail: Some(CachedThumbnail {
                                         capture_position: entry.capture_position,
+                                        preview_type: default_thumbnail_preview_type(),
+                                        processor_version: default_thumbnail_processor_version(),
                                         thumbnail_file: entry.thumbnail_file,
                                         last_accessed_at: entry.last_accessed_at,
                                     }),
@@ -539,7 +549,7 @@ pub(super) fn cached_thumbnail_path(
             return Some(path_string(&thumbnail_path));
         }
         log::warn!(
-            "Thumbnail index referenced a missing file; falling back to regeneration: video={}, thumbnail={}",
+            "Thumbnail index referenced a missing file; falling back to regeneration: file={}, thumbnail={}",
             path_string(path),
             path_string(&thumbnail_path)
         );
@@ -648,6 +658,18 @@ pub(super) fn record_thumbnail_cache(
     }
     entry.thumbnail = Some(CachedThumbnail {
         capture_position: thumbnail_capture_cache_key(capture_position).to_string(),
+        preview_type: if capture_position == "image-v1" {
+            "image"
+        } else {
+            "video"
+        }
+        .to_string(),
+        processor_version: if capture_position == "image-v1" {
+            "image-320-jpeg-v1"
+        } else {
+            "video-thumbnailer-v1"
+        }
+        .to_string(),
         thumbnail_file,
         last_accessed_at: current_unix_millis(),
     });

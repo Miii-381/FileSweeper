@@ -1,24 +1,30 @@
 import { Panel, PanelResizeHandle } from "react-resizable-panels";
 import type { RefObject } from "react";
 import { PreviewPlayer, type PreviewPlayerHandle } from "../../components/PreviewPlayer";
-import type { VideoEntry } from "../../app-types";
-import { VideoDetails } from "./VideoDetails";
+import { isFileEntry, type CodeTheme, type DirectoryItem, type FileEntry } from "../../app-types";
+import { FileDetails } from "./FileDetails";
+import { ImagePreview, PreviewError } from "./ImagePreview";
+import { TextPreview } from "./TextPreview";
 
 type Props = {
   playerRef: RefObject<PreviewPlayerHandle | null>;
-  video: VideoEntry | null;
+  item: DirectoryItem | null;
   thumbnailPath: string | null;
   autoplay: boolean;
   volume: number;
   muted: boolean;
   metadataLoading: boolean;
-  onEnsureThumbnail: (video: VideoEntry) => void;
+  onEnsureThumbnail: (file: FileEntry) => void;
   onAudioPreferenceChange: (volume: number, muted: boolean) => void;
+  textLanguageMap: Record<string, string>;
+  codeTheme: CodeTheme;
+  textPreviewLatinFont: string;
+  textPreviewCjkFont: string;
 };
 
 export function PreviewPanel({
   playerRef,
-  video,
+  item,
   thumbnailPath,
   autoplay,
   volume,
@@ -26,7 +32,12 @@ export function PreviewPanel({
   metadataLoading,
   onEnsureThumbnail,
   onAudioPreferenceChange,
+  textLanguageMap,
+  codeTheme,
+  textPreviewLatinFont,
+  textPreviewCjkFont,
 }: Props) {
+  const file = item && isFileEntry(item) ? item : null;
   return (
     <>
       <PanelResizeHandle className="panel-resize-handle" aria-label="调整预览栏宽度" />
@@ -34,7 +45,7 @@ export function PreviewPanel({
         <aside
           className="preview-panel"
           tabIndex={0}
-          aria-label="视频预览和文件信息"
+          aria-label="文件预览和文件信息"
           onMouseDown={(event) => {
             if (event.target instanceof Element && !event.target.closest("button, input, select, a, [contenteditable='true']")) {
               event.currentTarget.focus();
@@ -59,18 +70,22 @@ export function PreviewPanel({
             }
           }}
         >
-          <PreviewPlayer
-            ref={playerRef}
-            key={video?.path ?? "empty-preview"}
-            video={video}
-            thumbnailPath={thumbnailPath}
-            autoplay={autoplay}
-            volume={volume}
-            muted={muted}
-            onEnsureThumbnail={onEnsureThumbnail}
-            onAudioPreferenceChange={onAudioPreferenceChange}
-          />
-          <VideoDetails video={video} loading={metadataLoading} />
+          {!item ? <div className="preview-placeholder">选择一个项目以预览</div>
+            : !file ? <div className="preview-placeholder">已选择文件夹</div>
+            : file.kind === "video" ? <PreviewPlayer
+              ref={playerRef}
+              key={file.path}
+              video={file}
+              thumbnailPath={thumbnailPath}
+              autoplay={autoplay}
+              volume={volume}
+              muted={muted}
+              onEnsureThumbnail={onEnsureThumbnail}
+              onAudioPreferenceChange={onAudioPreferenceChange}
+            /> : file.kind === "image" ? <ImagePreview key={file.path} file={file} />
+            : file.kind === "text" ? <TextPreview file={file} languageMap={textLanguageMap} codeTheme={codeTheme} latinFont={textPreviewLatinFont} cjkFont={textPreviewCjkFont} />
+            : <PreviewError message="此文件类型不支持内嵌预览" file={file} />}
+          <FileDetails item={item} loading={file?.kind === "video" && metadataLoading} />
         </aside>
       </Panel>
     </>
