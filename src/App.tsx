@@ -576,28 +576,50 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   }, []);
 
   const refreshMaintenance = useCallback(() => {
-    void invoke<DataManagementSummary>("get_data_management_summary").then(setDataSummary).catch(() => undefined);
+    void invoke<DataManagementSummary>("get_data_management_summary")
+      .then(setDataSummary)
+      .catch((error: unknown) => writeClientLog("warn", `刷新数据管理统计失败：${errorMessage(error)}`));
   }, []);
 
   const clearThumbnails = useCallback(async () => {
     if (!await confirmRecycle("清空全部缩略图缓存？下次浏览时会重新生成缩略图。", "清空缩略图缓存", "清空")) return;
+    writeClientLog("info", "用户确认清空全部缩略图缓存");
     await invoke("clear_thumbnail_cache");
     refreshMaintenance();
+    writeClientLog("info", "缩略图缓存清空命令已完成");
     notify("缩略图缓存已清空");
   }, [confirmRecycle, notify, refreshMaintenance]);
 
   const clearOldLogs = useCallback(async () => {
     if (!await confirmRecycle("删除 30 天前的应用日志？此操作不可恢复。", "清理旧日志", "清理")) return;
+    writeClientLog("info", "用户确认清理 30 天前的应用日志");
     const removed = await invoke<number>("clear_old_logs");
     refreshMaintenance();
+    writeClientLog("info", `旧日志清理命令已完成：删除 ${removed} 个文件`);
     notify(`已清理 ${removed} 个旧日志文件`);
   }, [confirmRecycle, notify, refreshMaintenance]);
 
-  const openManagedPath = useCallback(async (path: string) => { await invoke("reveal_path", { path }); }, []);
+  const openManagedPath = useCallback(async (path: string) => {
+    writeClientLog("info", `请求在资源管理器中打开应用数据位置：${path}`);
+    try {
+      await invoke("reveal_path", { path });
+      writeClientLog("info", `应用数据位置已交给资源管理器：${path}`);
+    } catch (error) {
+      writeClientLog("error", `打开应用数据位置失败：${path}，${errorMessage(error)}`);
+      throw error;
+    }
+  }, []);
 
   const exportDiagnostics = useCallback(async () => {
-    const path = await invoke<string>("export_diagnostics");
-    notify(`诊断信息已导出：${path}`);
+    writeClientLog("info", "用户请求导出诊断信息");
+    try {
+      const path = await invoke<string>("export_diagnostics");
+      writeClientLog("info", `诊断信息导出完成：${path}`);
+      notify(`诊断信息已导出：${path}`);
+    } catch (error) {
+      writeClientLog("error", `导出诊断信息失败：${errorMessage(error)}`);
+      throw error;
+    }
   }, [notify]);
 
   const isExternalDropActive = useWorkspaceMonitoring({

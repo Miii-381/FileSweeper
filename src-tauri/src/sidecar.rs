@@ -35,7 +35,6 @@ pub(super) fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
     let cache = SIDECAR_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(entries) = cache.lock() {
         if let Some(path) = entries.get(name) {
-            log::debug!("Using cached {name} sidecar path: {}", path_string(path));
             return Ok(path.clone());
         }
     } else {
@@ -80,7 +79,7 @@ pub(super) fn resolve_sidecar(name: &str) -> Result<PathBuf, String> {
             } else {
                 log::warn!("Resolved {name} sidecar but could not update the path cache");
             }
-            log::debug!("Resolved {name} sidecar at {}", path_string(&path));
+            log::info!("Resolved {name} sidecar at {}", path_string(&path));
             Ok(path)
         }
         None => {
@@ -121,14 +120,33 @@ pub(super) fn read_child_stderr(child: &mut Child) -> String {
 
 pub(super) fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<(), String> {
     let start = Instant::now();
+    let process_id = child.id();
     loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("Unable to wait for the media sidecar: {error}"))?
-        {
-            Some(status) if status.success() => return Ok(()),
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                log::error!(
+                    "Unable to wait for media sidecar process: process_id={process_id}, elapsed_ms={}, error={error}",
+                    start.elapsed().as_millis()
+                );
+                return Err(format!("Unable to wait for the media sidecar: {error}"));
+            }
+        };
+        match status {
+            Some(status) if status.success() => {
+                log::debug!(
+                    "Media sidecar process completed successfully: process_id={process_id}, status={status}, elapsed_ms={}",
+                    start.elapsed().as_millis()
+                );
+                return Ok(());
+            }
             Some(status) => {
                 let stderr = read_child_stderr(child);
+                log::warn!(
+                    "Media sidecar process exited unsuccessfully: process_id={process_id}, status={status}, elapsed_ms={}, stderr_bytes={}",
+                    start.elapsed().as_millis(),
+                    stderr.len()
+                );
                 if stderr.is_empty() {
                     return Err(format!("The media sidecar exited with status {status}."));
                 }

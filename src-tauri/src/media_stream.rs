@@ -343,6 +343,11 @@ async fn serve_transcoded_audio_stream(
                 .into_response();
         }
     };
+    log::info!(
+        "Starting FFmpeg audio transcode preview: executable={}, path={}",
+        path_string(&ffmpeg),
+        path_string(&audio_path)
+    );
     let mut command = tokio::process::Command::new(ffmpeg);
     command.kill_on_drop(true);
     #[cfg(target_os = "windows")]
@@ -400,6 +405,10 @@ async fn serve_transcoded_audio_stream(
         )
             .into_response();
     };
+    log::info!(
+        "FFmpeg audio preview process started: process_id={process_id}, path={}",
+        path_string(&audio_path)
+    );
     let stream_path = path_string(&audio_path);
     let registration = transcode_controller.replace_with(process_id, &audio_path);
     let stream = async_stream::stream! {
@@ -470,6 +479,11 @@ async fn serve_transcoded_video_stream(
                 .into_response();
         }
     };
+    log::info!(
+        "Starting FFmpeg video transcode preview: executable={}, path={}, start={start:?}",
+        path_string(&ffmpeg),
+        path_string(&video_path)
+    );
     let mut command = tokio::process::Command::new(ffmpeg);
     command.kill_on_drop(true);
     #[cfg(target_os = "windows")]

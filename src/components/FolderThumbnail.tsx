@@ -3,6 +3,7 @@ import { Folder } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 
 import type { FileEntry, FolderEntry, FolderThumbnailSources } from "../app-types";
+import { writeClientLog } from "../app-utils";
 import { FileThumbnail } from "./FileThumbnail";
 
 const pendingPaths = new Set<string>();
@@ -30,7 +31,8 @@ function requestFolderSources(path: string) {
             callbacks.forEach((callback) => callback(byPath.get(folderPath) ?? []));
           });
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          writeClientLog("warn", `读取文件夹缩略图来源失败：${paths.length} 个文件夹，${error instanceof Error ? error.message : String(error)}`);
           paths.forEach((folderPath) => {
             const callbacks = pendingResolvers.get(folderPath) ?? [];
             pendingResolvers.delete(folderPath);

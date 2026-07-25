@@ -113,7 +113,10 @@
 
 .breadcrumb-part {
     align-items: center;
-    min-width: 0;
+    flex: 0 1 auto;
+    min-width: 48px;
+    max-width: clamp(48px, 32vw, 320px);
+    overflow: hidden;
     display: inline-flex
 }
 
@@ -123,10 +126,22 @@
     white-space: nowrap;
     border: 0;
     background: transparent;
-    min-width: 0;
+    flex: 1 1 auto;
+    min-width: 36px;
+    max-width: 100%;
     padding: 2px;
     overflow: hidden;
     cursor: pointer
+}
+
+.breadcrumb-part:first-child button {
+    min-width: 0
+}
+
+.breadcrumb-part:first-child {
+    flex: 0 0 auto;
+    min-width: 0;
+    overflow: visible
 }
 
 .breadcrumb-part button:hover {

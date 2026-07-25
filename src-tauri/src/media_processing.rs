@@ -138,7 +138,8 @@ fn render_thumbnail(
     capture_time: &str,
 ) -> Result<bool, String> {
     log::debug!(
-        "Starting ffmpegthumbnailer: video={}, output={}, capture_time={capture_time}",
+        "Starting ffmpegthumbnailer: executable={}, video={}, output={}, capture_time={capture_time}",
+        path_string(thumbnailer),
         path_string(video_path),
         path_string(output_path)
     );
@@ -163,6 +164,11 @@ fn render_thumbnail(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("Unable to start ffmpegthumbnailer: {error}"))?;
+    log::debug!(
+        "ffmpegthumbnailer process started: process_id={}, video={}",
+        child.id(),
+        path_string(video_path)
+    );
 
     wait_for_child(&mut child, Duration::from_secs(30))?;
     let generated = output_path.is_file();
@@ -195,6 +201,10 @@ pub(super) fn probe_media_info(video_path: &Path) -> Result<VideoMetadata, Strin
         path_string(video_path)
     );
     let ffprobe = resolve_sidecar("ffprobe")?;
+    log::debug!(
+        "Resolved ffprobe executable for metadata read: {}",
+        path_string(&ffprobe)
+    );
     let mut command = Command::new(ffprobe);
     configure_sidecar_command(&mut command);
     let output = command
@@ -210,7 +220,20 @@ pub(super) fn probe_media_info(video_path: &Path) -> Result<VideoMetadata, Strin
         ])
         .arg(video_path)
         .output()
-        .map_err(|error| format!("Unable to start ffprobe: {error}"))?;
+        .map_err(|error| {
+            log::error!(
+                "Unable to start ffprobe metadata process: path={}, error={error}",
+                path_string(video_path)
+            );
+            format!("Unable to start ffprobe: {error}")
+        })?;
+    log::debug!(
+        "ffprobe metadata process completed: path={}, status={}, stdout_bytes={}, stderr_bytes={}",
+        path_string(video_path),
+        output.status,
+        output.stdout.len(),
+        output.stderr.len()
+    );
     if !output.status.success() {
         let error = format!(
             "ffprobe failed: {}",
@@ -451,7 +474,8 @@ fn render_thumbnail_with_ffmpeg(
     };
     let timestamp = format!("{timestamp:.3}");
     log::info!(
-        "Starting FFmpeg thumbnail fallback: video={}, timestamp={timestamp}, output={}",
+        "Starting FFmpeg thumbnail fallback: executable={}, video={}, timestamp={timestamp}, output={}",
+        path_string(&ffmpeg),
         path_string(video_path),
         path_string(output_path)
     );
@@ -490,6 +514,11 @@ fn render_thumbnail_with_ffmpeg(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("Unable to start FFmpeg fallback: {error}"))?;
+    log::debug!(
+        "FFmpeg thumbnail fallback process started: process_id={}, video={}",
+        child.id(),
+        path_string(video_path)
+    );
 
     wait_for_child(&mut child, Duration::from_secs(30))?;
     let generated = output_path.is_file();
