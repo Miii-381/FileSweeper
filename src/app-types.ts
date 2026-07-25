@@ -19,7 +19,7 @@ export type DirectoryEntry = {
   canRecycle: boolean;
 };
 
-export type FileKind = "video" | "audio" | "image" | "text" | "other";
+export type FileKind = "video" | "audio" | "image" | "text" | "pdf" | "other";
 export type PreviewCapability = "inline" | "metadataOnly" | "unavailable";
 
 export type FileEntry = {

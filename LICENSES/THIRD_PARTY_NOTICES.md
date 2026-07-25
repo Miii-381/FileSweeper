@@ -25,6 +25,21 @@
 
 其依赖的 FFmpeg 构建及许可证也必须在替换二进制时重新核验，并随发行包保留完整许可证文本和来源说明。
 
+## PDF.js (`pdfjs-dist`)
+
+- npm 包：`pdfjs-dist` 6.1.200
+- 上游项目：<https://github.com/mozilla/pdf.js>
+- 许可证：Apache License 2.0。
+- 许可证文本：<https://github.com/mozilla/pdf.js/blob/v6.1.200/LICENSE>
+
+本应用仅使用 PDF.js API 与本地打包的 Worker 渲染用户本地 PDF，不嵌入上游完整 viewer 页面，也不使用 CDN。
+
+随应用打包的 PDF.js WASM 解码资源还包含：
+
+- JBIG2 解码器及回退实现，采用 BSD-3-Clause，完整上游声明见 `LICENSES/PDFJS_JBIG2.txt`。
+- OpenJPEG 解码器及回退实现，采用 BSD-2-Clause，完整上游声明见 `LICENSES/PDFJS_OPENJPEG.txt`。
+- qcms 色彩管理模块，采用 BSD-3-Clause，完整上游声明见 `LICENSES/PDFJS_QCMS.txt`。
+
 ## 发布约束
 
 1. 发布人员必须确认安装包不包含本文件列出的可执行文件。

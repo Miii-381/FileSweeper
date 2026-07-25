@@ -347,6 +347,7 @@ pub(super) enum FileKind {
     Audio,
     Image,
     Text,
+    Pdf,
     Other,
 }
 

@@ -181,7 +181,7 @@ fn main() {
             tauri_plugin_log::Builder::new()
                 .clear_targets()
                 .level(log::LevelFilter::Debug)
-                .max_file_size(1024 * 1024)
+                .max_file_size(10 * 1024 * 1024)
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::Folder {

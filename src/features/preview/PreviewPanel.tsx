@@ -5,6 +5,7 @@ import { isFileEntry, type CodeTheme, type DirectoryItem, type FileEntry } from 
 import { FileDetails } from "./FileDetails";
 import { ImagePreview, PreviewError } from "./ImagePreview";
 import { AudioPreview } from "./AudioPreview";
+import { PdfPreview } from "./PdfPreview";
 import { TextPreview } from "./TextPreview";
 
 type Props = {
@@ -62,6 +63,7 @@ export function PreviewPanel({
             }
           }}
           onKeyDown={(event) => {
+            if (file?.kind !== "video") return;
             if (event.target instanceof Element && event.target.closest("button, input, select, a, [contenteditable='true']")) {
               return;
             }
@@ -104,6 +106,7 @@ export function PreviewPanel({
               onAudioPreferenceChange={onAudioPreferenceChange}
             />
             : file.kind === "text" ? <TextPreview file={file} languageMap={textLanguageMap} codeTheme={codeTheme} latinFont={textPreviewLatinFont} cjkFont={textPreviewCjkFont} />
+            : file.kind === "pdf" ? <PdfPreview file={file} />
             : <PreviewError message="此文件类型不支持内嵌预览" file={file} />}
           <FileDetails item={item} loading={(file?.kind === "video" || file?.kind === "audio") && metadataLoading} />
         </aside>

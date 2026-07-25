@@ -128,9 +128,10 @@ export function ImagePreview({ file }: { file: FileEntry }) {
   );
 }
 
-export function PreviewError({ message, file }: { message: string; file?: FileEntry }) {
+export function PreviewError({ message, file, onRetry }: { message: string; file?: FileEntry; onRetry?: () => void }) {
   return <div className="preview-placeholder preview-error">
     <span>无法预览：{message}</span>
+    {onRetry && <button className="command-button" type="button" onClick={onRetry}>重试</button>}
     {file && <button className="command-button" type="button" onClick={() => void invoke("open_file_externally", { path: file.path })}>用系统程序打开</button>}
   </div>;
 }

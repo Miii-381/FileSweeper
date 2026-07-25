@@ -391,6 +391,28 @@
 .text-preview-code { min-width: 0; padding-right: 12px; color: var(--text-primary); font-family: inherit; }
 .text-preview-highlight-notice { margin-left: 12px; padding: 0 6px; border-radius: 4px; background: var(--surface-control); color: var(--text-secondary); font-size: 12px; }
 
+.pdf-preview { display: grid; min-width: 0; min-height: 260px; height: 100%; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--surface-base-rgba); }
+.pdf-preview-toolbar { display: flex; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-raised); }
+.pdf-preview-toolbar button, .pdf-password-prompt button { min-width: 32px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-control); color: var(--text-primary); }
+.pdf-preview-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.pdf-page-jump { display: flex; gap: 4px; align-items: center; color: var(--text-secondary); font-size: 12px; }
+.pdf-page-jump input { width: 4.5em; height: 32px; box-sizing: border-box; appearance: textfield; outline: none; border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 8px; color: var(--text-primary); background: var(--surface-control); text-align: right; font: inherit; font-variant-numeric: tabular-nums; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, background var(--motion-fast) ease; }
+.pdf-page-jump input:hover { background: var(--surface-hover); border-color: var(--border-hover); }
+.pdf-page-jump input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent); }
+.pdf-page-jump input::-webkit-inner-spin-button, .pdf-page-jump input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.pdf-toolbar-spacer { flex: 1; }
+.pdf-zoom-status { min-width: 5.5em; color: var(--text-secondary); text-align: right; font-size: 12px; }
+.pdf-password-prompt { display: flex; gap: 8px; align-items: end; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); background: var(--surface-raised); font-size: 12px; }
+.pdf-password-prompt label { display: grid; flex: 1; gap: 4px; }
+.pdf-password-prompt input { min-width: 0; border: 1px solid var(--border-subtle); border-radius: 5px; color: var(--text-primary); background: var(--surface-base); }
+.pdf-preview-stage { min-width: 0; min-height: 0; overflow: hidden; }
+.pdf-preview-scroll { width: 100%; height: 100%; overflow: auto; outline: none; }
+.pdf-preview-virtual-content { position: relative; min-width: 100%; }
+.pdf-page-card { position: absolute; display: flex; width: 100%; justify-content: center; padding: 0 8px 16px; box-sizing: border-box; }
+.pdf-page-content { position: relative; display: grid; place-items: center; width: max-content; max-width: 100%; min-height: 240px; border: 1px solid var(--border-subtle); background: #fff; box-shadow: 0 3px 12px #0004; }
+.pdf-page-content canvas { display: block; max-width: 100%; height: auto; }
+.pdf-page-error { max-width: min(90%, 360px); margin: 0; padding: 10px; color: var(--danger, #b3261e); text-align: center; font-size: 12px; }
+
 .details-panel dt {
     color: var(--text-muted)
 }

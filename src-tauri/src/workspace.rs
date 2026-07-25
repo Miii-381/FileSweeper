@@ -466,7 +466,9 @@ pub(super) fn list_directory_impl(
             .and_then(|extension| extension.to_str())
             .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
             .unwrap_or_default();
-        let kind = if video_extensions.contains(extension.as_str()) {
+        let kind = if extension == ".pdf" {
+            FileKind::Pdf
+        } else if video_extensions.contains(extension.as_str()) {
             FileKind::Video
         } else if audio_extensions.contains(extension.as_str()) {
             FileKind::Audio
@@ -516,13 +518,15 @@ pub(super) fn list_directory_impl(
                     thumbnail_cache_dir,
                     "audio-cover-v1",
                 ),
-                FileKind::Text | FileKind::Other => None,
+                FileKind::Text | FileKind::Pdf | FileKind::Other => None,
             },
             kind,
             preview_capability: match kind {
-                FileKind::Video | FileKind::Audio | FileKind::Image | FileKind::Text => {
-                    PreviewCapability::Inline
-                }
+                FileKind::Video
+                | FileKind::Audio
+                | FileKind::Image
+                | FileKind::Text
+                | FileKind::Pdf => PreviewCapability::Inline,
                 FileKind::Other => PreviewCapability::MetadataOnly,
             },
         }));
@@ -638,6 +642,54 @@ mod tests {
                 .unwrap();
         assert!(!listing.media_suppressed);
         assert_eq!(listing.items.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pdf_files_remain_visible_in_nomedia_directories_and_are_inline_previewable() {
+        let root = test_directory("nomedia-pdf");
+        fs::write(root.join(".nomedia"), b"").unwrap();
+        fs::write(root.join("guide.PDF"), b"%PDF-1.7").unwrap();
+        let index = Arc::new(Mutex::new(MediaCacheIndex::default()));
+
+        let listing = list_directory_impl(
+            root.to_str().unwrap(),
+            &Preferences::default(),
+            &index,
+            &root,
+            &|| false,
+        )
+        .unwrap();
+        assert!(listing.media_suppressed);
+        let pdf = listing
+            .items
+            .iter()
+            .find_map(|item| match item {
+                DirectoryItem::File(file) if file.name == "guide.PDF" => Some(file),
+                DirectoryItem::Folder(_) | DirectoryItem::File(_) => None,
+            })
+            .expect("PDF file should remain listed");
+        assert_eq!(pdf.kind, FileKind::Pdf);
+        assert_eq!(pdf.preview_capability, PreviewCapability::Inline);
+        assert!(pdf.thumbnail_path.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pdf_classification_overrides_user_configured_text_extensions() {
+        let root = test_directory("pdf-kind");
+        fs::write(root.join("manual.pdf"), b"%PDF-1.7").unwrap();
+        let index = Arc::new(Mutex::new(MediaCacheIndex::default()));
+        let mut settings = Preferences::default();
+        settings.text_extensions.push(".pdf".to_string());
+
+        let listing =
+            list_directory_impl(root.to_str().unwrap(), &settings, &index, &root, &|| false)
+                .unwrap();
+        assert!(listing.items.iter().any(|item| matches!(
+            item,
+            DirectoryItem::File(file) if file.name == "manual.pdf" && file.kind == FileKind::Pdf
+        )));
         fs::remove_dir_all(root).unwrap();
     }
 

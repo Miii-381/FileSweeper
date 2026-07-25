@@ -26,6 +26,8 @@ function fileSpecificRows(file: FileEntry, loading: boolean): DetailRow[] {
       return [{ label: "图像尺寸", value: formatResolution(file) }];
     case "text":
       return [{ label: "预览方式", value: "只读文本/代码" }];
+    case "pdf":
+      return [{ label: "预览方式", value: "PDF 阅读器" }];
     case "other":
       return [{ label: "预览方式", value: "仅文件信息" }];
   }
