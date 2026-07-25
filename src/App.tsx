@@ -169,7 +169,6 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     sortKey,
     sortAscending,
     gridColumns,
-    selectedItem,
     selectedFile,
     visibleFiles,
     visibleListColumns,
@@ -904,8 +903,9 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
       {isPreviewOpen && (
         <PreviewPanel
           playerRef={previewPlayerRef}
-          item={selectedItem}
-          thumbnailPath={selectedFile ? thumbnailPathOverrides.get(selectedFile.path) ?? selectedFile.thumbnailPath : null}
+          selectedPath={selectionAnchor ?? [...selectedFiles][0] ?? null}
+          items={workspace?.items ?? []}
+          thumbnailPathOverrides={thumbnailPathOverrides}
           autoplay={config.settings.autoplay && selectedFiles.size === 1 && !suppressPreviewAutoplay}
           volume={config.settings.volume}
           muted={config.settings.muted}

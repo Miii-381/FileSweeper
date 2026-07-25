@@ -83,6 +83,7 @@ export function useThumbnailQueue({
     tasks.forEach((file) => requests.current.add(file.path));
     const batches = [
       ["generate_thumbnails", tasks.filter((file) => file.kind === "video")],
+      ["generate_audio_thumbnails", tasks.filter((file) => file.kind === "audio")],
       ["generate_image_thumbnails", tasks.filter((file) => file.kind === "image")],
     ] as const;
     void Promise.all(batches.filter(([, files]) => files.length > 0).map(([command, files]) =>

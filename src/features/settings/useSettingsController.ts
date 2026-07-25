@@ -25,6 +25,9 @@ export function useSettingsController({ config, setConfig, workspace, activateWo
 
   const apply = useCallback(async (settings: Preferences): Promise<boolean> => {
     const thumbnailPositionChanged = config.settings.thumbnailCapturePosition !== settings.thumbnailCapturePosition;
+    const extensionGroups = ["videoExtensions", "audioExtensions", "imageExtensions", "textExtensions"] as const;
+    const extensionGroupsChanged = extensionGroups
+      .some((key) => config.settings[key].join("\u0000") !== settings[key].join("\u0000"));
     writeClientLog("info", `提交偏好设置：主题 ${settings.appearance}/${settings.accentTheme}，代码配色 ${settings.codeTheme}，文本字体 ${settings.textPreviewLatinFont}/${settings.textPreviewCjkFont}，缓存 ${settings.thumbnailCacheGb} GiB，取帧 ${settings.thumbnailCapturePosition}，后台并发 ${settings.backgroundSidecarConcurrency}，扩展名 ${settings.videoExtensions.length} 个`);
     try {
       const nextConfig = await invoke<AppConfig>("save_configuration", { settings });
@@ -33,7 +36,12 @@ export function useSettingsController({ config, setConfig, workspace, activateWo
         writeClientLog("info", `缩略图取帧位置发生变化，清空前端内存缓存并重新扫描：${workspace.path}`);
         resetThumbnails();
       }
-      if (workspace) await activateWorkspace(workspace.path, false, nextConfig.settings.rememberWorkspaceFocus);
+      if (workspace && (thumbnailPositionChanged || extensionGroupsChanged)) {
+        writeClientLog("info", `设置影响工作区内容，重新读取当前目录：${workspace.path}`);
+        await activateWorkspace(workspace.path, false, nextConfig.settings.rememberWorkspaceFocus);
+      } else {
+        writeClientLog("debug", "设置仅影响外观或行为，保留当前工作区与预览状态");
+      }
       writeClientLog("info", `偏好设置保存完成：配置版本 ${nextConfig.version}`);
       return true;
     } catch (applyError) {

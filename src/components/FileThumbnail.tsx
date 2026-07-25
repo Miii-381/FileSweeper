@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { File, FileText, Image } from "lucide-react";
+import { File, FileText, Image, Music2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 
 import type { FileEntry, ThumbnailData } from "../app-types";
@@ -202,7 +202,7 @@ export const FileThumbnail = memo(function FileThumbnail({
         />
       ) : (
         <>
-          {file.kind === "image" ? <Image size={compact ? 15 : 26} /> : file.kind === "text" ? <FileText size={compact ? 15 : 26} /> : <File size={compact ? 15 : 26} />}
+          {file.kind === "image" ? <Image size={compact ? 15 : 26} /> : file.kind === "audio" ? <Music2 size={compact ? 15 : 26} /> : file.kind === "text" ? <FileText size={compact ? 15 : 26} /> : <File size={compact ? 15 : 26} />}
           {!compact && <span>{file.extension.slice(1).toUpperCase()}</span>}
         </>
       )}

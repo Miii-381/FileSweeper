@@ -1,7 +1,7 @@
 {
   "name": "file-sweeper",
   "private": true,
-  "version": "0.8.0",
+  "version": "1.2.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -18,18 +18,18 @@
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-log": "^2.0.0",
     "lucide-react": "^0.468.0",
+    "prismjs": "^1.29.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-resizable-panels": "^2.0.0",
-    "prismjs": "^1.29.0",
     "react-zoom-pan-pinch": "^3.7.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@testing-library/react": "^16.3.2",
+    "@types/prismjs": "^1.26.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@types/prismjs": "^1.26.3",
     "@vitejs/plugin-react": "^5.0.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.0.0",

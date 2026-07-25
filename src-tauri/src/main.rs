@@ -66,7 +66,7 @@ use std::{
 use tauri::{Emitter, Manager};
 use tauri_plugin_log::{Target, TargetKind};
 use tower::ServiceExt;
-use tower_http::services::ServeFile;
+use tower_http::{cors::CorsLayer, services::ServeFile};
 #[cfg(target_os = "windows")]
 use windows::{
     core::{Interface, HRESULT, HSTRING, PCWSTR},
@@ -270,11 +270,14 @@ fn main() {
             application_commands::toggle_favorite,
             media_commands::generate_thumbnails,
             media_commands::generate_image_thumbnails,
+            media_commands::generate_audio_thumbnails,
             media_commands::probe_video_metadata_batch_command,
             media_commands::read_thumbnail,
+            media_commands::read_audio_embedded_cover,
             media_commands::read_text_preview,
             media_commands::inspect_image_preview,
             media_commands::get_preview_file_url,
+            media_commands::get_audio_stream_url,
             media_commands::get_video_stream_url,
             media_commands::stop_transcoded_preview,
             file_commands::open_file_externally,

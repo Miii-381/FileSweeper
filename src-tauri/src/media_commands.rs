@@ -208,6 +208,26 @@ pub(super) async fn generate_image_thumbnails(
 }
 
 #[tauri::command]
+pub(super) async fn generate_audio_thumbnails(
+    paths: Vec<String>,
+    app_handle: tauri::AppHandle,
+    thumbnail_cache: tauri::State<'_, ThumbnailCacheMaintenanceState>,
+) -> Result<ThumbnailBatchResult, String> {
+    let cache = thumbnail_cache.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_config()?.settings;
+        media_processing::generate_audio_thumbnail_batch_impl(
+            paths,
+            cache,
+            thumbnail_cache_limit_bytes(settings.thumbnail_cache_gb),
+            app_handle,
+        )
+    })
+    .await
+    .map_err(|error| format!("The audio thumbnail worker failed: {error}"))?
+}
+
+#[tauri::command]
 pub(super) async fn probe_video_metadata_batch_command(
     paths: Vec<String>,
     media_sidecar_pool: tauri::State<'_, MediaSidecarPool>,
@@ -254,6 +274,12 @@ pub(super) async fn read_thumbnail(
             .map(|item| format!(".{}", item.to_ascii_lowercase()))
             .unwrap_or_default();
         let capture_position = if settings
+            .audio_extensions
+            .iter()
+            .any(|item| item == &extension)
+        {
+            "audio-cover-v1".to_string()
+        } else if settings
             .image_extensions
             .iter()
             .any(|item| item == &extension)
@@ -286,6 +312,30 @@ pub(super) async fn read_thumbnail(
 }
 
 #[tauri::command]
+pub(super) async fn read_audio_embedded_cover(path: String) -> Result<String, String> {
+    let log_path = path.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let audio_path = media_stream::resolve_stream_audio_path(&path)?;
+        media_processing::embedded_audio_cover_data_url(&audio_path)
+    })
+    .await
+    .map_err(|error| {
+        log::error!("Embedded audio cover reader worker failed: path={log_path}, error={error}");
+        format!("The embedded audio cover reader failed: {error}")
+    })?;
+    match &result {
+        Ok(data_url) => log::debug!(
+            "Original embedded audio cover read completed: path={log_path}, data_url_bytes={}",
+            data_url.len()
+        ),
+        Err(error) => {
+            log::warn!("Original embedded audio cover read failed: path={log_path}, error={error}")
+        }
+    }
+    result
+}
+
+#[tauri::command]
 pub(super) fn get_preview_file_url(
     path: String,
     video_stream_server: tauri::State<VideoStreamServer>,
@@ -299,6 +349,39 @@ pub(super) fn get_preview_file_url(
         "{base_url}?path={}",
         media_stream::encode_query_component(&path_string(&file))
     ))
+}
+
+#[tauri::command]
+pub(super) fn get_audio_stream_url(
+    path: String,
+    force_transcode: Option<bool>,
+    video_stream_server: tauri::State<VideoStreamServer>,
+) -> Result<String, String> {
+    log::debug!(
+        "Audio stream URL requested: path={path}, force_transcode={}",
+        force_transcode.unwrap_or(false)
+    );
+    let audio = media_stream::resolve_stream_audio_path(&path)?;
+    let base_url = video_stream_server
+        .base_url
+        .as_ref()
+        .ok_or_else(|| "The local audio preview service is unavailable.".to_string())?;
+    let mode = if force_transcode.unwrap_or(false) {
+        "&mode=audio"
+    } else {
+        ""
+    };
+    let url = format!(
+        "{base_url}?path={}{}",
+        media_stream::encode_query_component(&path_string(&audio)),
+        mode
+    );
+    log::debug!(
+        "Audio stream URL created: path={}, transcode={}",
+        path_string(&audio),
+        force_transcode.unwrap_or(false)
+    );
+    Ok(url)
 }
 
 #[tauri::command]

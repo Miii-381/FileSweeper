@@ -516,6 +516,18 @@ pub(super) fn is_supported_video_path(path: &Path, settings: &Preferences) -> bo
         .any(|configured| configured == &extension)
 }
 
+pub(super) fn is_supported_audio_path(path: &Path, settings: &Preferences) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+        .unwrap_or_default();
+    settings
+        .audio_extensions
+        .iter()
+        .any(|configured| configured == &extension)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

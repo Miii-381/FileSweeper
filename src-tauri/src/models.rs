@@ -111,6 +111,15 @@ pub(super) fn default_image_extensions() -> Vec<String> {
     .collect()
 }
 
+pub(super) fn default_audio_extensions() -> Vec<String> {
+    [
+        ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav", ".wma", ".aiff", ".aif", ".ape",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 pub(super) fn default_text_extensions() -> Vec<String> {
     [
         ".txt", ".md", ".json", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".yaml",
@@ -172,6 +181,8 @@ pub(super) struct Preferences {
     pub(super) show_hidden_items: bool,
     pub(super) show_nomedia_media: bool,
     pub(super) video_extensions: Vec<String>,
+    #[serde(default = "default_audio_extensions")]
+    pub(super) audio_extensions: Vec<String>,
     #[serde(default = "default_image_extensions")]
     pub(super) image_extensions: Vec<String>,
     #[serde(default = "default_text_extensions")]
@@ -213,6 +224,7 @@ impl Default for Preferences {
             show_hidden_items: false,
             show_nomedia_media: false,
             video_extensions: default_video_extensions(),
+            audio_extensions: default_audio_extensions(),
             image_extensions: default_image_extensions(),
             text_extensions: default_text_extensions(),
             text_language_map: default_text_language_map(),
@@ -332,6 +344,7 @@ pub(super) struct FolderThumbnailSources {
 #[serde(rename_all = "lowercase")]
 pub(super) enum FileKind {
     Video,
+    Audio,
     Image,
     Text,
     Other,
@@ -537,6 +550,7 @@ pub(super) enum VideoStreamMode {
     #[default]
     Direct,
     Transcode,
+    Audio,
 }
 
 #[derive(Debug, Serialize)]

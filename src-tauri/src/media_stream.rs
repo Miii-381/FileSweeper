@@ -181,6 +181,14 @@ pub(super) fn resolve_stream_video_path(path: &str) -> Result<PathBuf, String> {
     resolve_stream_video_path_with_settings(path, &load_config()?.settings)
 }
 
+pub(super) fn resolve_stream_audio_path(path: &str) -> Result<PathBuf, String> {
+    let audio_path = resolve_stream_file_path(path)?;
+    if !config_store::is_supported_audio_path(&audio_path, &load_config()?.settings) {
+        return Err("The requested file type is not enabled for audio preview.".to_string());
+    }
+    Ok(audio_path)
+}
+
 pub(super) fn resolve_stream_file_path(path: &str) -> Result<PathBuf, String> {
     if !Path::new(path).is_absolute() {
         return Err("The requested video path must be absolute.".to_string());
@@ -234,11 +242,12 @@ async fn serve_video_stream(
         query.path
     );
     // The loopback HTTP boundary validates the path independently of the IPC command.
-    let video_path = match if query.mode == VideoStreamMode::Transcode {
-        resolve_stream_video_path(&query.path)
-    } else {
-        resolve_stream_file_path(&query.path)
-    } {
+    let resolved_path = match query.mode {
+        VideoStreamMode::Transcode => resolve_stream_video_path(&query.path),
+        VideoStreamMode::Audio => resolve_stream_audio_path(&query.path),
+        VideoStreamMode::Direct => resolve_stream_file_path(&query.path),
+    };
+    let video_path = match resolved_path {
         Ok(path) => path,
         Err(error) => {
             log::warn!("Rejected local video stream request: {error}");
@@ -277,6 +286,14 @@ async fn serve_resolved_video_stream(
         )
         .await;
     }
+    if mode == VideoStreamMode::Audio {
+        log::debug!(
+            "Routing local stream request to FFmpeg audio transcode: path={}",
+            path_string(&video_path)
+        );
+        return serve_transcoded_audio_stream(video_path, request, State(transcode_controller))
+            .await;
+    }
 
     let log_path = path_string(&video_path);
     match ServeFile::new(video_path).oneshot(request).await {
@@ -296,6 +313,127 @@ async fn serve_resolved_video_stream(
                 .into_response()
         }
     }
+}
+
+async fn serve_transcoded_audio_stream(
+    audio_path: PathBuf,
+    request: Request,
+    State(transcode_controller): State<Arc<TranscodeController>>,
+) -> Response {
+    if request.method() == Method::HEAD {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "audio/mp4")
+            .header("accept-ranges", "none")
+            .header("cache-control", "no-store")
+            .body(Body::empty())
+            .unwrap_or_else(|error| {
+                log::error!("Unable to build transcoded audio HEAD response: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            });
+    }
+    let ffmpeg = match resolve_sidecar("ffmpeg") {
+        Ok(path) => path,
+        Err(error) => {
+            log::error!("Unable to start audio transcode preview: {error}");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "FFmpeg is unavailable for this preview.",
+            )
+                .into_response();
+        }
+    };
+    let mut command = tokio::process::Command::new(ffmpeg);
+    command.kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    command
+        .as_std_mut()
+        .creation_flags(sidecar::sidecar_creation_flags());
+    let mut child = match command
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(&audio_path)
+        .args([
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            "-frag_duration",
+            "250000",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            log::error!("Unable to spawn FFmpeg audio transcode preview: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to start the FFmpeg audio preview.",
+            )
+                .into_response();
+        }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.start_kill();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FFmpeg audio preview output is unavailable.",
+        )
+            .into_response();
+    };
+    let Some(process_id) = child.id() else {
+        let _ = child.start_kill();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FFmpeg audio preview process identity is unavailable.",
+        )
+            .into_response();
+    };
+    let stream_path = path_string(&audio_path);
+    let registration = transcode_controller.replace_with(process_id, &audio_path);
+    let stream = async_stream::stream! {
+        use tokio::io::AsyncReadExt;
+        let _registration = registration;
+        let mut stdout = tokio::io::BufReader::new(stdout);
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            match stdout.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
+                Err(error) => {
+                    log::warn!("FFmpeg audio preview stream read failed: {error}");
+                    yield Err::<Bytes, std::io::Error>(error);
+                    break;
+                }
+            }
+        }
+        let _ = child.start_kill();
+        if let Err(error) = child.wait().await {
+            log::warn!("Unable to reap FFmpeg audio preview process: process_id={process_id}, error={error}");
+        }
+        log::info!("FFmpeg audio preview stream closed: process_id={process_id}, path={stream_path}");
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "audio/mp4")
+        .header("accept-ranges", "none")
+        .header("cache-control", "no-store")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|error| {
+            log::error!("Unable to build FFmpeg audio preview stream response: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
 }
 
 async fn serve_transcoded_video_stream(
@@ -510,6 +648,10 @@ pub(super) fn start_video_stream_server(
                 };
                 let app = Router::new()
                     .route("/video", get(serve_video_stream).head(serve_video_stream))
+                    // Wavesurfer loads the loopback media URL with fetch(). The WebView origin
+                    // differs from this dynamically assigned loopback port, so every response
+                    // must explicitly permit that cross-origin read.
+                    .layer(CorsLayer::permissive())
                     .with_state(transcode_controller);
                 if let Err(error) = axum::serve(listener, app).await {
                     log::error!("The local video stream server stopped unexpectedly: {error}");

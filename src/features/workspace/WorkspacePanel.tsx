@@ -356,7 +356,7 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
                         return <span key={column.id}>{isFileEntry(file) ? formatBytes(file.size) : "—"}</span>;
                       }
                       if (column.id === "type") {
-                        return <span key={column.id}>{isFolderEntry(file) ? "文件夹" : file.kind === "video" ? "视频" : file.kind === "image" ? "图片" : file.kind === "text" ? "文本" : "其他"}</span>;
+                        return <span key={column.id}>{isFolderEntry(file) ? "文件夹" : file.kind === "video" ? "视频" : file.kind === "audio" ? "音频" : file.kind === "image" ? "图片" : file.kind === "text" ? "文本" : "其他"}</span>;
                       }
                       if (column.id === "modifiedAt") {
                         return <span key={column.id}>{formatDate(file.modifiedAt)}</span>;

@@ -172,15 +172,67 @@
     font: 10px/1 Cascadia Code, Consolas, monospace
 }
 
+.player-progress,
+.player-volume {
+    --range-progress: 0%;
+    appearance: none;
+    background: linear-gradient(to right, var(--accent) 0 var(--range-progress), var(--surface-hover) var(--range-progress) 100%);
+    border: 0;
+    border-radius: 999px;
+    height: 4px;
+    outline: 0
+}
+
 .player-progress {
-    accent-color: var(--accent);
     min-width: 36px;
     flex: 1
 }
 
 .player-volume {
-    accent-color: var(--accent);
     width: 52px
+}
+
+.player-progress::-webkit-slider-runnable-track,
+.player-volume::-webkit-slider-runnable-track {
+    background: transparent;
+    border-radius: inherit;
+    height: 4px
+}
+
+.player-progress::-webkit-slider-thumb,
+.player-volume::-webkit-slider-thumb {
+    appearance: none;
+    background: var(--accent);
+    border: 2px solid var(--surface-raised);
+    border-radius: 50%;
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 28%, transparent);
+    height: 14px;
+    margin-top: -5px;
+    width: 14px
+}
+
+.player-progress::-moz-range-track,
+.player-volume::-moz-range-track {
+    background: var(--surface-hover);
+    border-radius: 999px;
+    height: 4px
+}
+
+.player-progress::-moz-range-progress,
+.player-volume::-moz-range-progress {
+    background: var(--accent);
+    border-radius: 999px;
+    height: 4px
+}
+
+.player-progress::-moz-range-thumb,
+.player-volume::-moz-range-thumb {
+    background: var(--accent);
+    border: 2px solid var(--surface-raised);
+    border-radius: 50%;
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--text-primary) 28%, transparent);
+    height: 10px;
+    width: 10px
 }
 
 .player-controls select {
@@ -308,6 +360,18 @@
 }
 
 .preview-error { color: var(--danger, #e57373); }
+
+.audio-preview { display: grid; grid-template-rows: minmax(260px, 1fr) auto; min-height: 336px; overflow: hidden; background: var(--surface-base-rgba); }
+.audio-preview-visual { position: relative; min-height: 0; margin: 12px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 14px; background: var(--surface-raised-rgba); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-subtle) 38%, transparent), 0 3px 10px color-mix(in srgb, var(--text-primary) 12%, transparent); }
+.audio-preview-artwork { width: 100%; height: 100%; display: grid; place-items: center; overflow: hidden; color: var(--text-primary); background: linear-gradient(135deg, var(--accent-deep), var(--surface-control-rgba)); }
+.audio-preview-artwork img { width: 100%; height: 100%; object-fit: cover; transition: transform 420ms ease; }
+.audio-preview-artwork:hover img { transform: scale(1.025); }
+.audio-waveform { position: absolute; inset: 0; opacity: 0; pointer-events: none; background: linear-gradient(90deg, #00000092, #00000035 22%, #00000035 78%, #00000092); transition: opacity 240ms ease; }
+.audio-waveform canvas { width: 100%; height: 100%; display: block; }
+.audio-waveform.is-visible { opacity: 1; }
+.audio-preview-name { position: absolute; right: 18px; bottom: 14px; left: 18px; z-index: 2; margin: 0; overflow: hidden; color: var(--text-primary); text-align: center; text-overflow: ellipsis; text-shadow: 0 2px 7px color-mix(in srgb, var(--surface-base) 78%, transparent); white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: .01em; pointer-events: none; }
+.audio-player-controls { margin: 0; padding: 10px 12px; border-top: 0; background: var(--surface-raised-rgba); }
+.audio-preview-status { position: absolute; top: 12px; right: 12px; z-index: 2; margin: 0; padding: 5px 9px; border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent); border-radius: 999px; color: var(--text-primary); background: color-mix(in srgb, var(--surface-raised) 80%, transparent); font-size: 12px; backdrop-filter: blur(8px); }
 
 .image-preview { display: flex; min-height: 260px; flex: 1; flex-direction: column; overflow: hidden; }
 .image-preview-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border-subtle); }

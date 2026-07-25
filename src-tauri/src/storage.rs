@@ -658,16 +658,16 @@ pub(super) fn record_thumbnail_cache(
     }
     entry.thumbnail = Some(CachedThumbnail {
         capture_position: thumbnail_capture_cache_key(capture_position).to_string(),
-        preview_type: if capture_position == "image-v1" {
-            "image"
-        } else {
-            "video"
+        preview_type: match capture_position {
+            "image-v1" => "image",
+            "audio-cover-v1" => "audio",
+            _ => "video",
         }
         .to_string(),
-        processor_version: if capture_position == "image-v1" {
-            "image-320-jpeg-v1"
-        } else {
-            "video-thumbnailer-v1"
+        processor_version: match capture_position {
+            "image-v1" => "image-320-jpeg-v1",
+            "audio-cover-v1" => "audio-tag-cover-320-jpeg-v1",
+            _ => "video-thumbnailer-v1",
         }
         .to_string(),
         thumbnail_file,

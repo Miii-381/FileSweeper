@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Maximize2, Minimize2, MonitorPlay, Pause, Play, Video, Volume2, VolumeX } from "lucide-react";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type CSSProperties } from "react";
 
 import type { FileEntry, VideoStreamUrl } from "../app-types";
 import { errorMessage, formatPlaybackTime, writeClientLog } from "../app-utils";
@@ -32,6 +32,8 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   onEnsureThumbnail,
   onAudioPreferenceChange,
 }, ref) {
+  const videoPath = video?.path ?? null;
+  const initialVideoDuration = video?.duration ?? 0;
   const videoElement = useRef<HTMLVideoElement>(null);
   const playerRoot = useRef<HTMLElement>(null);
   const playerSurface = useRef<HTMLDivElement>(null);
@@ -128,40 +130,40 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     return () => {
       active = false;
     };
-  }, [onEnsureThumbnail, thumbnailPath, video]);
+  }, [onEnsureThumbnail, thumbnailPath, videoPath]);
 
   useEffect(() => {
     setStreamUrl(null);
     setIsTranscoded(false);
     setPlayerError(null);
-    setPlayerState(video ? "loading" : "idle");
+    setPlayerState(videoPath ? "loading" : "idle");
     setIsPlaying(false);
     setCurrentTime(0);
-    setDuration(video?.duration ?? 0);
+    setDuration(initialVideoDuration);
     streamStartTime.current = 0;
-    playbackIntent.current = Boolean(video && autoplay);
+    playbackIntent.current = Boolean(videoPath && autoplay);
     activeMediaRequest.current = 0;
     directFallbackRequested.current = false;
     const request = ++streamRequest.current;
-    if (!video) {
+    if (!videoPath) {
       return;
     }
     let active = true;
     // A short stable-selection delay prevents rapid range selection from opening a stream per item.
     const timer = window.setTimeout(() => {
-      void invoke<VideoStreamUrl>("get_video_stream_url", { path: video.path })
+      void invoke<VideoStreamUrl>("get_video_stream_url", { path: videoPath })
         .then(({ url, isTranscoded: nextIsTranscoded, duration: streamDuration }) => {
           if (active && request === streamRequest.current) {
             activeMediaRequest.current = request;
             setStreamUrl(url);
             setIsTranscoded(nextIsTranscoded);
-            setDuration(streamDuration ?? video.duration ?? 0);
+            setDuration(streamDuration ?? initialVideoDuration);
             writeClientLog(
               "info",
-              `播放器流地址创建完成：${video.path}，转码 ${nextIsTranscoded}，时长 ${streamDuration ?? video.duration ?? 0}`,
+              `播放器流地址创建完成：${videoPath}，转码 ${nextIsTranscoded}，时长 ${streamDuration ?? initialVideoDuration}`,
             );
           } else {
-            writeClientLog("debug", `播放器流地址结果已过期，忽略 UI 更新：${video.path}，请求 ${request}`);
+            writeClientLog("debug", `播放器流地址结果已过期，忽略 UI 更新：${videoPath}，请求 ${request}`);
           }
         })
         .catch((error) => {
@@ -169,19 +171,19 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
             const message = errorMessage(error);
             setPlayerError(message);
             setPlayerState("error");
-            writeClientLog("error", `创建预览流失败：${video.path}，${message}`);
+            writeClientLog("error", `创建预览流失败：${videoPath}，${message}`);
           }
         });
     }, 250);
     return () => {
       active = false;
       window.clearTimeout(timer);
-      writeClientLog("debug", `播放器视频发生切换或卸载，停止旧转码：${video.path}`);
-      void invoke("stop_transcoded_preview", { path: video.path }).catch((error: unknown) => {
-        writeClientLog("warn", `停止旧转码预览失败：${video.path}，${errorMessage(error)}`);
+      writeClientLog("debug", `播放器视频发生切换或卸载，停止旧转码：${videoPath}`);
+      void invoke("stop_transcoded_preview", { path: videoPath }).catch((error: unknown) => {
+        writeClientLog("warn", `停止旧转码预览失败：${videoPath}，${errorMessage(error)}`);
       });
     };
-  }, [video]);
+  }, [videoPath]);
 
   useEffect(() => {
     const element = videoElement.current;
@@ -511,6 +513,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
           max={duration || 0}
           step="0.1"
           value={Math.min(currentTime, duration || 0)}
+          style={{ "--range-progress": `${duration > 0 ? Math.min(currentTime / duration, 1) * 100 : 0}%` } as CSSProperties}
           aria-label="播放进度"
           disabled={duration <= 0}
           onPointerDown={() => {
@@ -550,6 +553,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
           min="0"
           max="100"
           value={isMuted ? 0 : playerVolume}
+          style={{ "--range-progress": `${isMuted ? 0 : playerVolume}%` } as CSSProperties}
           aria-label="音量"
           disabled={playerState !== "ready"}
           onInput={(event) => {

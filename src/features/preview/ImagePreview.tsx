@@ -8,7 +8,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import type { FileEntry } from "../../app-types";
-import { errorMessage } from "../../app-utils";
+import { errorMessage, writeClientLog } from "../../app-utils";
 
 type ImagePreviewInfo = { width: number; height: number; allowed: boolean; reason: string | null };
 
@@ -48,17 +48,25 @@ export function ImagePreview({ file }: { file: FileEntry }) {
     setError(null);
     setRotation(0);
     setScale(1);
+    writeClientLog("debug", `开始加载图片预览模块资源：${file.path}`);
     void Promise.all([
       invoke<ImagePreviewInfo>("inspect_image_preview", { path: file.path }),
       invoke<string>("get_preview_file_url", { path: file.path }),
     ]).then(([info, url]) => {
       if (!active) return;
       if (!info.allowed) {
+        writeClientLog("warn", `图片预览被保护策略拒绝：${file.path}，${info.reason ?? "未知原因"}`);
         setError(info.reason ?? "图片不满足预览保护条件");
         return;
       }
+      writeClientLog("debug", `图片预览资源已就绪：${file.path}，${info.width} × ${info.height}`);
       setSource(url);
-    }).catch((reason) => active && setError(errorMessage(reason)));
+    }).catch((reason) => {
+      if (!active) return;
+      const message = errorMessage(reason);
+      writeClientLog("error", `图片预览模块加载失败：${file.path}，${message}`);
+      setError(message);
+    });
     return () => { active = false; };
   }, [file.path]);
 

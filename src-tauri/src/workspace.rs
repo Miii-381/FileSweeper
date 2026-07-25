@@ -394,6 +394,11 @@ pub(super) fn list_directory_impl(
         .iter()
         .map(String::as_str)
         .collect();
+    let audio_extensions: HashSet<&str> = settings
+        .audio_extensions
+        .iter()
+        .map(String::as_str)
+        .collect();
     let image_extensions: HashSet<&str> = settings
         .image_extensions
         .iter()
@@ -463,6 +468,8 @@ pub(super) fn list_directory_impl(
             .unwrap_or_default();
         let kind = if video_extensions.contains(extension.as_str()) {
             FileKind::Video
+        } else if audio_extensions.contains(extension.as_str()) {
+            FileKind::Audio
         } else if image_extensions.contains(extension.as_str()) {
             FileKind::Image
         } else if text_extensions.contains(extension.as_str()) {
@@ -470,7 +477,7 @@ pub(super) fn list_directory_impl(
         } else {
             FileKind::Other
         };
-        if media_suppressed && matches!(kind, FileKind::Video | FileKind::Image) {
+        if media_suppressed && matches!(kind, FileKind::Video | FileKind::Audio | FileKind::Image) {
             continue;
         }
         let cached_metadata = matches!(kind, FileKind::Video)
@@ -502,11 +509,20 @@ pub(super) fn list_directory_impl(
                     thumbnail_cache_dir,
                     "image-v1",
                 ),
+                FileKind::Audio => cached_thumbnail_path(
+                    &entry_path,
+                    &metadata,
+                    thumbnail_index,
+                    thumbnail_cache_dir,
+                    "audio-cover-v1",
+                ),
                 FileKind::Text | FileKind::Other => None,
             },
             kind,
             preview_capability: match kind {
-                FileKind::Video | FileKind::Image | FileKind::Text => PreviewCapability::Inline,
+                FileKind::Video | FileKind::Audio | FileKind::Image | FileKind::Text => {
+                    PreviewCapability::Inline
+                }
                 FileKind::Other => PreviewCapability::MetadataOnly,
             },
         }));
@@ -546,7 +562,10 @@ pub(super) fn list_folder_thumbnail_sources_impl(
                 .into_iter()
                 .filter_map(|item| match item {
                     DirectoryItem::File(file)
-                        if matches!(file.kind, FileKind::Image | FileKind::Video) =>
+                        if matches!(
+                            file.kind,
+                            FileKind::Image | FileKind::Video | FileKind::Audio
+                        ) =>
                     {
                         Some(file)
                     }
@@ -691,10 +710,10 @@ mod tests {
         );
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].files.len(), 4);
-        assert!(sources[0]
-            .files
-            .iter()
-            .all(|file| matches!(file.kind, FileKind::Image | FileKind::Video)));
+        assert!(sources[0].files.iter().all(|file| matches!(
+            file.kind,
+            FileKind::Image | FileKind::Video | FileKind::Audio
+        )));
         assert!(sources[0]
             .files
             .iter()

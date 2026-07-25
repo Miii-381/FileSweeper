@@ -21,11 +21,15 @@ pub(super) fn normalize_extensions(extensions: &mut Vec<String>) {
 
 pub(super) fn normalize_extension_groups(settings: &mut Preferences) {
     normalize_extensions(&mut settings.video_extensions);
+    normalize_extensions(&mut settings.audio_extensions);
     normalize_extensions(&mut settings.image_extensions);
     normalize_extensions(&mut settings.text_extensions);
     let mut occupied = HashSet::new();
     settings
         .video_extensions
+        .retain(|extension| occupied.insert(extension.clone()));
+    settings
+        .audio_extensions
         .retain(|extension| occupied.insert(extension.clone()));
     settings
         .image_extensions

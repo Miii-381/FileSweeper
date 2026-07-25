@@ -48,6 +48,7 @@ export function SettingsDialog({
   const [settingsDraft, setSettingsDraft] = useState<Preferences>(() => ({
     ...settings,
     videoExtensions: [...settings.videoExtensions],
+    audioExtensions: [...settings.audioExtensions],
     managedVideoExtensions: [...settings.managedVideoExtensions],
     imageExtensions: [...settings.imageExtensions],
     textExtensions: [...settings.textExtensions],
@@ -280,6 +281,18 @@ export function SettingsDialog({
                     }}>移除</button>}
                   </div>
                 </div>
+                <label className="setting-row">
+                  <span>音频格式</span>
+                  <input
+                    className="extension-input"
+                    value={settingsDraft.audioExtensions.join(", ")}
+                    aria-label="音频扩展名"
+                    onChange={(event) => setSettingsDraft((draft) => ({
+                      ...draft,
+                      audioExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
+                    }))}
+                  />
+                </label>
                 <label className="setting-row">
                   <span>图片格式</span>
                   <input
@@ -576,7 +589,8 @@ export function SettingsDialog({
 
               <section className="settings-section">
                 <h3>关于与诊断</h3>
-                <p className="settings-description">FileSweeper {aboutInfo?.appVersion ?? "正在读取版本信息"}</p>
+                <p className="settings-description">FileSweeper v{aboutInfo?.appVersion ?? "正在读取版本信息"}</p>
+                <p className="settings-description">应用自有源代码采用 MIT 许可证；FFmpeg、FFprobe 与 ffmpegthumbnailer 由用户自行安装，许可证与来源说明见“打开许可证”。</p>
                 {aboutInfo && <div className="about-sidecars">{Object.entries(aboutInfo.sidecars).map(([name, version]) => <span key={name}>{name}: {version}</span>)}</div>}
                 <div className="settings-action-row">
                   <button type="button" className="command-button" onClick={() => void onExportDiagnostics()}>导出诊断信息</button>

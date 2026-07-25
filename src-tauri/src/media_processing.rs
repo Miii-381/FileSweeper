@@ -1,4 +1,7 @@
 use super::*;
+use lofty::{picture::PictureType, prelude::TaggedFileExt};
+
+const MAX_AUDIO_COVER_BYTES: usize = 32 * 1024 * 1024;
 pub(super) struct MediaSidecarPool(pub(super) Arc<MediaSidecarPermits>);
 
 pub(super) struct MediaSidecarPermits {
@@ -863,6 +866,146 @@ pub(super) fn generate_image_thumbnail_batch_impl(
     })
 }
 
+/// Extracts the front cover embedded in the audio tag and writes it into the shared JPEG cache.
+/// This deliberately runs only for visible thumbnail requests, never during directory enumeration.
+fn generate_audio_thumbnail_impl(
+    path: &Path,
+    thumbnail_cache: &ThumbnailCacheMaintenanceState,
+) -> Result<PathBuf, String> {
+    let audio_path = fs::canonicalize(path)
+        .map_err(|error| format!("Unable to access this audio file: {error}"))?;
+    let metadata = fs::metadata(&audio_path)
+        .map_err(|error| format!("Unable to inspect this audio file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("The selected path is not an audio file.".to_string());
+    }
+    if let Some(cached) = cached_thumbnail_path(
+        &audio_path,
+        &metadata,
+        &thumbnail_cache.index,
+        &thumbnail_cache.directory,
+        "audio-cover-v1",
+    ) {
+        return Ok(PathBuf::from(cached));
+    }
+
+    let cover_data = embedded_audio_cover_data(&audio_path)?;
+    let decoded = image::load_from_memory(&cover_data)
+        .map_err(|error| format!("Unable to decode the embedded audio cover: {error}"))?;
+    let output = thumbnail_path_for(&audio_path)?;
+    let temporary = output.with_extension("tmp.jpg");
+    decoded
+        .thumbnail(320, 320)
+        .to_rgb8()
+        .save_with_format(&temporary, image::ImageFormat::Jpeg)
+        .map_err(|error| format!("Unable to write audio cover thumbnail: {error}"))?;
+    let _maintenance = thumbnail_cache
+        .lock
+        .lock()
+        .map_err(|_| "Unable to access the thumbnail cache maintenance lock.".to_string())?;
+    if output.exists() {
+        fs::remove_file(&output)
+            .map_err(|error| format!("Unable to replace the cached audio cover: {error}"))?;
+    }
+    fs::rename(&temporary, &output)
+        .map_err(|error| format!("Unable to commit audio cover thumbnail: {error}"))?;
+    record_thumbnail_cache(
+        &audio_path,
+        &metadata,
+        &output,
+        &thumbnail_cache.index,
+        "audio-cover-v1",
+        true,
+    )?;
+    log::info!(
+        "Embedded audio cover cached: audio={}, thumbnail={}",
+        path_string(&audio_path),
+        path_string(&output)
+    );
+    Ok(output)
+}
+
+fn embedded_audio_cover_data(audio_path: &Path) -> Result<Vec<u8>, String> {
+    let tagged_file = lofty::read_from_path(audio_path)
+        .map_err(|error| format!("Unable to read embedded audio tags: {error}"))?;
+    let picture = tagged_file
+        .tags()
+        .iter()
+        .flat_map(|tag| tag.pictures().iter())
+        .find(|picture| picture.pic_type() == PictureType::CoverFront)
+        .or_else(|| {
+            tagged_file
+                .tags()
+                .iter()
+                .flat_map(|tag| tag.pictures().iter())
+                .next()
+        })
+        .ok_or_else(|| "No embedded cover image was found in the audio tags.".to_string())?;
+    if picture.data().len() > MAX_AUDIO_COVER_BYTES {
+        return Err("The embedded audio cover exceeds the 32 MiB safety limit.".to_string());
+    }
+    Ok(picture.data().to_vec())
+}
+
+/// Returns the original tag picture as a browser-ready data URL without resizing or re-encoding it.
+/// The grid intentionally uses the 320px JPEG cache instead, so directory rendering stays cheap.
+pub(super) fn embedded_audio_cover_data_url(audio_path: &Path) -> Result<String, String> {
+    let data = embedded_audio_cover_data(audio_path)?;
+    let mime = if data.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if data.starts_with(b"BM") {
+        "image/bmp"
+    } else if data.starts_with(b"II*\0") || data.starts_with(b"MM\0*") {
+        "image/tiff"
+    } else {
+        return Err("The embedded audio cover uses an unsupported image format.".to_string());
+    };
+    Ok(format!(
+        "data:{mime};base64,{}",
+        BASE64_STANDARD.encode(data)
+    ))
+}
+
+pub(super) fn generate_audio_thumbnail_batch_impl(
+    paths: Vec<String>,
+    thumbnail_cache: ThumbnailCacheMaintenanceState,
+    cache_limit_bytes: u64,
+    app_handle: tauri::AppHandle,
+) -> Result<ThumbnailBatchResult, String> {
+    let mut thumbnails = Vec::new();
+    let mut failures = Vec::new();
+    for path in paths {
+        match generate_audio_thumbnail_impl(Path::new(&path), &thumbnail_cache) {
+            Ok(thumbnail_path) => {
+                let normalized = fs::canonicalize(&path)
+                    .map(|item| path_string(&item))
+                    .unwrap_or(path);
+                let result = ThumbnailResult {
+                    path: normalized,
+                    thumbnail_path: path_string(&thumbnail_path),
+                };
+                let _ = app_handle.emit("thumbnail-generated", &result);
+                thumbnails.push(result);
+            }
+            Err(error) => failures.push(ThumbnailFailure { path, error }),
+        }
+    }
+    maintain_thumbnail_cache(
+        &thumbnail_cache.directory,
+        &thumbnail_cache.index,
+        &thumbnail_cache.lock,
+        cache_limit_bytes,
+    )?;
+    Ok(ThumbnailBatchResult {
+        thumbnails,
+        failures,
+    })
+}
+
 pub(super) fn thumbnail_data_impl(
     path: &Path,
     thumbnail_index: &Arc<Mutex<MediaCacheIndex>>,
@@ -910,4 +1053,52 @@ pub(super) fn thumbnail_data_impl(
         thumbnail_path: path_string(&thumbnail_path),
         data_url: format!("data:image/jpeg;base64,{}", BASE64_STANDARD.encode(bytes)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_id3_cover_is_read_from_an_audio_tag() {
+        // A one-pixel GIF keeps this fixture small while exercising the ID3v2 APIC path used by
+        // common MP3 files. A minimal MPEG frame follows the tag so the file is a valid MP3 probe.
+        const GIF: &[u8] = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+        let mut apic = vec![
+            0, b'i', b'm', b'a', b'g', b'e', b'/', b'g', b'i', b'f', 0, 3, 0,
+        ];
+        apic.extend_from_slice(GIF);
+        let mut frame = b"APIC".to_vec();
+        frame.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&apic);
+        let size = frame.len();
+        let mut file = b"ID3\x03\0\0".to_vec();
+        file.extend_from_slice(&[
+            ((size >> 21) & 0x7f) as u8,
+            ((size >> 14) & 0x7f) as u8,
+            ((size >> 7) & 0x7f) as u8,
+            (size & 0x7f) as u8,
+        ]);
+        file.extend_from_slice(&frame);
+        for _ in 0..3 {
+            file.extend_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+            file.extend(std::iter::repeat_n(0, 413));
+        }
+        let path = std::env::temp_dir().join(format!(
+            "file-sweeper-audio-cover-{}-{}.mp3",
+            std::process::id(),
+            current_unix_millis()
+        ));
+        fs::write(&path, file).unwrap();
+
+        let cover = embedded_audio_cover_data(&path).unwrap();
+        let cover_url = embedded_audio_cover_data_url(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(cover, GIF);
+        assert_eq!(
+            cover_url,
+            format!("data:image/gif;base64,{}", BASE64_STANDARD.encode(GIF))
+        );
+    }
 }

@@ -1,21 +1,23 @@
 import { Panel, PanelResizeHandle } from "react-resizable-panels";
-import type { RefObject } from "react";
+import { useMemo, type RefObject } from "react";
 import { PreviewPlayer, type PreviewPlayerHandle } from "../../components/PreviewPlayer";
 import { isFileEntry, type CodeTheme, type DirectoryItem, type FileEntry } from "../../app-types";
 import { FileDetails } from "./FileDetails";
 import { ImagePreview, PreviewError } from "./ImagePreview";
+import { AudioPreview } from "./AudioPreview";
 import { TextPreview } from "./TextPreview";
 
 type Props = {
   playerRef: RefObject<PreviewPlayerHandle | null>;
-  item: DirectoryItem | null;
-  thumbnailPath: string | null;
+  selectedPath: string | null;
+  items: DirectoryItem[];
+  thumbnailPathOverrides: ReadonlyMap<string, string>;
   autoplay: boolean;
   volume: number;
   muted: boolean;
   metadataLoading: boolean;
   onEnsureThumbnail: (file: FileEntry) => void;
-  onAudioPreferenceChange: (volume: number, muted: boolean) => void;
+  onAudioPreferenceChange: (volume: number, muted: boolean, persistImmediately?: boolean) => void;
   textLanguageMap: Record<string, string>;
   codeTheme: CodeTheme;
   textPreviewLatinFont: string;
@@ -24,8 +26,9 @@ type Props = {
 
 export function PreviewPanel({
   playerRef,
-  item,
-  thumbnailPath,
+  selectedPath,
+  items,
+  thumbnailPathOverrides,
   autoplay,
   volume,
   muted,
@@ -37,7 +40,14 @@ export function PreviewPanel({
   textPreviewLatinFont,
   textPreviewCjkFont,
 }: Props) {
+  // The workspace may refresh its item objects while the selection remains unchanged.
+  // Resolve the display data here, but let every media preview use its path as its lifecycle key.
+  const item = useMemo(
+    () => items.find((entry) => entry.path === selectedPath) ?? null,
+    [items, selectedPath],
+  );
   const file = item && isFileEntry(item) ? item : null;
+  const thumbnailPath = file ? thumbnailPathOverrides.get(file.path) ?? file.thumbnailPath : null;
   return (
     <>
       <PanelResizeHandle className="panel-resize-handle" aria-label="调整预览栏宽度" />
@@ -83,9 +93,19 @@ export function PreviewPanel({
               onEnsureThumbnail={onEnsureThumbnail}
               onAudioPreferenceChange={onAudioPreferenceChange}
             /> : file.kind === "image" ? <ImagePreview key={file.path} file={file} />
+            : file.kind === "audio" ? <AudioPreview
+              key={file.path}
+              file={file}
+              thumbnailPath={thumbnailPath}
+              autoplay={autoplay}
+              volume={volume}
+              muted={muted}
+              onEnsureThumbnail={onEnsureThumbnail}
+              onAudioPreferenceChange={onAudioPreferenceChange}
+            />
             : file.kind === "text" ? <TextPreview file={file} languageMap={textLanguageMap} codeTheme={codeTheme} latinFont={textPreviewLatinFont} cjkFont={textPreviewCjkFont} />
             : <PreviewError message="此文件类型不支持内嵌预览" file={file} />}
-          <FileDetails item={item} loading={file?.kind === "video" && metadataLoading} />
+          <FileDetails item={item} loading={(file?.kind === "video" || file?.kind === "audio") && metadataLoading} />
         </aside>
       </Panel>
     </>

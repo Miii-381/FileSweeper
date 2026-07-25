@@ -26,8 +26,12 @@ pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, S
         if !metadata.is_file() && !metadata.is_dir() {
             return Err("Only files and folders can be selected.".to_string());
         }
-        if seen_paths.insert(path_string(&normalized).to_ascii_lowercase()) {
+        let normalized_text = path_string(&normalized);
+        if seen_paths.insert(normalized_text.to_ascii_lowercase()) {
+            log::debug!("Item path accepted during normalization: {normalized_text}");
             normalized_paths.push(normalized);
+        } else {
+            log::debug!("Duplicate item path removed during normalization: {normalized_text}");
         }
     }
 
@@ -36,14 +40,16 @@ pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, S
         return Err("Select at least one file or folder.".to_string());
     }
     let candidates = normalized_paths.clone();
+    let before_descendant_filter = normalized_paths.len();
     normalized_paths.retain(|path| {
         !candidates
             .iter()
             .any(|other| other != path && other.is_dir() && is_same_or_descendant_path(path, other))
     });
     log::debug!(
-        "Item paths normalized: requested={requested}, accepted={}",
-        normalized_paths.len()
+        "Item paths normalized: requested={requested}, accepted={}, descendants_removed={}",
+        normalized_paths.len(),
+        before_descendant_filter.saturating_sub(normalized_paths.len())
     );
     Ok(normalized_paths)
 }
@@ -379,32 +385,37 @@ fn transfer_one(
     let source_path = match fs::canonicalize(&source) {
         Ok(path) => path,
         Err(error) => {
+            log::warn!("File task item source resolution failed: source={source}, error={error}");
             return FileTaskItemResult {
                 source_path: source,
                 destination_path: None,
                 status: FileTaskItemStatus::Failed,
                 error: Some(format!("Unable to access the source file: {error}")),
-            }
+            };
         }
     };
     let normalized_source = path_string(&source_path);
     let metadata = match fs::metadata(&source_path) {
         Ok(metadata) if metadata.is_file() || metadata.is_dir() => metadata,
         Ok(_) => {
+            log::warn!("File task item skipped because it is not a regular file or folder: {normalized_source}");
             return FileTaskItemResult {
                 source_path: normalized_source,
                 destination_path: None,
                 status: FileTaskItemStatus::Skipped,
                 error: Some("The source is not a regular file or folder.".to_string()),
-            }
+            };
         }
         Err(error) => {
+            log::warn!(
+                "File task item metadata read failed: source={normalized_source}, error={error}"
+            );
             return FileTaskItemResult {
                 source_path: normalized_source,
                 destination_path: None,
                 status: FileTaskItemStatus::Failed,
                 error: Some(format!("Unable to inspect the source file: {error}")),
-            }
+            };
         }
     };
     if should_skip_same_directory_transfer(&source_path, destination, operation) {
@@ -420,6 +431,11 @@ fn transfer_one(
         };
     }
     if source_path.is_dir() && is_same_or_descendant_path(destination, &source_path) {
+        log::warn!(
+            "File task item rejected because destination is inside source directory: source={}, destination={}",
+            normalized_source,
+            path_string(destination)
+        );
         return FileTaskItemResult {
             source_path: normalized_source,
             destination_path: None,
@@ -477,6 +493,14 @@ fn transfer_one(
 fn emit_task_snapshot(control: &FileTaskControl, app_handle: &tauri::AppHandle) {
     match control.snapshot.lock().map(|snapshot| snapshot.clone()) {
         Ok(snapshot) => {
+            log::debug!(
+                "Emitting file task progress: task_id={}, state={:?}, completed={}/{}, results={}",
+                snapshot.id,
+                snapshot.state,
+                snapshot.completed_items,
+                snapshot.total_items,
+                snapshot.results.len()
+            );
             if let Err(error) = app_handle.emit("file-task-progress", &snapshot) {
                 log::warn!(
                     "File task state changed but UI event delivery failed: task_id={}, state={:?}, error={error}",

@@ -28,13 +28,13 @@ export function useMediaMetadata({ workspace, setWorkspace, selectedFile, sortKe
 
   const loadWorkspaceMetadata = useCallback(async () => {
     if (!workspace || metadataLoading) return;
-    const paths = workspace.items.filter(isFileEntry).filter((file) => file.kind === "video").map((file) => file.path).filter((path) => !probedPaths.current.has(path));
+    const paths = workspace.items.filter(isFileEntry).filter((file) => file.kind === "video" || file.kind === "audio").map((file) => file.path).filter((path) => !probedPaths.current.has(path));
     if (paths.length === 0) return;
     const requestId = ++batchRequest.current;
     const workspacePath = workspace.path;
     const metadataByPath = new Map<string, VideoMetadata>();
     setMetadataLoading(true);
-    writeClientLog("info", `开始读取媒体信息：${paths.length} 个视频`);
+    writeClientLog("info", `开始读取媒体信息：${paths.length} 个视频或音频文件`);
     try {
       const transportWindow = Math.max(1, concurrency);
       for (let start = 0; start < paths.length; start += transportWindow) {
@@ -52,7 +52,7 @@ export function useMediaMetadata({ workspace, setWorkspace, selectedFile, sortKe
           const metadata = metadataByPath.get(item.path);
           return metadata ? { ...item, duration: metadata.duration, width: metadata.width, height: metadata.height } : item;
         }) }));
-        writeClientLog("info", `媒体信息读取完成：${paths.length} 个视频`);
+        writeClientLog("info", `媒体信息读取完成：${paths.length} 个视频或音频文件`);
       }
     } catch (loadError) {
       if (requestId === batchRequest.current) { const message = errorMessage(loadError); notify(message); writeClientLog("warn", `媒体信息读取失败：${message}`); }
@@ -69,10 +69,11 @@ export function useMediaMetadata({ workspace, setWorkspace, selectedFile, sortKe
     const requestId = ++selectedRequest.current;
     const currentFile = selectedFile;
     const workspacePath = workspace?.path;
-    const requiresProbe = currentFile && (currentFile.duration === null || currentFile.width === null || currentFile.height === null);
+    const supportsMediaMetadata = currentFile?.kind === "video" || currentFile?.kind === "audio";
+    const requiresProbe = supportsMediaMetadata && (currentFile.duration === null || currentFile.width === null || currentFile.height === null);
     if (!currentFile || !workspacePath || !requiresProbe || probedPaths.current.has(currentFile.path)) { setSelectedMetadataLoading(false); return; }
     setSelectedMetadataLoading(true);
-    writeClientLog("debug", `补充读取右栏媒体信息：${currentFile.path}`);
+    writeClientLog("debug", `补充读取右栏媒体信息：类别 ${currentFile.kind}，路径 ${currentFile.path}`);
     void invoke<MetadataBatchResult>("probe_video_metadata_batch_command", { paths: [currentFile.path] }).then((result) => {
       if (requestId !== selectedRequest.current) { writeClientLog("debug", `右栏媒体信息结果已过期，忽略：${currentFile.path}`); return; }
       probedPaths.current.add(currentFile.path);

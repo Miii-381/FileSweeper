@@ -19,7 +19,7 @@ export type DirectoryEntry = {
   canRecycle: boolean;
 };
 
-export type FileKind = "video" | "image" | "text" | "other";
+export type FileKind = "video" | "audio" | "image" | "text" | "other";
 export type PreviewCapability = "inline" | "metadataOnly" | "unavailable";
 
 export type FileEntry = {
@@ -219,6 +219,7 @@ export type Preferences = {
   showHiddenItems: boolean;
   showNomediaMedia: boolean;
   videoExtensions: string[];
+  audioExtensions: string[];
   imageExtensions: string[];
   textExtensions: string[];
   textLanguageMap: Record<string, string>;
