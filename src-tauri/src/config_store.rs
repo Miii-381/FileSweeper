@@ -250,6 +250,7 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
 
     config.settings.volume = config.settings.volume.min(100);
     config.settings.background_opacity = config.settings.background_opacity.min(100);
+    config.settings.background_blur = config.settings.background_blur.min(100);
     if let Some(background) = &config.settings.background_image {
         let valid_name = Path::new(background)
             .file_name()

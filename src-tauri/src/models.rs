@@ -77,6 +77,10 @@ pub(super) fn default_background_opacity() -> u8 {
     50
 }
 
+pub(super) fn default_background_blur() -> u8 {
+    35
+}
+
 pub(super) fn available_parallelism() -> usize {
     match std::thread::available_parallelism() {
         Ok(parallelism) => parallelism.get(),
@@ -207,6 +211,8 @@ pub(super) struct Preferences {
     pub(super) background_image: Option<String>,
     #[serde(default = "default_background_opacity")]
     pub(super) background_opacity: u8,
+    #[serde(default = "default_background_blur")]
+    pub(super) background_blur: u8,
 }
 
 impl Default for Preferences {
@@ -237,6 +243,7 @@ impl Default for Preferences {
             list_columns: default_list_columns(),
             background_image: None,
             background_opacity: default_background_opacity(),
+            background_blur: default_background_blur(),
         }
     }
 }

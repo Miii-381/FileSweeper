@@ -182,8 +182,8 @@ export function SettingsDialog({
             </header>
 
             <div className="settings-body">
-              <section className="settings-section">
-                <h3>外观</h3>
+              <details className="settings-section" open>
+                <summary>外观、背景与预览</summary>
                 <div className="setting-row">
                   <span>显示模式</span>
                   <div className="appearance-switch" role="radiogroup" aria-label="显示模式">
@@ -282,42 +282,6 @@ export function SettingsDialog({
                   </div>
                 </div>
                 <label className="setting-row">
-                  <span>音频格式</span>
-                  <input
-                    className="extension-input"
-                    value={settingsDraft.audioExtensions.join(", ")}
-                    aria-label="音频扩展名"
-                    onChange={(event) => setSettingsDraft((draft) => ({
-                      ...draft,
-                      audioExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
-                    }))}
-                  />
-                </label>
-                <label className="setting-row">
-                  <span>图片格式</span>
-                  <input
-                    className="extension-input"
-                    value={settingsDraft.imageExtensions.join(", ")}
-                    aria-label="图片扩展名"
-                    onChange={(event) => setSettingsDraft((draft) => ({
-                      ...draft,
-                      imageExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
-                    }))}
-                  />
-                </label>
-                <label className="setting-row">
-                  <span>文本格式</span>
-                  <input
-                    className="extension-input"
-                    value={settingsDraft.textExtensions.join(", ")}
-                    aria-label="文本扩展名"
-                    onChange={(event) => setSettingsDraft((draft) => ({
-                      ...draft,
-                      textExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
-                    }))}
-                  />
-                </label>
-                <label className="setting-row">
                   <span>图片大小上限</span>
                   <span className="number-input"><input type="number" min="1" max="512" value={settingsDraft.imageMaxMegabytes} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, imageMaxMegabytes: Number(event.target.value) }))} /><em>MiB</em></span>
                 </label>
@@ -326,16 +290,23 @@ export function SettingsDialog({
                   <span className="number-input"><input type="number" min="1" max="500" value={settingsDraft.imageMaxMegapixels} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, imageMaxMegapixels: Number(event.target.value) }))} /><em>MP</em></span>
                 </label>
                 <label className="setting-row">
-                  <span>背景图透明度</span>
+                  <span>背景图可见度</span>
                   <span className="opacity-input">
                     <input type="range" min="0" max="100" value={settingsDraft.backgroundOpacity} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, backgroundOpacity: Number(event.target.value) }))} />
                     <output>{settingsDraft.backgroundOpacity}%</output>
                   </span>
                 </label>
-              </section>
+                <label className="setting-row">
+                  <span>背景毛玻璃</span>
+                  <span className="opacity-input">
+                    <input type="range" min="0" max="100" value={settingsDraft.backgroundBlur} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, backgroundBlur: Number(event.target.value) }))} />
+                    <output>{settingsDraft.backgroundBlur === 0 ? "关闭" : `${settingsDraft.backgroundBlur}%`}</output>
+                  </span>
+                </label>
+              </details>
 
-              <section className="settings-section">
-                <h3>媒体</h3>
+              <details className="settings-section">
+                <summary>媒体、格式与性能</summary>
                 <label className="setting-row">
                   <span>缩略图缓存上限</span>
                   <span className="number-input">
@@ -457,10 +428,46 @@ export function SettingsDialog({
                     </ul>
                   </div>
                 </div>
-              </section>
+                <label className="setting-row">
+                  <span>音频格式</span>
+                  <input
+                    className="extension-input"
+                    value={settingsDraft.audioExtensions.join(", ")}
+                    aria-label="音频扩展名"
+                    onChange={(event) => setSettingsDraft((draft) => ({
+                      ...draft,
+                      audioExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
+                    }))}
+                  />
+                </label>
+                <label className="setting-row">
+                  <span>图片格式</span>
+                  <input
+                    className="extension-input"
+                    value={settingsDraft.imageExtensions.join(", ")}
+                    aria-label="图片扩展名"
+                    onChange={(event) => setSettingsDraft((draft) => ({
+                      ...draft,
+                      imageExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
+                    }))}
+                  />
+                </label>
+                <label className="setting-row">
+                  <span>文本格式</span>
+                  <input
+                    className="extension-input"
+                    value={settingsDraft.textExtensions.join(", ")}
+                    aria-label="文本扩展名"
+                    onChange={(event) => setSettingsDraft((draft) => ({
+                      ...draft,
+                      textExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
+                    }))}
+                  />
+                </label>
+              </details>
 
-              <section className="settings-section">
-                <h3>行为</h3>
+              <details className="settings-section">
+                <summary>浏览行为</summary>
                 <div className="setting-row">
                   <span>选择视频后自动播放</span>
                   <button
@@ -515,10 +522,10 @@ export function SettingsDialog({
                     <span />
                   </button>
                 </div>
-              </section>
+              </details>
 
-              <section className="settings-section">
-                <h3>列表列</h3>
+              <details className="settings-section">
+                <summary>列表列</summary>
                 {settingsDraft.listColumns.map((column, index) => (
                   <div className="list-column-row" key={column.id}>
                     {column.id === "name" ? (
@@ -570,10 +577,10 @@ export function SettingsDialog({
                     </div>
                   </div>
                 ))}
-              </section>
+              </details>
 
-              <section className="settings-section">
-                <h3>数据管理</h3>
+              <details className="settings-section">
+                <summary>数据管理</summary>
                 <div className="data-summary" aria-live="polite">
                   <span>缩略图 {formatBytes(dataSummary?.thumbnailBytes ?? 0)}</span>
                   <span>日志 {formatBytes(dataSummary?.logBytes ?? 0)}</span>
@@ -585,10 +592,10 @@ export function SettingsDialog({
                   <button type="button" className="command-button" onClick={() => void onClearOldLogs()}>清理旧日志</button>
                   {dataSummary && <button type="button" className="command-button" onClick={() => void onOpenPath(dataSummary.dataPath)}>打开数据目录</button>}
                 </div>
-              </section>
+              </details>
 
-              <section className="settings-section">
-                <h3>关于与诊断</h3>
+              <details className="settings-section">
+                <summary>关于与诊断</summary>
                 <p className="settings-description">FileSweeper v{aboutInfo?.appVersion ?? "正在读取版本信息"}</p>
                 <p className="settings-description">应用自有源代码采用 MIT 许可证；FFmpeg、FFprobe 与 ffmpegthumbnailer 由用户自行安装，许可证与来源说明见“打开许可证”。</p>
                 {aboutInfo && <div className="about-sidecars">{Object.entries(aboutInfo.sidecars).map(([name, version]) => <span key={name}>{name}: {version}</span>)}</div>}
@@ -597,7 +604,7 @@ export function SettingsDialog({
                   {aboutInfo && <button type="button" className="command-button" onClick={() => void onOpenPath(aboutInfo.dataPath)}>打开数据目录</button>}
                   {aboutInfo?.licensesPath && <button type="button" className="command-button" onClick={() => void onOpenPath(aboutInfo.licensesPath!)}>打开许可证</button>}
                 </div>
-              </section>
+              </details>
             </div>
 
             <footer className="settings-footer">

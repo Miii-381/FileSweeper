@@ -54,7 +54,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
-const WORKSPACE_CARD_WIDTH = 220;
+const WORKSPACE_CARD_WIDTH = 240;
 const WORKSPACE_GRID_HORIZONTAL_PADDING = 32;
 const WORKSPACE_GRID_SCROLLBAR_GUTTER = 10;
 const PANEL_RESIZE_HANDLE_WIDTH = 12;
@@ -139,7 +139,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [leftPanelSize, setLeftPanelSize] = useState(20);
   const [windowStateReady, setWindowStateReady] = useState(false);
   const [confirmation, setConfirmation] = useState<{ title: string; message: string; confirmLabel: string; resolve: (confirmed: boolean) => void } | null>(null);
-  const [backgroundDataUrl, setBackgroundDataUrl] = useState<string | null>(null);
+  const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
   const [dataSummary, setDataSummary] = useState<DataManagementSummary | null>(null);
   const [aboutInfo, setAboutInfo] = useState<AboutInfo | null>(null);
   const [systemColorMode, setSystemColorMode] = useState<ColorMode>("dark");
@@ -156,12 +156,15 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     config.settings.appearance === "system" ? systemColorMode : config.settings.appearance;
   const activeTheme = themePresets.find((theme) => theme.id === config.settings.accentTheme) ?? themePresets[0];
   const wallpaperVisibility = Math.max(0, Math.min(100, config.settings.backgroundOpacity)) / 100;
+  const wallpaperBlur = Math.max(0, Math.min(100, config.settings.backgroundBlur)) / 100;
   const neutralSurfaceRgb = effectiveColorMode === "light"
     ? { base: "242 242 247", raised: "255 255 255", control: "255 255 255", resize: "242 242 247", border: "209 209 214" }
     : { base: "28 28 30", raised: "36 36 38", control: "44 44 46", resize: "28 28 30", border: "72 72 74" };
-  // The slider has exact endpoints: 0% keeps solid surfaces; 100% makes
-  // wallpaper-facing surfaces fully transparent. Theme presets only provide RGB.
-  const transparentSurface = (rgb: string) => `rgb(${rgb} / ${1 - wallpaperVisibility})`;
+  // Wallpaper visibility should never remove the content foundation entirely.
+  // Keeping a role-specific opacity floor preserves contrast on detailed or bright images.
+  const surfaceWithOpacityFloor = (rgb: string, minimumOpacity: number) =>
+    `rgb(${rgb} / ${minimumOpacity + (1 - minimumOpacity) * (1 - wallpaperVisibility)})`;
+  const wallpaperVeilOpacity = 0.04 + wallpaperVisibility * 0.16;
   const {
     viewMode,
     searchQuery,
@@ -218,13 +221,15 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     "--accent-border": activeTheme.border,
     "--accent-ink": activeTheme.ink,
     "--accent-focus": activeTheme.focus,
-    "--surface-base-rgba": transparentSurface(neutralSurfaceRgb.base),
-    "--surface-raised-rgba": transparentSurface(neutralSurfaceRgb.raised),
-    "--surface-control-rgba": transparentSurface(neutralSurfaceRgb.control),
-    "--surface-resize-rgba": transparentSurface(neutralSurfaceRgb.resize),
-    "--border-subtle-rgba": transparentSurface(neutralSurfaceRgb.border),
+    "--surface-base-rgba": surfaceWithOpacityFloor(neutralSurfaceRgb.base, 0.68),
+    "--surface-raised-rgba": surfaceWithOpacityFloor(neutralSurfaceRgb.raised, 0.78),
+    "--surface-control-rgba": surfaceWithOpacityFloor(neutralSurfaceRgb.control, 0.88),
+    "--surface-resize-rgba": surfaceWithOpacityFloor(neutralSurfaceRgb.resize, 0.72),
+    "--border-subtle-rgba": surfaceWithOpacityFloor(neutralSurfaceRgb.border, 0.6),
+    "--wallpaper-veil": `rgb(${neutralSurfaceRgb.base} / ${wallpaperVeilOpacity})`,
+    "--surface-backdrop-blur": `${(wallpaperVisibility * wallpaperBlur * 2).toFixed(2)}px`,
     "--background-opacity": `${config.settings.backgroundOpacity}%`,
-    "--background-image": backgroundDataUrl ? `url("${backgroundDataUrl}")` : "none",
+    "--background-image": backgroundUrl ? `url("${backgroundUrl}")` : "none",
   } as CSSProperties;
 
 
@@ -522,13 +527,13 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     let active = true;
     const fileName = config.settings.backgroundImage;
     if (!fileName) {
-      setBackgroundDataUrl(null);
+      setBackgroundUrl(null);
       return () => { active = false; };
     }
-    void invoke<string>("read_background_image", { fileName })
-      .then((dataUrl) => { if (active) setBackgroundDataUrl(dataUrl); })
+    void invoke<string>("get_background_image_url", { fileName })
+      .then((url) => { if (active) setBackgroundUrl(url); })
       .catch((error: unknown) => {
-        if (active) setBackgroundDataUrl(null);
+        if (active) setBackgroundUrl(null);
         writeClientLog("warn", `读取背景图失败：${errorMessage(error)}`);
       });
     return () => { active = false; };

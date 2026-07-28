@@ -7,7 +7,7 @@ export type SortKey = "createdAt" | "modifiedAt" | "name" | "type" | "size" | "d
 export type ListColumnId = "name" | "type" | "size" | "duration" | "resolution" | "modifiedAt";
 export type ThumbnailCapturePosition = "opening" | "early" | "middle" | "late" | "ending";
 
-export const GRID_CARD_WIDTH = 220;
+export const GRID_CARD_WIDTH = 240;
 // 180px card height plus the 16px vertical track gap kept between virtual rows.
 export const GRID_ROW_HEIGHT = 196;
 export const LIST_ROW_HEIGHT = 40;
@@ -232,6 +232,7 @@ export type Preferences = {
   listColumns: ListColumn[];
   backgroundImage: string | null;
   backgroundOpacity: number;
+  backgroundBlur: number;
 };
 
 export type DataManagementSummary = {

@@ -5,7 +5,8 @@
     height: 100%;
     display: grid;
     position: relative;
-    overflow: hidden
+    overflow: hidden;
+    backdrop-filter: blur(var(--surface-backdrop-blur)) saturate(1.06)
 }
 
 .workspace-drop-indicator {
@@ -94,6 +95,7 @@
 .workspace-toolbar {
     background: var(--surface-raised-rgba);
     border-bottom: 1px solid var(--border-subtle);
+    backdrop-filter: blur(var(--surface-backdrop-blur)) saturate(1.1);
     gap: 8px;
     min-width: 0;
     padding: 0 12px
@@ -324,7 +326,7 @@
 }
 
 .file-grid {
-    --file-card-width: 220px;
+    --file-card-width: 240px;
     --file-card-height: 180px;
     --file-thumbnail-height: 116px;
     min-width: 0;

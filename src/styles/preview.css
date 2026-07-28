@@ -1,6 +1,7 @@
 .preview-panel {
     background: var(--surface-raised-rgba);
     border-left: 1px solid var(--border-subtle);
+    backdrop-filter: blur(var(--surface-backdrop-blur)) saturate(1.1);
     grid-template-rows: minmax(220px, 1fr) auto;
     min-width: 0;
     height: 100%;

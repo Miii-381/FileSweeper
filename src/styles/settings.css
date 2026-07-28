@@ -179,18 +179,47 @@
 
 .settings-section {
     border-bottom: 1px solid var(--border-subtle);
-    padding: 18px 0 8px
+    padding: 0
 }
 
 .settings-section:last-child {
     border-bottom: 0
 }
 
-.settings-section h3 {
+.settings-section>summary {
     color: var(--text-muted);
-    margin: 0 0 8px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 48px;
+    padding: 12px 3px 10px 0;
     font-size: 11px;
-    font-weight: 650
+    font-weight: 650;
+    list-style: none;
+    display: flex
+}
+
+.settings-section>summary::-webkit-details-marker {
+    display: none
+}
+
+.settings-section>summary:after {
+    content: "";
+    border-bottom: 1px solid currentColor;
+    border-right: 1px solid currentColor;
+    width: 7px;
+    height: 7px;
+    margin-right: 4px;
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform var(--motion-fast) ease
+}
+
+.settings-section[open]>summary:after {
+    transform: rotate(225deg) translate(-2px, -1px)
+}
+
+.settings-section[open] {
+    padding-bottom: 8px
 }
 
 .setting-row {
@@ -348,7 +377,7 @@
 .opacity-input output {
     color: var(--text-muted);
     text-align: right;
-    width: 34px;
+    width: 40px;
     font-size: 12px
 }
 

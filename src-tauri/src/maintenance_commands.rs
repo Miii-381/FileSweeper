@@ -35,6 +35,98 @@ fn managed_background_path(file_name: &str) -> Result<PathBuf, String> {
     Ok(backgrounds_dir()?.join(name))
 }
 
+const BACKGROUND_PROTOCOL_NAME: &str = "filesweeper-background";
+
+fn background_mime(bytes: &[u8], path: &Path) -> &'static str {
+    match image::guess_format(bytes).ok() {
+        Some(image::ImageFormat::Png) => "image/png",
+        Some(image::ImageFormat::Jpeg) => "image/jpeg",
+        Some(image::ImageFormat::WebP) => "image/webp",
+        Some(image::ImageFormat::Gif) => "image/gif",
+        Some(image::ImageFormat::Bmp) => "image/bmp",
+        Some(image::ImageFormat::Ico) => "image/x-icon",
+        Some(image::ImageFormat::Tiff) => "image/tiff",
+        _ if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("webp")) =>
+        {
+            "image/webp"
+        }
+        _ if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("png")) =>
+        {
+            "image/png"
+        }
+        _ => "image/jpeg",
+    }
+}
+
+fn encode_url_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn decode_url_path_segment(value: &str) -> Result<String, String> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes
+                .get(index + 1..index + 3)
+                .ok_or_else(|| "The background image URL is invalid.".to_string())?;
+            let hex = std::str::from_utf8(hex)
+                .map_err(|_| "The background image URL is invalid.".to_string())?;
+            decoded.push(
+                u8::from_str_radix(hex, 16)
+                    .map_err(|_| "The background image URL is invalid.".to_string())?,
+            );
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "The background image URL is invalid.".to_string())
+}
+
+fn background_url(file_name: &str) -> String {
+    let name = encode_url_path_segment(file_name);
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    {
+        format!("http://{BACKGROUND_PROTOCOL_NAME}.localhost/{name}")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "android")))]
+    {
+        format!("{BACKGROUND_PROTOCOL_NAME}://localhost/{name}")
+    }
+}
+
+pub(super) fn read_managed_background_for_protocol(
+    encoded_file_name: &str,
+) -> Result<(Vec<u8>, &'static str), String> {
+    let file_name = decode_url_path_segment(encoded_file_name)?;
+    let path = managed_background_path(&file_name)?;
+    let bytes = fs::read(&path).map_err(|error| {
+        log::warn!(
+            "Unable to read managed background image: path={}, error={error}",
+            path_string(&path)
+        );
+        format!("Unable to read the background image: {error}")
+    })?;
+    let mime = background_mime(&bytes, &path);
+    Ok((bytes, mime))
+}
+
 pub(super) fn remove_managed_background(file_name: &str) {
     match managed_background_path(file_name) {
         Ok(path) if path.exists() => match fs::remove_file(&path) {
@@ -141,38 +233,28 @@ pub(super) fn import_background_image(
 }
 
 #[tauri::command]
-pub(super) fn read_background_image(file_name: String) -> Result<String, String> {
+pub(super) fn get_background_image_url(file_name: String) -> Result<String, String> {
     let path = managed_background_path(&file_name).map_err(|error| {
-        log::warn!("Background image read rejected: requested_name={file_name}, error={error}");
+        log::warn!("Background image URL rejected: requested_name={file_name}, error={error}");
         error
     })?;
-    let bytes = fs::read(&path).map_err(|error| {
+    let metadata = fs::metadata(&path).map_err(|error| {
         log::warn!(
-            "Unable to read managed background image: path={}, error={error}",
+            "Unable to access managed background image: path={}, error={error}",
             path_string(&path)
         );
-        format!("Unable to read the background image: {error}")
+        format!("Unable to access the background image: {error}")
     })?;
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("png");
-    let mime = if extension.eq_ignore_ascii_case("webp") {
-        "image/webp"
-    } else if extension.eq_ignore_ascii_case("png") {
-        "image/png"
-    } else {
-        "image/jpeg"
-    };
+    if !metadata.is_file() {
+        return Err("The managed background image is not a file.".to_string());
+    }
+    let url = background_url(&file_name);
     log::debug!(
-        "Managed background image read completed: path={}, bytes={}, mime={mime}",
+        "Managed background image URL resolved: path={}, bytes={}, url={url}",
         path_string(&path),
-        bytes.len()
+        metadata.len()
     );
-    Ok(format!(
-        "data:{mime};base64,{}",
-        BASE64_STANDARD.encode(bytes)
-    ))
+    Ok(url)
 }
 
 #[tauri::command]
@@ -429,6 +511,25 @@ mod tests {
     fn managed_background_name_rejects_parent_traversal() {
         assert!(managed_background_path("..\\outside.png").is_err());
         assert!(managed_background_path("nested/background.png").is_err());
+    }
+
+    #[test]
+    fn managed_background_url_is_a_short_protocol_url() {
+        let file_name = "background (1).png";
+        let url = background_url(file_name);
+        let encoded_name = url.rsplit('/').next().unwrap();
+
+        assert!(!url.starts_with("data:"));
+        assert_eq!(decode_url_path_segment(encoded_name).unwrap(), file_name);
+    }
+
+    #[test]
+    fn background_mime_prefers_the_content_signature() {
+        let jpeg_signature = [0xFF, 0xD8, 0xFF, 0xE0];
+        assert_eq!(
+            background_mime(&jpeg_signature, Path::new("misleading.png")),
+            "image/jpeg"
+        );
     }
 
     #[test]

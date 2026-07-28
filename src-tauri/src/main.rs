@@ -39,7 +39,7 @@ use workspace::{
 use axum::{
     body::{Body, Bytes},
     extract::{Query, Request, State},
-    http::{Method, StatusCode},
+    http::{header::CONTENT_TYPE, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -175,6 +175,26 @@ fn main() {
         })
         .manage(video_stream_server)
         .manage(file_operations::start_file_operation_queue())
+        .register_uri_scheme_protocol("filesweeper-background", |_context, request| {
+            let encoded_file_name = request.uri().path().trim_start_matches('/');
+            match maintenance_commands::read_managed_background_for_protocol(encoded_file_name) {
+                Ok((bytes, mime)) => axum::http::Response::builder()
+                    .header(CONTENT_TYPE, mime)
+                    .body(bytes)
+                    .expect("background protocol response should be constructible"),
+                Err(error) => {
+                    log::warn!(
+                        "Managed background protocol request rejected: path={}, error={error}",
+                        request.uri().path()
+                    );
+                    axum::http::Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                        .body(error.into_bytes())
+                        .expect("background protocol error response should be constructible")
+                }
+            }
+        })
         // Plugins are registered here so their native capabilities are available to the webview.
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -294,7 +314,7 @@ fn main() {
             file_commands::reveal_path,
             maintenance_commands::get_data_management_summary,
             maintenance_commands::import_background_image,
-            maintenance_commands::read_background_image,
+            maintenance_commands::get_background_image_url,
             maintenance_commands::clear_thumbnail_cache,
             maintenance_commands::clear_old_logs,
             maintenance_commands::get_about_info,

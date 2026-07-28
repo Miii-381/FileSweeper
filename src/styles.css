@@ -108,7 +108,7 @@ select:focus-visible {
 }
 
 .app-shell {
-    background: linear-gradient(color-mix(in srgb, var(--surface-base) calc(100% - var(--background-opacity, 100%)), transparent), color-mix(in srgb, var(--surface-base) calc(100% - var(--background-opacity, 100%)), transparent)), var(--background-image, none) center/cover no-repeat, var(--surface-base);
+    background: linear-gradient(var(--wallpaper-veil), var(--wallpaper-veil)), var(--background-image, none) center/cover no-repeat, var(--surface-base);
     grid-template-rows: 56px minmax(0, 1fr);
     width: 100%;
     height: 100%;
@@ -130,6 +130,7 @@ select:focus-visible {
 .titlebar {
     background: var(--surface-raised-rgba);
     border-bottom: 1px solid var(--border-subtle);
+    backdrop-filter: blur(var(--surface-backdrop-blur)) saturate(1.1);
     justify-content: space-between;
     align-items: center;
     min-width: 0;

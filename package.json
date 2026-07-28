@@ -10,7 +10,7 @@
     "test:unit": "vitest run",
     "check:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run build && npm run test:unit && npm run check:rust",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.0.0",

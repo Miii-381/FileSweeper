@@ -1,6 +1,7 @@
 .navigation-panel {
     background: var(--surface-raised-rgba);
     border-right: 1px solid var(--border-subtle);
+    backdrop-filter: blur(var(--surface-backdrop-blur)) saturate(1.1);
     flex-direction: column;
     min-width: 0;
     height: 100%;
