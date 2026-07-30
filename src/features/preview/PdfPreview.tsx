@@ -19,7 +19,8 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.1;
 const PAGE_GAP = 16;
-const PAGE_PADDING = 16;
+const PAGE_SIDE_PADDING = 8;
+const PAGE_BORDER_WIDTH = 1;
 
 type PasswordPrompt = { incorrect: boolean };
 
@@ -75,6 +76,11 @@ function clampZoom(value: number) {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(value * 100) / 100));
 }
 
+function fitPageZoom(availableWidth: number, pageWidth: number) {
+  const availablePageWidth = availableWidth - PAGE_SIDE_PADDING * 2 - PAGE_BORDER_WIDTH * 2;
+  return Math.min(MAX_ZOOM, Math.max(0, availablePageWidth) / Math.max(1, pageWidth));
+}
+
 function pdfWasmUrl() {
   return new URL("./pdfjs/wasm/", window.location.href).toString();
 }
@@ -123,7 +129,7 @@ function PdfPageCanvas({
         const page = await document.getPage(pageNumber);
         if (!active || width <= 0) return;
         const baseViewport = page.getViewport({ scale: 1 });
-        const pageScale = fitWidth ? clampZoom((width - PAGE_PADDING * 2) / baseViewport.width) : zoom;
+        const pageScale = fitWidth ? fitPageZoom(width, baseViewport.width) : zoom;
         const viewport = page.getViewport({ scale: pageScale });
         const canvas = canvasRef.current;
         if (!canvas || !active) return;
@@ -279,7 +285,7 @@ export function PdfPreview({ file }: { file: FileEntry }) {
   const rowVirtualizer = useVirtualizer({
     count: pageCount,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => Math.max(320, (viewportWidth - PAGE_PADDING * 2) * 1.42 + PAGE_GAP),
+    estimateSize: () => Math.max(320, (viewportWidth - PAGE_SIDE_PADDING * 2) * 1.42 + PAGE_GAP),
     overscan: 1,
   });
 
@@ -321,7 +327,7 @@ export function PdfPreview({ file }: { file: FileEntry }) {
     if (fitWidth) {
       const page = await document.getPage(currentPage);
       const baseViewport = page.getViewport({ scale: 1 });
-      currentZoom = clampZoom((viewportWidth - PAGE_PADDING * 2) / baseViewport.width);
+      currentZoom = fitPageZoom(viewportWidth, baseViewport.width);
       setFitWidth(false);
     }
     setZoom(clampZoom(currentZoom + delta));
@@ -382,7 +388,7 @@ export function PdfPreview({ file }: { file: FileEntry }) {
         <div className="pdf-preview-virtual-content" style={{ height: rowVirtualizer.getTotalSize() }}>
           {(rowVirtualizer.getVirtualItems().length > 0
             ? rowVirtualizer.getVirtualItems()
-            : Array.from({ length: Math.min(pageCount, 2) }, (_, index) => ({ index, key: index, start: index * Math.max(320, (viewportWidth - PAGE_PADDING * 2) * 1.42 + PAGE_GAP) })))
+            : Array.from({ length: Math.min(pageCount, 2) }, (_, index) => ({ index, key: index, start: index * Math.max(320, (viewportWidth - PAGE_SIDE_PADDING * 2) * 1.42 + PAGE_GAP) })))
             .map((virtualRow) => (
             <article
               ref={rowVirtualizer.measureElement}

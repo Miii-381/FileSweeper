@@ -6,6 +6,8 @@ import type { CSSProperties, Dispatch, RefObject, SetStateAction } from "react";
 import { GRID_CARD_WIDTH, GRID_ROW_HEIGHT, LIST_ROW_HEIGHT, isFileEntry, isFolderEntry, type AppConfig, type SortKey, type ViewMode, type WorkspaceFocus, type WorkspaceListing, type WorkspaceSort } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 
+const DEFAULT_WORKSPACE_SORT: WorkspaceSort = { key: "name", ascending: true };
+
 function materialStandardEasing(progress: number) {
   let lower = 0;
   let upper = 1;
@@ -33,17 +35,19 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
 }) {
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("createdAt");
-  const [sortAscending, setSortAscending] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>(DEFAULT_WORKSPACE_SORT.key);
+  const [sortAscending, setSortAscending] = useState(DEFAULT_WORKSPACE_SORT.ascending);
   const [gridColumns, setGridColumns] = useState(1);
   const [gridViewport, setGridViewport] = useState<HTMLDivElement | null>(null);
   const gridScrollElement = useRef<HTMLDivElement>(null);
   const listScrollElement = useRef<HTMLDivElement>(null);
   const focusRestorePath = useRef<string | null>(null);
   const focusRestorePending = useRef(false);
+  const scrollRestoreOffset = useRef<number | null>(null);
   const focusByPath = useRef<Record<string, WorkspaceFocus>>(initialConfig.workspaceFocus ?? {});
   const sortByPath = useRef<Record<string, WorkspaceSort>>(initialConfig.workspaceSort ?? {});
-  const activeSort = useRef<WorkspaceSort>({ key: "createdAt", ascending: false });
+  const scrollByPath = useRef<Record<string, Partial<Record<ViewMode, number>>>>({});
+  const activeSort = useRef<WorkspaceSort>(DEFAULT_WORKSPACE_SORT);
   const persistence = useRef<Promise<void>>(Promise.resolve());
   const scrollAnimation = useRef<number | null>(null);
 
@@ -84,6 +88,19 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
   const gridRowVirtualizer = useVirtualizer({ count: Math.ceil(visibleFiles.length / gridColumns), getScrollElement: () => gridScrollElement.current, estimateSize: () => GRID_ROW_HEIGHT, overscan: 2 });
   const listRowVirtualizer = useVirtualizer({ count: visibleFiles.length, getScrollElement: () => listScrollElement.current, estimateSize: () => LIST_ROW_HEIGHT, overscan: 8 });
   const setGridScrollRef = useCallback((element: HTMLDivElement | null) => { gridScrollElement.current = element; setGridViewport(element); }, []);
+  const captureWorkspaceScroll = useCallback((workspacePath: string) => {
+    const element = viewMode === "grid" ? gridScrollElement.current : listScrollElement.current;
+    if (!element) return;
+    const offset = element.scrollTop;
+    scrollByPath.current = {
+      ...scrollByPath.current,
+      [workspacePath]: {
+        ...scrollByPath.current[workspacePath],
+        [viewMode]: offset,
+      },
+    };
+    writeClientLog("debug", `已记录工作区滚动位置：工作区 ${workspacePath}，视图 ${viewMode}，偏移 ${Math.round(offset)}`);
+  }, [viewMode]);
 
   const persistWorkspaceFocus = useCallback(async (workspacePath: string, filePath: string) => {
     if (focusByPath.current[workspacePath]?.filePath === filePath) {
@@ -160,21 +177,26 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
     }
     const focusPath = focusRestorePath.current;
     const fileIndex = focusPath ? visibleFiles.findIndex((file) => file.path === focusPath) : -1;
+    const rememberedScrollOffset = scrollRestoreOffset.current;
     if (focusPath && fileIndex < 0) writeClientLog("warn", `无法恢复工作区焦点：文件不在当前可见列表中，工作区 ${workspace.path}，文件 ${focusPath}，可见文件 ${visibleFiles.length} 个`);
     else if (focusPath) writeClientLog("debug", `准备恢复工作区焦点：工作区 ${workspace.path}，文件 ${focusPath}，列表索引 ${fileIndex}，视图 ${viewMode}`);
     const frame = window.requestAnimationFrame(() => {
       if (viewMode === "grid") {
         if (!gridScrollElement.current) { writeClientLog("warn", `无法初始化工作区滚动位置：网格滚动容器尚未挂载，工作区 ${workspace.path}`); return; }
-        if (fileIndex >= 0 && focusPath) gridRowVirtualizer.scrollToIndex(Math.floor(fileIndex / gridColumns), { align: "start" });
+        if (rememberedScrollOffset !== null) gridRowVirtualizer.scrollToOffset(rememberedScrollOffset);
+        else if (fileIndex >= 0 && focusPath) gridRowVirtualizer.scrollToIndex(Math.floor(fileIndex / gridColumns), { align: "start" });
         else gridRowVirtualizer.scrollToOffset(0);
       } else {
         if (!listScrollElement.current) { writeClientLog("warn", `无法初始化工作区滚动位置：列表滚动容器尚未挂载，工作区 ${workspace.path}`); return; }
-        if (fileIndex >= 0 && focusPath) listRowVirtualizer.scrollToIndex(fileIndex, { align: "start" });
+        if (rememberedScrollOffset !== null) listRowVirtualizer.scrollToOffset(rememberedScrollOffset);
+        else if (fileIndex >= 0 && focusPath) listRowVirtualizer.scrollToIndex(fileIndex, { align: "start" });
         else listRowVirtualizer.scrollToOffset(0);
       }
       focusRestorePending.current = false;
       focusRestorePath.current = null;
-      if (focusPath && fileIndex >= 0) writeClientLog("debug", `已恢复工作区文件焦点：${focusPath}`);
+      scrollRestoreOffset.current = null;
+      if (rememberedScrollOffset !== null) writeClientLog("debug", `已恢复工作区滚动位置：工作区 ${workspace.path}，视图 ${viewMode}，偏移 ${Math.round(rememberedScrollOffset)}`);
+      else if (focusPath && fileIndex >= 0) writeClientLog("debug", `已恢复工作区文件焦点：${focusPath}`);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [gridColumns, gridRowVirtualizer, gridViewport, listRowVirtualizer, probedMetadataPaths, sortKey, viewMode, visibleFiles, workspace]);
@@ -214,25 +236,26 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
 
   const prepareWorkspace = useCallback((listing: WorkspaceListing, enabled: boolean) => {
     const rememberedSort = enabled ? sortByPath.current[listing.path] : undefined;
-    if (enabled) {
-      const restoredSort = rememberedSort ?? { key: "createdAt" as const, ascending: false };
-      activeSort.current = restoredSort;
-      setSortKey(restoredSort.key);
-      setSortAscending(restoredSort.ascending);
-    }
+    const restoredSort = rememberedSort ?? DEFAULT_WORKSPACE_SORT;
+    activeSort.current = restoredSort;
+    setSortKey(restoredSort.key);
+    setSortAscending(restoredSort.ascending);
     if (rememberedSort) writeClientLog("debug", `工作区排序命中：工作区 ${listing.path}，字段 ${rememberedSort.key}，升序 ${rememberedSort.ascending}`);
-    else if (enabled) writeClientLog("debug", `工作区没有已保存排序，使用创建日期降序：${listing.path}`);
+    else writeClientLog("debug", `工作区没有已保存排序，使用名称升序：${listing.path}`);
     const rememberedPath = enabled ? focusByPath.current[listing.path]?.filePath : undefined;
     const rememberedItem = rememberedPath ? listing.items.find((item) => item.path === rememberedPath) ?? null : null;
+    const rememberedScrollOffset = scrollByPath.current[listing.path]?.[viewMode];
     focusRestorePath.current = rememberedItem?.path ?? null;
+    scrollRestoreOffset.current = rememberedScrollOffset ?? null;
     focusRestorePending.current = true;
     setSearchQuery("");
+    if (rememberedScrollOffset !== undefined) writeClientLog("debug", `工作区滚动位置命中：工作区 ${listing.path}，视图 ${viewMode}，偏移 ${Math.round(rememberedScrollOffset)}`);
     if (rememberedItem) writeClientLog("debug", `工作区焦点命中：工作区 ${listing.path}，项目 ${rememberedItem.path}，共 ${listing.items.length} 个项目`);
     else if (rememberedPath) writeClientLog("warn", `工作区焦点未命中：工作区 ${listing.path}，已记录 ${rememberedPath}，当前项目 ${listing.items.length} 个`);
     else if (enabled) writeClientLog("debug", `工作区没有已保存焦点：${listing.path}`);
-    else writeClientLog("debug", `工作区排序与焦点记忆已关闭，滚动位置将从顶部开始：${listing.path}`);
+    else writeClientLog("debug", `工作区排序与焦点记忆已关闭：${listing.path}`);
     return rememberedItem;
-  }, []);
+  }, [viewMode]);
 
   const changeSortKey = useCallback((next: SortKey) => {
     writeClientLog("info", `切换工作区排序字段：${sortKey} -> ${next}`);
@@ -253,7 +276,7 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
     viewMode, searchQuery, setSearchQuery, sortKey, sortAscending, gridColumns, selectedItem, selectedFile,
     visibleFiles, visibleListColumns, listGridStyle, gridRowVirtualizer, listRowVirtualizer,
     setGridScrollRef, listScrollElement, scrollWorkspaceToStart, scrollWorkspaceToFocus,
-    persistWorkspaceFocus, persistWorkspaceSort, prepareWorkspace, changeSortKey,
+    captureWorkspaceScroll, persistWorkspaceFocus, persistWorkspaceSort, prepareWorkspace, changeSortKey,
     toggleSortDirection, changeViewMode,
     getActiveSort: () => activeSort.current,
     memorySummary: () => ({ focus: Object.keys(focusByPath.current).length, sort: Object.keys(sortByPath.current).length }),

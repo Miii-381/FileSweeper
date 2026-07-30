@@ -396,8 +396,8 @@
 .pdf-preview-toolbar { display: flex; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-raised); }
 .pdf-preview-toolbar button, .pdf-password-prompt button { min-width: 32px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface-control); color: var(--text-primary); }
 .pdf-preview-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
-.pdf-page-jump { display: flex; gap: 4px; align-items: center; color: var(--text-secondary); font-size: 12px; }
-.pdf-page-jump input { width: 4.5em; height: 32px; box-sizing: border-box; appearance: textfield; outline: none; border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 8px; color: var(--text-primary); background: var(--surface-control); text-align: right; font: inherit; font-variant-numeric: tabular-nums; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, background var(--motion-fast) ease; }
+.pdf-page-jump { display: flex; flex: 0 0 auto; gap: 4px; align-items: center; min-width: 96px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.pdf-page-jump input { flex: 0 0 4.5em; width: 4.5em; height: 32px; box-sizing: border-box; appearance: textfield; outline: none; border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 8px; color: var(--text-primary); background: var(--surface-control); text-align: right; font: inherit; font-variant-numeric: tabular-nums; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, background var(--motion-fast) ease; }
 .pdf-page-jump input:hover { background: var(--surface-hover); border-color: var(--border-hover); }
 .pdf-page-jump input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent); }
 .pdf-page-jump input::-webkit-inner-spin-button, .pdf-page-jump input::-webkit-outer-spin-button { appearance: none; margin: 0; }
@@ -410,7 +410,7 @@
 .pdf-preview-scroll { width: 100%; height: 100%; overflow: auto; outline: none; }
 .pdf-preview-virtual-content { position: relative; min-width: 100%; }
 .pdf-page-card { position: absolute; display: flex; width: 100%; justify-content: center; padding: 0 8px 16px; box-sizing: border-box; }
-.pdf-page-content { position: relative; display: grid; place-items: center; width: max-content; max-width: 100%; min-height: 240px; border: 1px solid var(--border-subtle); background: #fff; box-shadow: 0 3px 12px #0004; }
+.pdf-page-content { position: relative; display: grid; place-items: center; width: fit-content; max-width: 100%; min-height: 240px; border: 1px solid var(--border-subtle); background: #fff; box-shadow: 0 3px 12px #0004; }
 .pdf-page-content canvas { display: block; max-width: 100%; height: auto; }
 .pdf-page-error { max-width: min(90%, 360px); margin: 0; padding: 10px; color: var(--danger, #b3261e); text-align: center; font-size: 12px; }
 

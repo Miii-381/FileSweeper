@@ -90,8 +90,8 @@ export function WorkspaceToolbar({
         className="sort-button"
         type="button"
         disabled={!hasWorkspace}
-        aria-label={sortAscending ? "改为降序" : "改为升序"}
-        title={sortAscending ? "降序" : "升序"}
+        aria-label={sortAscending ? "当前为升序，切换为降序" : "当前为降序，切换为升序"}
+        title={sortAscending ? "当前为升序，点击切换为降序" : "当前为降序，点击切换为升序"}
         onClick={onToggleSortDirection}
       >
         <ChevronDown size={16} className={sortAscending ? "sort-ascending" : ""} />

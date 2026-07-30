@@ -59,6 +59,21 @@ function createLoadingTask(pageCount = 3) {
   };
 }
 
+function createWidePageLoadingTask() {
+  const document = {
+    numPages: 1,
+    getPage: vi.fn(async () => ({
+      getViewport: ({ scale }: { scale: number }) => ({ width: 1000 * scale, height: 1400 * scale }),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: pageRenderCancel })),
+    })),
+  };
+  return {
+    promise: Promise.resolve(document),
+    destroy: loadingDestroy,
+    onPassword: null as ((updatePassword: (password: string) => void, reason: number) => void) | null,
+  };
+}
+
 describe("PdfPreview", () => {
   beforeEach(() => {
     invoke.mockReset();
@@ -107,6 +122,15 @@ describe("PdfPreview", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开" }));
     expect(updatePassword).toHaveBeenCalledWith("secret");
     expect(screen.queryByDisplayValue("secret")).toBeNull();
+  });
+
+  it("预览窗窄于页面时可缩小到 25% 以下并完整适应宽度", async () => {
+    getDocument.mockReturnValue(createWidePageLoadingTask());
+    render(<PdfPreview file={file} />);
+
+    const canvas = await screen.findByLabelText("PDF 第 1 页");
+    await waitFor(() => expect(canvas.style.width).toBe("142px"));
+    expect(canvas.style.height).toBe("199px");
   });
 
   it("卸载时取消加载、页面任务并释放 Worker", async () => {

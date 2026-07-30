@@ -182,6 +182,10 @@
     font-size: 12px
 }
 
+.search-field input:focus-visible {
+    outline: none
+}
+
 .search-field input::placeholder {
     color: var(--text-subtle)
 }

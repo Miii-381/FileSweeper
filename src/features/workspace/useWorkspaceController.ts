@@ -18,6 +18,7 @@ type Props = {
   resetMetadata: () => void;
   clearThumbnailDisplayOverrides: () => void;
   prepareWorkspaceView: (listing: WorkspaceListing, memoryEnabled: boolean) => DirectoryItem | null;
+  captureWorkspaceScroll: (workspacePath: string) => void;
   persistWorkspaceFocus: (workspacePath: string, filePath: string) => Promise<void>;
   persistWorkspaceSort: (workspacePath: string, key: SortKey, ascending: boolean) => Promise<void>;
   getActiveSort: () => { key: SortKey; ascending: boolean };
@@ -39,6 +40,7 @@ export function useWorkspaceController({
   resetMetadata,
   clearThumbnailDisplayOverrides,
   prepareWorkspaceView,
+  captureWorkspaceScroll,
   persistWorkspaceFocus,
   persistWorkspaceSort,
   getActiveSort,
@@ -58,6 +60,7 @@ export function useWorkspaceController({
     const requestId = ++workspaceRequest.current;
     workspaceNavigationPending.current = true;
     resetMetadata();
+    if (workspace) captureWorkspaceScroll(workspace.path);
     try {
       if (workspaceMemoryEnabled && workspace) {
         if (selectionAnchor && selectedFiles.has(selectionAnchor)) {
