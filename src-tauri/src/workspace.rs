@@ -461,11 +461,7 @@ pub(super) fn list_directory_impl(
         if !metadata.is_file() {
             continue;
         }
-        let extension = entry_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-            .unwrap_or_default();
+        let extension = domain::normalized_file_extension(&entry_path);
         let kind = if extension == ".pdf" {
             FileKind::Pdf
         } else if video_extensions.contains(extension.as_str()) {

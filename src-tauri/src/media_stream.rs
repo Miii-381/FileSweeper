@@ -214,21 +214,6 @@ fn resolve_stream_video_path_with_settings(
     Ok(video_path)
 }
 
-pub(super) fn encode_query_component(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-    }
-    encoded
-}
-
 async fn serve_video_stream(
     State(transcode_controller): State<Arc<TranscodeController>>,
     Query(query): Query<VideoStreamQuery>,

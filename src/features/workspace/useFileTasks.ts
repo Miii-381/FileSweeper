@@ -353,7 +353,6 @@ export function useFileTasks({
     startInlineRename,
     cancelInlineRename,
     submitInlineRename,
-    startTransferTask,
     copyDroppedFiles,
     copyFilesToDirectory,
     writeFilesToClipboard,

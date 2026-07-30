@@ -126,11 +126,6 @@ fn queued_media_path(queue: &Mutex<VecDeque<String>>, label: &str) -> Option<Str
     }
 }
 
-pub(super) fn thumbnail_capture_cache_key(position: &str) -> &str {
-    // The generator is part of the cache identity so old ffmpeg frames are regenerated.
-    domain::thumbnail_capture_cache_key(position)
-}
-
 fn render_thumbnail(
     thumbnailer: &Path,
     video_path: &Path,

@@ -268,11 +268,7 @@ pub(super) async fn read_thumbnail(
     let thumbnail_cache_dir = thumbnail_cache_directory.0.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let settings = load_config()?.settings;
-        let extension = Path::new(&path)
-            .extension()
-            .and_then(|item| item.to_str())
-            .map(|item| format!(".{}", item.to_ascii_lowercase()))
-            .unwrap_or_default();
+        let extension = domain::normalized_file_extension(Path::new(&path));
         let capture_position = if settings
             .audio_extensions
             .iter()
@@ -347,7 +343,7 @@ pub(super) fn get_preview_file_url(
         .ok_or_else(|| "The local preview service is unavailable.".to_string())?;
     Ok(format!(
         "{base_url}?path={}",
-        media_stream::encode_query_component(&path_string(&file))
+        domain::encode_url_component(&path_string(&file))
     ))
 }
 
@@ -373,7 +369,7 @@ pub(super) fn get_audio_stream_url(
     };
     let url = format!(
         "{base_url}?path={}{}",
-        media_stream::encode_query_component(&path_string(&audio)),
+        domain::encode_url_component(&path_string(&audio)),
         mode
     );
     log::debug!(
@@ -486,7 +482,7 @@ pub(super) fn get_video_stream_url(
         Ok(VideoStreamUrl {
             url: format!(
                 "{base_url}?path={}{}{}",
-                media_stream::encode_query_component(&path_string(&video_path)),
+                domain::encode_url_component(&path_string(&video_path)),
                 mode,
                 start,
             ),

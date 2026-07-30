@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use super::{default_list_columns, ListColumn, Preferences};
 
@@ -17,6 +18,39 @@ pub(super) fn normalize_extensions(extensions: &mut Vec<String>) {
         .collect();
     extensions.sort();
     extensions.dedup();
+}
+
+pub(super) fn normalized_file_extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+        .unwrap_or_default()
+}
+
+pub(super) fn is_same_or_descendant_path(path: &str, parent: &str) -> bool {
+    let parent = parent
+        .trim_end_matches(&['\\', '/'][..])
+        .to_ascii_lowercase();
+    let path = path.trim_end_matches(&['\\', '/'][..]).to_ascii_lowercase();
+    path == parent
+        || path
+            .strip_prefix(&parent)
+            .is_some_and(|suffix| suffix.starts_with('\\') || suffix.starts_with('/'))
+}
+
+pub(super) fn encode_url_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 pub(super) fn normalize_extension_groups(settings: &mut Preferences) {
@@ -141,7 +175,7 @@ pub(super) fn validate_windows_file_stem(new_stem: &str) -> Result<String, Strin
     Ok(stem.to_string())
 }
 
-pub(super) fn fnv1a_64(bytes: &[u8]) -> u64 {
+pub(super) fn fnv1a_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -236,7 +270,30 @@ mod tests {
 
     #[test]
     fn fnv1a_matches_known_vector() {
-        assert_eq!(fnv1a_64(b"hello"), 0xa430d84680aabd0b);
+        assert_eq!(fnv1a_hash(b"hello"), 0xa430d84680aabd0b);
+    }
+
+    #[test]
+    fn shared_path_and_url_helpers_cover_boundaries() {
+        assert_eq!(
+            normalized_file_extension(Path::new("D:\\Media\\Clip.MP4")),
+            ".mp4"
+        );
+        assert_eq!(normalized_file_extension(Path::new("README")), "");
+        assert!(is_same_or_descendant_path(
+            "D:\\Media\\Season 1\\clip.mp4",
+            "d:\\media"
+        ));
+        assert!(is_same_or_descendant_path("D:\\Media", "d:\\media"));
+        assert!(!is_same_or_descendant_path(
+            "D:\\Media Archive\\clip.mp4",
+            "D:\\Media"
+        ));
+        assert!(!is_same_or_descendant_path("D:\\", "D:\\Media"));
+        assert_eq!(
+            encode_url_component("a b/中文"),
+            "a%20b%2F%E4%B8%AD%E6%96%87"
+        );
     }
 
     #[test]

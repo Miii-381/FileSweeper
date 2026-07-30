@@ -1,92 +1,113 @@
 # FileSweeper
 
-FileSweeper 是一个 **Windows 端** 本地文件管理应用。本项目的自有源代码使用 [MIT 许可证](LICENSE)。
+FileSweeper 是一个面向 Windows 10/11 的本地文件管理与多格式预览应用。它直接读取真实文件系统，不建立云端账户、媒体库或数据库；项目自有源代码采用 [MIT 许可证](LICENSE)。
 
-> 项目仓库、NSIS 安装包、更新包和安装脚本均不包含、不下载、不镜像 FFmpeg、FFprobe 或 ffmpegthumbnailer 二进制文件。用户自行取得、安装并承担所选二进制文件的许可证义务。
+## 功能
 
-## 1. 开发前置条件
+- 三栏文件管理界面：收藏与目录树、工作区、文件预览与详情。
+- 网格和列表虚拟化视图，支持名称搜索、按名称/日期/大小/时长/分辨率排序。
+- 按目录记忆排序与文件焦点；后退、前进时恢复网格或列表滚动位置。
+- 图片预览：适应窗口、缩放、平移和旋转。
+- 文本与代码预览：大文件虚拟滚动、Prism 语法高亮、可配置中英文字体。
+- PDF 预览：本地 PDF.js Worker、连续滚动、页码跳转、缩放和适应宽度。
+- 音频预览：内嵌封面、播放控制和实时频谱。
+- 视频预览：优先直接播放；不兼容时可使用 FFmpeg 转码回退。
+- 文件操作：重命名、复制、移动、回收站、系统文件剪贴板、拖入和拖出。
+- 深浅色主题、强调色、背景图片、日志查看和诊断导出。
 
-目标环境为 Windows x64。构建机器需要安装：
+## 系统要求
+
+运行环境：
+
+- Windows 10/11 x64
+- Microsoft Edge WebView2 Runtime
+
+从源码构建还需要：
 
 - Node.js 与 npm
 - Rust stable MSVC 工具链
 - Visual Studio Build Tools（Desktop development with C++）
 - Windows 10/11 SDK
-- Microsoft Edge WebView2 Runtime
 
-```powershell
-node --version
-npm --version
-rustc --version
-cargo --version
-npm install
-```
+## 可选媒体工具
 
-## 2. 用户自行安装媒体工具
+FileSweeper 仓库、安装包和脚本均不包含、下载或镜像 FFmpeg、FFprobe、ffmpegthumbnailer。图片、文本和 PDF 等核心功能不依赖这些工具；视频转码、媒体元数据与部分缩略图功能需要用户自行安装。
 
-FFmpeg 和 FFprobe 是完整媒体预览、元数据读取与缩略图回退所需的工具；ffmpegthumbnailer 可选，缺失时应用会回退到 FFmpeg 生成缩略图。
+请从上游或可信发行方取得二进制，并自行核验来源、哈希及许可证：
 
-### 下载地址与许可证
+- FFmpeg/FFprobe：[FFmpeg Windows 下载说明](https://ffmpeg.org/download.html#build-windows)
+- ffmpegthumbnailer（可选）：[上游 Releases](https://github.com/dirkvdb/ffmpegthumbnailer/releases)
 
-- FFmpeg/FFprobe： [FFmpeg 官方 Windows 下载说明](https://ffmpeg.org/download.html#build-windows)。可选择其中列出的可信 Windows 构建来源；若选择 Gyan 的 full build，需注意其构建可能启用 GPL 组件。
-- ffmpegthumbnailer： [上游 Releases](https://github.com/dirkvdb/ffmpegthumbnailer/releases)，上游许可证为 GPLv2+。
-- FFmpeg 构建的许可证取决于实际 `configure` 参数。若需要 LGPL-only 构建，运行 `ffmpeg -version` 后确认输出不含 `--enable-gpl` 与 `--enable-nonfree`；请同时保留该发行方提供的许可证和源代码获取说明。
-
-项目不为这些工具指定或重新授权许可证。下载后请自行核验来源、版本、哈希和适用许可证。
-
-若所选构建为 GPL 许可，其对应源码及构建脚本应从同一发行方获取；项目不为第三方构建提供源码托管或验证服务。
-
-### 安装位置与文件名
-
-将已下载的可执行文件复制到 **FileSweeper 安装目录** 下的 `sidecars` 目录。默认当前用户安装通常位于 `%LOCALAPPDATA%\FileSweeper`；使用自定义安装位置时，以你实际选择的 `FileSweeper` 目录为准。
+将文件放入 FileSweeper 安装目录的 `sidecars` 子目录，并使用以下文件名：
 
 ```text
-<FileSweeper 安装目录>\sidecars\
+sidecars/
   ffmpeg-x86_64-pc-windows-msvc.exe
   ffprobe-x86_64-pc-windows-msvc.exe
   ffmpegthumbnailer-x86_64-pc-windows-msvc.exe   （可选）
 ```
 
-下载包内一般是 `ffmpeg.exe`、`ffprobe.exe`，或位于 `bin` 子目录；请复制后按上述名称重命名。不要把文件放入应用的 `data` 目录。
+文件查找规则与本地安装脚本用法见 [sidecars 说明](sidecars/sidecars说明.md)。
 
-> 此文件名为应用内部硬性约定，请勿更改为其他名称，否则无法正常识别。
-
-仓库提供的脚本只复制你已经手动下载的文件，不访问网络也不下载任何二进制。以 PowerShell 7 为例：
+项目提供的安装脚本只复制并重命名用户已经下载的文件：
 
 ```powershell
-# 参数说明：<FFmpeg bin目录> <FileSweeper安装目录> [ffmpegthumbnailer路径]
 pwsh -File .\scripts\install-local-media-tools.ps1 `
-  "C:\Users\你的用户名\Downloads\ffmpeg\bin" `
+  "C:\Tools\ffmpeg\bin" `
   "$env:LOCALAPPDATA\FileSweeper" `
-  "C:\Users\你的用户名\Downloads\ffmpegthumbnailer.exe"
+  "C:\Tools\ffmpegthumbnailer.exe"
 ```
 
-前两个位置参数分别为包含 `ffmpeg.exe` 与 `ffprobe.exe` 的目录、FileSweeper 安装目录；第三个位置参数可省略。脚本会复制并重命名到 `sidecars`，保留用户的原始下载文件。
+第三个参数可省略。FFmpeg 构建的许可证取决于其实际配置；启用了 `--enable-gpl` 或 `--enable-nonfree` 的构建不能标注为 LGPL-only。
 
-## 3. 本地开发
-
-开发运行时同样从项目根目录的 `sidecars` 子目录读取用户自行准备的文件。先按上一节放入文件，再执行：
+## 本地开发
 
 ```powershell
+npm install
 npm run check
 npm run tauri dev
 ```
 
-缺少 FFmpeg/FFprobe 时，应用将在日志和控制台输出错误信息，相关媒体功能将被禁用；ffmpegthumbnailer 缺失仅触发缩略图生成回退，不影响核心功能。
+`npm run check` 会依次执行：
 
-## 4. 图标与 NSIS 构建
+- TypeScript 检查与 Vite 生产构建
+- Vitest 前端单元测试
+- Rustfmt
+- Clippy（警告视为错误）
+- Rust 单元与回归测试
 
-Tauri 打包 Windows 应用前必须存在 `src-tauri/icons/icon.ico`。可从项目根目录运行：
+开发启动器会协调 Vite 与 Tauri 的实际端口；默认端口占用时会自动选择可用端口。
+
+## 构建
+
+项目已包含 Windows 图标，可直接执行：
 
 ```powershell
-npm run tauri icon app-icon.png
 npm run tauri build
 ```
 
-构建产物通常位于 `src-tauri/target/release/bundle/nsis/`。发布前确认安装包中不含 `ffmpeg*.exe`、`ffprobe*.exe` 或 `ffmpegthumbnailer*.exe`；用户在安装完成后再按第二节自行安装媒体工具。
+NSIS 安装包通常生成在：
 
-## 5. 许可证边界
+```text
+src-tauri/target/release/bundle/nsis/
+```
 
-- `LICENSE`：FileSweeper 项目自有代码的 MIT 许可证。
-- `LICENSES/`：随应用携带的项目许可证副本，以及用户可选安装媒体工具的上游许可证说明。
-- 用户自行下载的 FFmpeg、FFprobe、ffmpegthumbnailer 不会因被本项目调用、复制或重命名而改变原有许可证。
+发布前应确认安装包中不存在 `ffmpeg*.exe`、`ffprobe*.exe` 或 `ffmpegthumbnailer*.exe`。
+
+## 数据与隐私
+
+- 所有文件扫描和预览都在本机完成。
+- 本地 HTTP 预览服务仅绑定 `127.0.0.1`。
+- 设置、工作区状态、缓存和日志保存在应用同级 `data/` 目录。
+- 删除缓存或损坏的索引不会影响原始文件；应用会按需重建。
+- FileSweeper 不上传用户文件，也不集成遥测或云端账户。
+
+## 架构
+
+模块边界、状态流、持久化策略和并发模型见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+## 许可证
+
+- 项目自有代码：[MIT](LICENSE)
+- 随应用使用的第三方组件与 PDF.js WASM 声明：`LICENSES/`
+- 用户自行安装的媒体工具继续适用其各自许可证

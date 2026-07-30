@@ -96,10 +96,6 @@ pub(super) fn thumbnail_cache_dir() -> Result<PathBuf, String> {
     Ok(directory)
 }
 
-pub(super) fn fnv1a_hash(bytes: &[u8]) -> u64 {
-    domain::fnv1a_64(bytes)
-}
-
 pub(super) fn thumbnail_source_key(path: &Path) -> String {
     let mut source = path_string(path);
     if cfg!(target_os = "windows") {

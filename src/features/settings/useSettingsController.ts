@@ -9,7 +9,7 @@ export function useSettingsController({ config, setConfig, workspace, activateWo
   config: AppConfig;
   setConfig: Dispatch<SetStateAction<AppConfig>>;
   workspace: WorkspaceListing | null;
-  activateWorkspace: (path: string, persist?: boolean, workspaceMemoryEnabled?: boolean) => Promise<void>;
+  activateWorkspace: (path: string, persist?: boolean, workspaceMemoryEnabled?: boolean) => Promise<boolean>;
   resetThumbnails: () => void;
   notify: (message: string) => void;
 }) {
@@ -136,5 +136,5 @@ export function useSettingsController({ config, setConfig, workspace, activateWo
     window.addEventListener("pointerup", onPointerUp, { once: true });
   }, [config.settings.listColumns, persistColumns, setColumns]);
 
-  return { isOpen, setIsOpen, open, apply, setColumns, draggedColumn, dropTarget, dropPosition, startColumnReorder, startColumnResize };
+  return { isOpen, setIsOpen, open, apply, draggedColumn, dropTarget, dropPosition, startColumnReorder, startColumnResize };
 }

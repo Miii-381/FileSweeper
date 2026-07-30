@@ -1,15 +1,33 @@
-node_modules/
-dist/
-.npm-cache/
-.agents/
+# JavaScript dependencies, build output and test artifacts
+/node_modules/
+/dist/
+/.npm-cache/
+/coverage/
 *.log
-.npmrc
-icon.png
+
+# Local environment, editor and agent state
+/.npmrc
+.env
+.env.*
+!.env.example
+/.vscode/
+/.idea/
+/.agents/
+
+# Operating-system and temporary files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.swp
+*~
+*baiduyun.uploading.cfg*
 
 # User-provided media tools and their downloaded archives are never project source
-# or release inputs. Keep only sidecars/README.md under version control.
+# or release inputs.
 /sidecars/*
-!/sidecars/README.md
+!/sidecars/sidecars说明.md
 /ffmpeg-*/
 /ffmpeg*.zip
 /ffmpeg*.7z
@@ -18,21 +36,19 @@ icon.png
 /ffprobe*.exe
 /ffmpegthumbnailer*.exe
 
-src-tauri/target/
-src-tauri/gen/
+# Rust and Tauri generated output
+/src-tauri/target/
+/src-tauri/gen/
 
 # Windows NSIS builds only use icon.ico; generated Android/iOS and store icons are not source assets.
-src-tauri/icons/android/
-src-tauri/icons/ios/
-src-tauri/icons/*.png
-src-tauri/icons/icon.icns
+/icon.png
+/src-tauri/icons/android/
+/src-tauri/icons/ios/
+/src-tauri/icons/*.png
+/src-tauri/icons/icon.icns
 
-data/
+# Runtime data
+/data/
 
-# Local product-design working drafts are intentionally not versioned.
-/v2.0设计草案.md
-/V2.0开发计划.md
-
-.agents
-
-*baiduyun.uploading.cfg*
+# Local development notes and working drafts are intentionally not versioned.
+/开发文档/

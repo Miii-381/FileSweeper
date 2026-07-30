@@ -21,9 +21,10 @@ mod windows_shell;
 mod workspace;
 
 use config_store::folder_name;
+use domain::{fnv1a_hash, thumbnail_capture_cache_key};
 use media_processing::{
-    generate_thumbnail_batch_impl, probe_video_metadata_batch, thumbnail_capture_cache_key,
-    thumbnail_data_impl, MediaSidecarPermits, MediaSidecarPool, MetadataBatchResult,
+    generate_thumbnail_batch_impl, probe_video_metadata_batch, thumbnail_data_impl,
+    MediaSidecarPermits, MediaSidecarPool, MetadataBatchResult,
 };
 use media_stream::{TranscodeController, VideoStreamServer};
 use models::*;

@@ -62,19 +62,6 @@ fn background_mime(bytes: &[u8], path: &Path) -> &'static str {
     }
 }
 
-fn encode_url_path_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push_str(&format!("{byte:02X}"));
-        }
-    }
-    encoded
-}
-
 fn decode_url_path_segment(value: &str) -> Result<String, String> {
     let mut decoded = Vec::with_capacity(value.len());
     let bytes = value.as_bytes();
@@ -100,7 +87,7 @@ fn decode_url_path_segment(value: &str) -> Result<String, String> {
 }
 
 fn background_url(file_name: &str) -> String {
-    let name = encode_url_path_segment(file_name);
+    let name = domain::encode_url_component(file_name);
     #[cfg(any(target_os = "windows", target_os = "android"))]
     {
         format!("http://{BACKGROUND_PROTOCOL_NAME}.localhost/{name}")

@@ -33,7 +33,6 @@ import {
   type AboutInfo,
   type DataManagementSummary,
   type ColorMode,
-  type DirectoryEntry,
   type DirectoryChildren,
   type DirectoryRecycleResult,
   type SettingsLimits,
@@ -122,7 +121,7 @@ export default function App() {
 
 function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [config, setConfig] = useState<AppConfig>(initialState.config);
-  const [roots] = useState<DirectoryEntry[]>(initialState.roots);
+  const roots = initialState.roots;
   const settingsLimits: SettingsLimits = initialState.settingsLimits;
   const [treeState, setTreeState] = useState<TreeState>({});
   const treeStateRef = useRef<TreeState>(treeState);
@@ -520,7 +519,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     config,
     setConfig,
     workspace,
-    activateWorkspace: async (...args) => { await activateWorkspace(...args); },
+    activateWorkspace,
     resetThumbnails: resetThumbnailsForCapturePosition,
     notify,
   });

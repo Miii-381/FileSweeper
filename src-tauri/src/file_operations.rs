@@ -1,18 +1,5 @@
 use super::*;
 
-fn is_same_or_descendant_path(path: &Path, parent: &Path) -> bool {
-    let parent = path_string(parent)
-        .trim_end_matches(&['\\', '/'][..])
-        .to_ascii_lowercase();
-    let path = path_string(path)
-        .trim_end_matches(&['\\', '/'][..])
-        .to_ascii_lowercase();
-    path == parent
-        || path
-            .strip_prefix(&parent)
-            .is_some_and(|suffix| suffix.starts_with('\\') || suffix.starts_with('/'))
-}
-
 pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
     let requested = paths.len();
     let mut seen_paths = HashSet::new();
@@ -42,9 +29,11 @@ pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, S
     let candidates = normalized_paths.clone();
     let before_descendant_filter = normalized_paths.len();
     normalized_paths.retain(|path| {
-        !candidates
-            .iter()
-            .any(|other| other != path && other.is_dir() && is_same_or_descendant_path(path, other))
+        !candidates.iter().any(|other| {
+            other != path
+                && other.is_dir()
+                && domain::is_same_or_descendant_path(&path_string(path), &path_string(other))
+        })
     });
     log::debug!(
         "Item paths normalized: requested={requested}, accepted={}, descendants_removed={}",
@@ -52,10 +41,6 @@ pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, S
         before_descendant_filter.saturating_sub(normalized_paths.len())
     );
     Ok(normalized_paths)
-}
-
-fn validate_file_stem(new_stem: &str) -> Result<String, String> {
-    domain::validate_windows_file_stem(new_stem)
 }
 
 #[cfg(target_os = "windows")]
@@ -165,7 +150,7 @@ fn copy_path_with_shell(
 }
 
 fn rename_item_path(path: PathBuf, new_stem: String) -> Result<RenameResult, String> {
-    let stem = validate_file_stem(&new_stem)?;
+    let stem = domain::validate_windows_file_stem(&new_stem)?;
     let extension = if path.is_file() {
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -430,7 +415,9 @@ fn transfer_one(
             error: Some("The source is already in the destination folder.".to_string()),
         };
     }
-    if source_path.is_dir() && is_same_or_descendant_path(destination, &source_path) {
+    if source_path.is_dir()
+        && domain::is_same_or_descendant_path(&path_string(destination), &path_string(&source_path))
+    {
         log::warn!(
             "File task item rejected because destination is inside source directory: source={}, destination={}",
             normalized_source,

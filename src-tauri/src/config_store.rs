@@ -505,28 +505,17 @@ fn recover_workspace_state(
     Ok(fallback)
 }
 
+fn is_supported_media_path(path: &Path, extensions: &[String]) -> bool {
+    let extension = domain::normalized_file_extension(path);
+    extensions.iter().any(|configured| configured == &extension)
+}
+
 pub(super) fn is_supported_video_path(path: &Path, settings: &Preferences) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-        .unwrap_or_default();
-    settings
-        .video_extensions
-        .iter()
-        .any(|configured| configured == &extension)
+    is_supported_media_path(path, &settings.video_extensions)
 }
 
 pub(super) fn is_supported_audio_path(path: &Path, settings: &Preferences) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-        .unwrap_or_default();
-    settings
-        .audio_extensions
-        .iter()
-        .any(|configured| configured == &extension)
+    is_supported_media_path(path, &settings.audio_extensions)
 }
 
 #[cfg(test)]

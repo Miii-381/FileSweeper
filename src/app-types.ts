@@ -20,7 +20,7 @@ export type DirectoryEntry = {
 };
 
 export type FileKind = "video" | "audio" | "image" | "text" | "pdf" | "other";
-export type PreviewCapability = "inline" | "metadataOnly" | "unavailable";
+type PreviewCapability = "inline" | "metadataOnly" | "unavailable";
 
 export type FileEntry = {
   path: string;
@@ -98,15 +98,12 @@ export type DirectoryChildren = {
   folders: DirectoryEntry[];
 };
 
-export type DirectoryListing = {
+export type WorkspaceListing = {
   path: string;
   items: DirectoryItem[];
   mediaSuppressed: boolean;
   isAvailable: boolean;
 };
-
-/** @deprecated 使用 DirectoryListing。 */
-export type WorkspaceListing = DirectoryListing;
 
 export type RecycleResult = {
   recycledPaths: string[];
@@ -192,10 +189,6 @@ export type ThumbnailData = {
   path: string;
   thumbnailPath: string;
   dataUrl: string;
-};
-
-export type ThumbnailTask = {
-  file: FileEntry;
 };
 
 export type LogSnapshot = {
@@ -301,7 +294,7 @@ export type SettingsLimits = {
   backgroundSidecarConcurrencyMax: number;
 };
 
-export type TreeStatus = "idle" | "loading" | "loaded" | "error";
+type TreeStatus = "idle" | "loading" | "loaded" | "error";
 export type TreeState = Record<string, { status: TreeStatus; folders: DirectoryEntry[] }>;
 
 export const listColumnLabels: Record<ListColumnId, string> = {

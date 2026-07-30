@@ -1,26 +1,15 @@
 use super::*;
 
-fn is_same_or_descendant(path: &str, directory: &Path) -> bool {
-    let parent = path_string(directory)
-        .trim_end_matches(&['\\', '/'][..])
-        .to_ascii_lowercase();
-    let candidate = path.trim_end_matches(&['\\', '/'][..]).to_ascii_lowercase();
-    candidate == parent
-        || candidate
-            .strip_prefix(&parent)
-            .is_some_and(|suffix| suffix.starts_with('\\') || suffix.starts_with('/'))
-}
-
 fn purge_deleted_directory_references(directory: &Path) -> Result<AppConfig, String> {
     let deleted_path = path_string(directory);
     update_config(|config| {
         config
             .favorites
-            .retain(|favorite| !is_same_or_descendant(&favorite.path, directory));
+            .retain(|favorite| !domain::is_same_or_descendant_path(&favorite.path, &deleted_path));
         if config
             .last_workspace
             .as_deref()
-            .is_some_and(|path| is_same_or_descendant(path, directory))
+            .is_some_and(|path| domain::is_same_or_descendant_path(path, &deleted_path))
         {
             config.last_workspace = None;
         }
@@ -29,10 +18,10 @@ fn purge_deleted_directory_references(directory: &Path) -> Result<AppConfig, Str
     update_workspace_state(|config| {
         config
             .workspace_focus
-            .retain(|path, _| !is_same_or_descendant(path, directory));
+            .retain(|path, _| !domain::is_same_or_descendant_path(path, &deleted_path));
         config
             .workspace_sort
-            .retain(|path, _| !is_same_or_descendant(path, directory));
+            .retain(|path, _| !domain::is_same_or_descendant_path(path, &deleted_path));
         Ok(())
     })
     .inspect(|_| log::info!("Removed persisted references for recycled directory: {deleted_path}"))
@@ -358,21 +347,4 @@ pub(super) fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
         .inspect_err(|error| {
             log::error!("File-drag session failed: paths={requested}, error={error}")
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn directory_reference_cleanup_matches_only_whole_path_segments() {
-        let deleted = Path::new(r"C:\\Files\\Archive");
-        assert!(is_same_or_descendant(r"C:\\Files\\Archive", deleted));
-        assert!(is_same_or_descendant(
-            r"c:\\files\\archive\\nested",
-            deleted
-        ));
-        assert!(!is_same_or_descendant(r"C:\\Files\\Archived", deleted));
-        assert!(!is_same_or_descendant(r"C:\\Files", deleted));
-    }
 }

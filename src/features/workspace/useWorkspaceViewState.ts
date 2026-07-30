@@ -273,7 +273,7 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
   const changeViewMode = useCallback((mode: ViewMode) => { writeClientLog("info", `切换工作区视图：${viewMode} -> ${mode}`); setViewMode(mode); }, [viewMode]);
 
   return {
-    viewMode, searchQuery, setSearchQuery, sortKey, sortAscending, gridColumns, selectedItem, selectedFile,
+    viewMode, searchQuery, setSearchQuery, sortKey, sortAscending, gridColumns, selectedFile,
     visibleFiles, visibleListColumns, listGridStyle, gridRowVirtualizer, listRowVirtualizer,
     setGridScrollRef, listScrollElement, scrollWorkspaceToStart, scrollWorkspaceToFocus,
     captureWorkspaceScroll, persistWorkspaceFocus, persistWorkspaceSort, prepareWorkspace, changeSortKey,

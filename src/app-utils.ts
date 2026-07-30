@@ -59,7 +59,7 @@ export function formatPlaybackTime(value: number) {
     : `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-export function logLevelRank(level: string) {
+function logLevelRank(level: string) {
   if (level.includes("ERROR")) {
     return 4;
   }
@@ -75,7 +75,7 @@ export function logLevelRank(level: string) {
   return 0;
 }
 
-export function minimumLogLevelRank(level: LogMinimumLevel) {
+function minimumLogLevelRank(level: LogMinimumLevel) {
   return level === "warn" ? 3 : level === "info" ? 2 : 1;
 }
 

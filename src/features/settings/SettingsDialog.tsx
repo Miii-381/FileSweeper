@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp, Monitor, Moon, Plus, Sun, X } from "lucide-react";
 import { useState } from "react";
 
 import { listColumnLabels, type AboutInfo, type CodeTheme, type DataManagementSummary, type ListColumn, type ListColumnId, type Preferences, type SettingsLimits, type ThumbnailCapturePosition } from "../../app-types";
-import { writeClientLog } from "../../app-utils";
+import { formatBytes, writeClientLog } from "../../app-utils";
 import { themePresets } from "../../theme";
 
 const codeThemeOptions: Array<{ id: CodeTheme; name: string }> = [
@@ -618,10 +618,4 @@ export function SettingsDialog({
           </section>
         </div>
   );
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
