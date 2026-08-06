@@ -178,18 +178,26 @@
     --range-progress: 0%;
     appearance: none;
     background: linear-gradient(to right, var(--accent) 0 var(--range-progress), var(--surface-hover) var(--range-progress) 100%);
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 4px;
     border: 0;
     border-radius: 999px;
-    height: 4px;
     outline: 0
 }
 
 .player-progress {
+    height: 12px;
     min-width: 36px;
     flex: 1
 }
 
+.player-progress:not(:disabled) {
+    cursor: pointer
+}
+
 .player-volume {
+    height: 4px;
     width: 52px
 }
 

@@ -290,7 +290,7 @@ export function SettingsDialog({
                   <span className="number-input"><input type="number" min="1" max="500" value={settingsDraft.imageMaxMegapixels} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, imageMaxMegapixels: Number(event.target.value) }))} /><em>MP</em></span>
                 </label>
                 <label className="setting-row">
-                  <span>背景图可见度</span>
+                  <span>背景图不透明度</span>
                   <span className="opacity-input">
                     <input type="range" min="0" max="100" value={settingsDraft.backgroundOpacity} onChange={(event) => setSettingsDraft((draft) => ({ ...draft, backgroundOpacity: Number(event.target.value) }))} />
                     <output>{settingsDraft.backgroundOpacity}%</output>
