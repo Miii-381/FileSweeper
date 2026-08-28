@@ -8,8 +8,10 @@ fn decode_text_preview(bytes: &[u8]) -> Result<(String, &'static str), String> {
     }
     if bytes.starts_with(&[0xff, 0xfe]) {
         let units = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect::<Vec<_>>();
         return String::from_utf16(&units)
             .map(|text| (text, "UTF-16 LE"))
@@ -17,8 +19,10 @@ fn decode_text_preview(bytes: &[u8]) -> Result<(String, &'static str), String> {
     }
     if bytes.starts_with(&[0xfe, 0xff]) {
         let units = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_be_bytes(*pair))
             .collect::<Vec<_>>();
         return String::from_utf16(&units)
             .map(|text| (text, "UTF-16 BE"))
