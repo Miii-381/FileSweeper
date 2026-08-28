@@ -313,3 +313,24 @@ fn image_reader_prefers_content_signature_over_a_misleading_extension() {
     assert_eq!(dimensions, (3, 2));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn nsis_uninstaller_requires_explicit_consent_before_deleting_user_data() {
+    let hooks = include_str!("../installer-hooks.nsh");
+    let lines = hooks.lines().map(str::trim).collect::<Vec<_>>();
+    let update_guard = lines
+        .iter()
+        .position(|line| *line == "${If} $UpdateMode <> 1")
+        .expect("the uninstall hook should distinguish updates");
+    let consent_guard = lines
+        .iter()
+        .position(|line| *line == "${AndIf} $DeleteAppDataCheckboxState = 1")
+        .expect("the uninstall hook should require explicit data-deletion consent");
+    let delete_command = lines
+        .iter()
+        .position(|line| *line == "RMDir /r \"$INSTDIR\\data\"")
+        .expect("the uninstall hook should own installed user-data cleanup");
+
+    assert!(update_guard < consent_guard);
+    assert!(consent_guard < delete_command);
+}

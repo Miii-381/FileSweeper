@@ -1,6 +1,7 @@
 ; FileSweeper stores mutable data beside the executable instead of in the
 ; Tauri default AppData locations. The generated NSIS template does not know
-; about this directory, so remove it explicitly only for a real uninstall.
+; about this directory, so remove it only for a real uninstall where the user
+; explicitly selected the generated "Delete app data" checkbox.
 ;
 ; The pre-uninstall hook runs after the confirmation page but before registry
 ; cleanup. It repeats the generated process check so a failed data deletion
@@ -8,7 +9,8 @@
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   ${If} $UpdateMode <> 1
-    DetailPrint "Removing FileSweeper data directory"
+  ${AndIf} $DeleteAppDataCheckboxState = 1
+    DetailPrint "Removing FileSweeper data directory by explicit user request"
     ClearErrors
     RMDir /r "$INSTDIR\data"
     ${If} ${Errors}
