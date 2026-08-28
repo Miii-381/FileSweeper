@@ -9,34 +9,40 @@ import type {
   FileTaskSnapshot,
   RecycleResult,
   RenameResult,
+  DirectoryItem,
   FileEntry,
   WorkspaceListing,
 } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 import type { PreviewPlayerHandle } from "../../components/PreviewPlayer";
+import { findNextPathAfterRemoval } from "./workspaceSelection";
 
 export function useFileTasks({
   workspace,
+  orderedItems,
   setWorkspace,
   selectedFiles,
   setSelectedFiles,
+  selectionAnchor,
   setSelectionAnchor,
+  setSuppressPreviewAutoplay,
   selectedFile,
   previewPlayerRef,
   refreshWorkspace,
   notify,
-  confirmRecycle,
 }: {
   workspace: WorkspaceListing | null;
+  orderedItems: DirectoryItem[];
   setWorkspace: Dispatch<SetStateAction<WorkspaceListing | null>>;
   selectedFiles: Set<string>;
   setSelectedFiles: Dispatch<SetStateAction<Set<string>>>;
+  selectionAnchor: string | null;
   setSelectionAnchor: Dispatch<SetStateAction<string | null>>;
+  setSuppressPreviewAutoplay: Dispatch<SetStateAction<boolean>>;
   selectedFile: FileEntry | null;
   previewPlayerRef: RefObject<PreviewPlayerHandle | null>;
   refreshWorkspace: (path: string, reason?: string) => Promise<void>;
   notify: (message: string) => void;
-  confirmRecycle: (message: string) => Promise<boolean>;
 }) {
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -48,18 +54,39 @@ export function useFileTasks({
   const refreshWorkspaceRef = useRef(refreshWorkspace);
   const notifyRef = useRef(notify);
   const workspacePathRef = useRef<string | null>(workspace?.path ?? null);
+  const orderedItemsRef = useRef(orderedItems);
+  const selectionAnchorRef = useRef(selectionAnchor);
   refreshWorkspaceRef.current = refreshWorkspace;
   notifyRef.current = notify;
   workspacePathRef.current = workspace?.path ?? null;
+  orderedItemsRef.current = orderedItems;
+  selectionAnchorRef.current = selectionAnchor;
 
   const applyRecycleResult = useCallback(
     (result: RecycleResult) => {
       const recycledPaths = new Set(result.recycledPaths);
+      const previousOrderedPaths = orderedItemsRef.current.map((item) => item.path);
+      const focusedPath = selectionAnchorRef.current;
+      const nextFocusedPath = focusedPath && recycledPaths.has(focusedPath)
+        ? findNextPathAfterRemoval(previousOrderedPaths, recycledPaths, focusedPath)
+        : null;
       setWorkspace((current) =>
         current ? { ...current, items: current.items.filter((item) => !recycledPaths.has(item.path)) } : current,
       );
-      setSelectedFiles((current) => new Set([...current].filter((path) => !recycledPaths.has(path))));
-      setSelectionAnchor((current) => (current && recycledPaths.has(current) ? null : current));
+      if (focusedPath && recycledPaths.has(focusedPath)) {
+        setSuppressPreviewAutoplay(false);
+        setSelectedFiles(nextFocusedPath ? new Set([nextFocusedPath]) : new Set());
+        setSelectionAnchor(nextFocusedPath);
+        writeClientLog(
+          "debug",
+          nextFocusedPath
+            ? `回收站操作后焦点移动到相邻下一项：${focusedPath} -> ${nextFocusedPath}`
+            : `回收站操作后当前没有可聚焦项目：${focusedPath}`,
+        );
+      } else {
+        setSelectedFiles((current) => new Set([...current].filter((path) => !recycledPaths.has(path))));
+        setSelectionAnchor((current) => (current && recycledPaths.has(current) ? null : current));
+      }
       if (result.failedPaths.length > 0) {
         notifyRef.current(`已移到回收站 ${result.recycledPaths.length} 个项目，${result.failedPaths.length} 个失败`);
         writeClientLog("warn", `回收站操作部分失败：成功 ${result.recycledPaths.length}，失败 ${result.failedPaths.length}`);
@@ -68,17 +95,13 @@ export function useFileTasks({
         writeClientLog("info", `回收站操作完成：${result.recycledPaths.length} 个文件`);
       }
     },
-    [setSelectedFiles, setSelectionAnchor, setWorkspace],
+    [setSelectedFiles, setSelectionAnchor, setSuppressPreviewAutoplay, setWorkspace],
   );
 
   const recycleFiles = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0) {
         writeClientLog("debug", "回收站操作被忽略：没有文件路径");
-        return;
-      }
-      if (!await confirmRecycle(`将 ${paths.length} 个文件移到回收站？`)) {
-        writeClientLog("info", `用户取消回收站操作：${paths.length} 个文件`);
         return;
       }
       writeClientLog("info", `开始回收站操作：${paths.length} 个文件`);
@@ -98,7 +121,7 @@ export function useFileTasks({
         writeClientLog("error", `回收站操作失败：${message}`);
       }
     },
-    [applyRecycleResult, confirmRecycle, previewPlayerRef, selectedFile],
+    [applyRecycleResult, previewPlayerRef, selectedFile],
   );
 
   const recycleSelectedFiles = useCallback(

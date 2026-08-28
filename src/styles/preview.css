@@ -187,7 +187,7 @@
 }
 
 .player-progress {
-    height: 12px;
+    height: 14px;
     min-width: 36px;
     flex: 1
 }
@@ -197,7 +197,7 @@
 }
 
 .player-volume {
-    height: 4px;
+    height: 14px;
     width: 52px
 }
 

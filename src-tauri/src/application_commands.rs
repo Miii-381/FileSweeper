@@ -186,7 +186,7 @@ pub(super) fn save_configuration(
 ) -> Result<AppConfig, String> {
     let previous_background = load_config()?.settings.background_image;
     log::info!(
-        "Saving application settings: appearance={}, accent={}, thumbnail_cache_gb={}, capture_position={}, autoplay={}, volume={}, muted={}, hidden={}, nomedia={}, extensions={}, sidecar_concurrency={}, list_columns={}",
+        "Saving application settings: appearance={}, accent={}, thumbnail_cache_gb={}, capture_position={}, autoplay={}, volume={}, muted={}, hidden={}, nomedia={}, video_extensions={}, audio_extensions={}, image_extensions={}, text_extensions={}, sidecar_concurrency={}, list_columns={}",
         settings.appearance,
         settings.accent_theme,
         settings.thumbnail_cache_gb,
@@ -197,6 +197,9 @@ pub(super) fn save_configuration(
         settings.show_hidden_items,
         settings.show_nomedia_media,
         settings.video_extensions.len(),
+        settings.audio_extensions.len(),
+        settings.image_extensions.len(),
+        settings.text_extensions.len(),
         settings.background_sidecar_concurrency,
         settings.list_columns.len()
     );

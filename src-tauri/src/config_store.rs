@@ -263,9 +263,18 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
     }
     domain::normalize_extension_groups(&mut config.settings);
     domain::normalize_extensions(&mut config.settings.managed_video_extensions);
+    domain::normalize_extensions(&mut config.settings.managed_audio_extensions);
+    domain::normalize_extensions(&mut config.settings.managed_image_extensions);
+    domain::normalize_extensions(&mut config.settings.managed_text_extensions);
 
-    if config.settings.video_extensions.is_empty() {
-        return Err("At least one supported video extension is required.".to_string());
+    if config.settings.video_extensions.is_empty()
+        || config.settings.audio_extensions.is_empty()
+        || config.settings.image_extensions.is_empty()
+        || config.settings.text_extensions.is_empty()
+    {
+        return Err(
+            "At least one supported extension is required for every media group.".to_string(),
+        );
     }
     if !(1..=512).contains(&config.settings.image_max_megabytes) {
         return Err("Image size protection must be between 1 and 512 MiB.".to_string());
@@ -273,16 +282,31 @@ pub(super) fn validate_config(config: &mut AppConfig) -> Result<(), String> {
     if !(1..=500).contains(&config.settings.image_max_megapixels) {
         return Err("Image pixel protection must be between 1 and 500 MP.".to_string());
     }
-    for extension in &config.settings.video_extensions {
-        if !config.settings.managed_video_extensions.contains(extension) {
-            config
-                .settings
-                .managed_video_extensions
-                .push(extension.clone());
+    fn include_enabled_extensions(managed: &mut Vec<String>, enabled: &[String]) {
+        for extension in enabled {
+            if !managed.contains(extension) {
+                managed.push(extension.clone());
+            }
         }
+        managed.sort();
+        managed.dedup();
     }
-    config.settings.managed_video_extensions.sort();
-    config.settings.managed_video_extensions.dedup();
+    include_enabled_extensions(
+        &mut config.settings.managed_video_extensions,
+        &config.settings.video_extensions,
+    );
+    include_enabled_extensions(
+        &mut config.settings.managed_audio_extensions,
+        &config.settings.audio_extensions,
+    );
+    include_enabled_extensions(
+        &mut config.settings.managed_image_extensions,
+        &config.settings.image_extensions,
+    );
+    include_enabled_extensions(
+        &mut config.settings.managed_text_extensions,
+        &config.settings.text_extensions,
+    );
     domain::normalize_list_columns(&mut config.settings.list_columns);
 
     let mut known_paths = HashSet::new();
@@ -689,6 +713,15 @@ mod tests {
                 config.settings.video_extensions = vec![".mkv".to_string(), ".mp4".to_string()];
                 config.settings.managed_video_extensions =
                     vec![".mkv".to_string(), ".mp4".to_string(), ".webm".to_string()];
+                config.settings.audio_extensions = vec![".flac".to_string()];
+                config.settings.managed_audio_extensions =
+                    vec![".flac".to_string(), ".mp3".to_string()];
+                config.settings.image_extensions = vec![".png".to_string()];
+                config.settings.managed_image_extensions =
+                    vec![".jpg".to_string(), ".png".to_string()];
+                config.settings.text_extensions = vec![".md".to_string()];
+                config.settings.managed_text_extensions =
+                    vec![".md".to_string(), ".txt".to_string()];
                 config.settings.background_sidecar_concurrency = 1;
                 config.settings.list_columns = vec![
                     ListColumn {
@@ -731,6 +764,21 @@ mod tests {
         assert_eq!(
             settings["managedVideoExtensions"],
             serde_json::json!([".mkv", ".mp4", ".webm"])
+        );
+        assert_eq!(settings["audioExtensions"], serde_json::json!([".flac"]));
+        assert_eq!(
+            settings["managedAudioExtensions"],
+            serde_json::json!([".flac", ".mp3"])
+        );
+        assert_eq!(settings["imageExtensions"], serde_json::json!([".png"]));
+        assert_eq!(
+            settings["managedImageExtensions"],
+            serde_json::json!([".jpg", ".png"])
+        );
+        assert_eq!(settings["textExtensions"], serde_json::json!([".md"]));
+        assert_eq!(
+            settings["managedTextExtensions"],
+            serde_json::json!([".md", ".txt"])
         );
         assert_eq!(settings["backgroundSidecarConcurrency"], 1);
         assert_eq!(settings["listColumns"][0]["width"], 320);

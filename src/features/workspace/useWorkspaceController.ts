@@ -2,11 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { useRef, type Dispatch, type SetStateAction } from "react";
 import { isFileEntry, type AppConfig, type SortKey, type DirectoryItem, type WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
+import { findNextPathAfterRemoval } from "./workspaceSelection";
 
 type Props = {
   config: AppConfig;
   setConfig: Dispatch<SetStateAction<AppConfig>>;
   workspace: WorkspaceListing | null;
+  orderedItems: DirectoryItem[];
   setWorkspace: Dispatch<SetStateAction<WorkspaceListing | null>>;
   selectedFiles: Set<string>;
   setSelectedFiles: Dispatch<SetStateAction<Set<string>>>;
@@ -29,6 +31,7 @@ export function useWorkspaceController({
   config,
   setConfig,
   workspace,
+  orderedItems,
   setWorkspace,
   selectedFiles,
   setSelectedFiles,
@@ -50,7 +53,13 @@ export function useWorkspaceController({
   const workspaceNavigationPending = useRef(false);
   const workspaceScanRequest = useRef(0);
   const currentWorkspacePath = useRef<string | null>(workspace?.path ?? null);
+  const currentOrderedItems = useRef(orderedItems);
+  const currentSelectedFiles = useRef(selectedFiles);
+  const currentSelectionAnchor = useRef(selectionAnchor);
   currentWorkspacePath.current = workspace?.path ?? null;
+  currentOrderedItems.current = orderedItems;
+  currentSelectedFiles.current = selectedFiles;
+  currentSelectionAnchor.current = selectionAnchor;
 
   const activateWorkspace = async (
     requestedPath: string,
@@ -186,8 +195,26 @@ export function useWorkspaceController({
         };
       });
       const nextPaths = new Set(listing.items.map((item) => item.path));
-      setSelectedFiles((current) => new Set([...current].filter((path) => nextPaths.has(path))));
-      setSelectionAnchor((current) => (current && nextPaths.has(current) ? current : null));
+      const previousOrderedPaths = currentOrderedItems.current.map((item) => item.path);
+      const removedPaths = new Set(previousOrderedPaths.filter((itemPath) => !nextPaths.has(itemPath)));
+      const focusedPath = currentSelectionAnchor.current
+        ?? previousOrderedPaths.find((itemPath) => currentSelectedFiles.current.has(itemPath))
+        ?? null;
+      if (focusedPath && removedPaths.has(focusedPath)) {
+        const nextFocusedPath = findNextPathAfterRemoval(previousOrderedPaths, removedPaths, focusedPath);
+        setSuppressPreviewAutoplay(false);
+        setSelectedFiles(nextFocusedPath ? new Set([nextFocusedPath]) : new Set());
+        setSelectionAnchor(nextFocusedPath);
+        writeClientLog(
+          "debug",
+          nextFocusedPath
+            ? `目录刷新后焦点项已移除，焦点移动到相邻下一项：${focusedPath} -> ${nextFocusedPath}`
+            : `目录刷新后焦点项已移除，当前没有可聚焦项目：${focusedPath}`,
+        );
+      } else {
+        setSelectedFiles((current) => new Set([...current].filter((itemPath) => nextPaths.has(itemPath))));
+        setSelectionAnchor((current) => (current && nextPaths.has(current) ? current : null));
+      }
       writeClientLog("debug", `目录已刷新：${reason}，项目 ${listing.items.length} 个`);
     } catch (error) {
       if (scanRequestId !== workspaceScanRequest.current) {

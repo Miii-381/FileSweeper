@@ -203,6 +203,12 @@ pub(super) struct Preferences {
     pub(super) image_max_megapixels: u16,
     #[serde(default = "default_video_extensions")]
     pub(super) managed_video_extensions: Vec<String>,
+    #[serde(default = "default_audio_extensions")]
+    pub(super) managed_audio_extensions: Vec<String>,
+    #[serde(default = "default_image_extensions")]
+    pub(super) managed_image_extensions: Vec<String>,
+    #[serde(default = "default_text_extensions")]
+    pub(super) managed_text_extensions: Vec<String>,
     #[serde(default = "recommended_background_sidecar_concurrency")]
     pub(super) background_sidecar_concurrency: usize,
     #[serde(default = "default_list_columns")]
@@ -239,6 +245,9 @@ impl Default for Preferences {
             image_max_megabytes: default_image_max_megabytes(),
             image_max_megapixels: default_image_max_megapixels(),
             managed_video_extensions: default_video_extensions(),
+            managed_audio_extensions: default_audio_extensions(),
+            managed_image_extensions: default_image_extensions(),
+            managed_text_extensions: default_text_extensions(),
             background_sidecar_concurrency: recommended_background_sidecar_concurrency(),
             list_columns: default_list_columns(),
             background_image: None,

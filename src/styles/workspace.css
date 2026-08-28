@@ -536,7 +536,7 @@
     background: color-mix(in srgb, var(--accent) 20%, transparent);
     border: 1px solid var(--accent-focus);
     border-radius: 3px;
-    position: fixed;
+    position: absolute;
     z-index: 100
 }
 

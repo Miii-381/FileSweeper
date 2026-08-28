@@ -28,7 +28,10 @@ export function useSettingsController({ config, setConfig, workspace, activateWo
     const extensionGroups = ["videoExtensions", "audioExtensions", "imageExtensions", "textExtensions"] as const;
     const extensionGroupsChanged = extensionGroups
       .some((key) => config.settings[key].join("\u0000") !== settings[key].join("\u0000"));
-    writeClientLog("info", `提交偏好设置：主题 ${settings.appearance}/${settings.accentTheme}，代码配色 ${settings.codeTheme}，文本字体 ${settings.textPreviewLatinFont}/${settings.textPreviewCjkFont}，缓存 ${settings.thumbnailCacheGb} GiB，取帧 ${settings.thumbnailCapturePosition}，后台并发 ${settings.backgroundSidecarConcurrency}，扩展名 ${settings.videoExtensions.length} 个`);
+    writeClientLog(
+      "info",
+      `提交偏好设置：主题 ${settings.appearance}/${settings.accentTheme}，代码配色 ${settings.codeTheme}，文本字体 ${settings.textPreviewLatinFont}/${settings.textPreviewCjkFont}，缓存 ${settings.thumbnailCacheGb} GiB，取帧 ${settings.thumbnailCapturePosition}，后台并发 ${settings.backgroundSidecarConcurrency}，启用格式 视频 ${settings.videoExtensions.length}/音频 ${settings.audioExtensions.length}/图片 ${settings.imageExtensions.length}/文本 ${settings.textExtensions.length}`,
+    );
     try {
       const nextConfig = await invoke<AppConfig>("save_configuration", { settings });
       setConfig((current) => ({ ...current, version: nextConfig.version, settings: nextConfig.settings }));

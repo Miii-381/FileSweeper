@@ -13,6 +13,7 @@ import { PreviewPanel } from "./features/preview/PreviewPanel";
 import { useAudioPreferences } from "./features/preview/useAudioPreferences";
 import { LogDialog } from "./features/settings/LogDialog";
 import { SettingsDialog } from "./features/settings/SettingsDialog";
+import { SettingsLoadingOverlay } from "./features/settings/SettingsLoadingOverlay";
 import { useLogViewer } from "./features/settings/useLogViewer";
 import { useSettingsController } from "./features/settings/useSettingsController";
 import { WorkspacePanel } from "./features/workspace/WorkspacePanel";
@@ -141,6 +142,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
   const [dataSummary, setDataSummary] = useState<DataManagementSummary | null>(null);
   const [aboutInfo, setAboutInfo] = useState<AboutInfo | null>(null);
+  const [settingsInfoLoading, setSettingsInfoLoading] = useState(false);
   const [systemColorMode, setSystemColorMode] = useState<ColorMode>("dark");
   const { toast, notify } = useToast();
   const [suppressPreviewAutoplay, setSuppressPreviewAutoplay] = useState(false);
@@ -307,6 +309,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     config,
     setConfig,
     workspace,
+    orderedItems: visibleFiles,
     setWorkspace,
     selectedFiles,
     setSelectedFiles,
@@ -374,22 +377,20 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     cancelActiveFileTask,
   } = useFileTasks({
     workspace,
+    orderedItems: visibleFiles,
     setWorkspace,
     selectedFiles,
     setSelectedFiles,
+    selectionAnchor,
     setSelectionAnchor,
+    setSuppressPreviewAutoplay,
     selectedFile,
     previewPlayerRef,
     refreshWorkspace,
     notify,
-    confirmRecycle,
   });
 
   const recycleDirectory = useCallback(async (path: string) => {
-    if (!await confirmRecycle(`将文件夹“${path}”及其内容移到回收站？`)) {
-      writeClientLog("info", `用户取消目录回收站操作：${path}`);
-      return;
-    }
     writeClientLog("info", `开始目录回收站操作：${path}`);
     try {
       const result = await invoke<DirectoryRecycleResult>("recycle_directory", { path });
@@ -426,7 +427,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
       notify(message);
       writeClientLog("error", `目录回收站操作失败，已保留界面状态：${path}，${message}`);
     }
-  }, [confirmRecycle, loadTreeChildren, notify, refreshWorkspace, resetMetadata, setConfig, setSelectedFiles, setSelectionAnchor, setSuppressPreviewAutoplay, setWorkspace, workspace]);
+  }, [loadTreeChildren, notify, refreshWorkspace, resetMetadata, setConfig, setSelectedFiles, setSelectionAnchor, setSuppressPreviewAutoplay, setWorkspace, workspace]);
 
   const {
     selectionBox: workspaceSelectionBox,
@@ -524,6 +525,14 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     notify,
   });
 
+  const openSettingsWithLoading = useCallback(() => {
+    setDataSummary(null);
+    setAboutInfo(null);
+    setSettingsInfoLoading(true);
+    writeClientLog("info", "准备打开偏好设置：先显示许可证读取提示");
+    openSettings();
+  }, [openSettings]);
+
   useEffect(() => {
     let active = true;
     const fileName = config.settings.backgroundImage;
@@ -542,14 +551,32 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
 
   useEffect(() => {
     if (!isSettingsOpen) return;
+    let active = true;
+    const startedAt = performance.now();
+    writeClientLog("info", "开始读取设置页许可证、媒体组件与数据目录摘要");
     void Promise.all([
       invoke<DataManagementSummary>("get_data_management_summary"),
       invoke<AboutInfo>("get_about_info"),
     ]).then(([summary, about]) => {
+      if (!active) return;
       setDataSummary(summary);
       setAboutInfo(about);
-    }).catch((error: unknown) => writeClientLog("warn", `读取数据管理信息失败：${errorMessage(error)}`));
-  }, [isSettingsOpen]);
+      writeClientLog(
+        "info",
+        `设置页信息读取完成：耗时 ${Math.round(performance.now() - startedAt)} ms，媒体组件 ${Object.keys(about.sidecars).length} 个，数据 ${summary.totalBytes} 字节`,
+      );
+    }).catch((error: unknown) => {
+      if (!active) return;
+      const message = errorMessage(error);
+      notify(`读取许可证信息失败：${message}`);
+      writeClientLog("warn", `读取设置页许可证与数据管理信息失败：${message}`);
+    }).finally(() => {
+      if (active) setSettingsInfoLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [isSettingsOpen, notify]);
 
   useEffect(() => {
     let active = true;
@@ -836,7 +863,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
         onChooseWorkspace={() => void chooseFolder("workspace")}
         onSearchChange={setSearchQuery}
         onToggleFavorite={() => void toggleFavorite()}
-        onOpenSettings={openSettings}
+        onOpenSettings={openSettingsWithLoading}
         onOpenLogs={openLogs}
       />
 
@@ -858,7 +885,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
         onSelectPath={(path) => void navigateDirectory(path)}
         onTogglePath={toggleTreeNode}
         onContextMenu={showPathContextMenu}
-        onOpenSettings={openSettings}
+        onOpenSettings={openSettingsWithLoading}
       />
       </Panel>
 
@@ -978,7 +1005,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
         />
       )}
 
-      {isSettingsOpen && (
+      {isSettingsOpen && !settingsInfoLoading && (
         <SettingsDialog
           settings={config.settings}
           limits={settingsLimits}
@@ -995,6 +1022,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
           onExportDiagnostics={() => exportDiagnostics().catch((error: unknown) => notify(errorMessage(error)))}
         />
       )}
+      {isSettingsOpen && settingsInfoLoading && <SettingsLoadingOverlay />}
     </main>
   );
 }

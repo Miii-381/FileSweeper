@@ -23,6 +23,23 @@ type PreviewPlayerProps = {
   onAudioPreferenceChange: (volume: number, muted: boolean, persistImmediately?: boolean) => void;
 };
 
+const DIRECT_SEEK_RECOVERY_DELAY_MS = 1_500;
+
+type PendingDirectSeek = {
+  requestId: number;
+  targetTime: number;
+  startedAt: number;
+  retried: boolean;
+};
+
+function describeBufferedRanges(element: HTMLVideoElement) {
+  const ranges: string[] = [];
+  for (let index = 0; index < element.buffered.length; index += 1) {
+    ranges.push(`${element.buffered.start(index).toFixed(3)}-${element.buffered.end(index).toFixed(3)}`);
+  }
+  return ranges.length > 0 ? ranges.join(",") : "无";
+}
+
 export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>(function PreviewPlayer({
   video,
   thumbnailPath,
@@ -58,7 +75,41 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   const activeMediaRequest = useRef(0);
   const isScrubbing = useRef(false);
   const directFallbackRequested = useRef(false);
+  const directSeekRequest = useRef(0);
+  const directSeekRecoveryTimer = useRef<number | null>(null);
+  const pendingDirectSeek = useRef<PendingDirectSeek | null>(null);
   const fullscreenControlsTimer = useRef<number | null>(null);
+
+  const clearDirectSeekRecovery = () => {
+    if (directSeekRecoveryTimer.current !== null) {
+      window.clearTimeout(directSeekRecoveryTimer.current);
+      directSeekRecoveryTimer.current = null;
+    }
+  };
+
+  const finishDirectSeek = (element: HTMLVideoElement, trigger: "seeked" | "canplay" | "状态检查") => {
+    const pending = pendingDirectSeek.current;
+    if (!pending) {
+      return false;
+    }
+    if (
+      trigger !== "状态检查"
+      && (element.seeking || Math.abs(element.currentTime - pending.targetTime) > 0.25)
+    ) {
+      writeClientLog(
+        "debug",
+        `忽略尚未到达当前目标的直连定位事件：${video?.path ?? ""}，触发 ${trigger}，当前 ${element.currentTime.toFixed(3)} 秒，目标 ${pending.targetTime.toFixed(3)} 秒，seeking ${element.seeking}`,
+      );
+      return false;
+    }
+    clearDirectSeekRecovery();
+    pendingDirectSeek.current = null;
+    writeClientLog(
+      "info",
+      `直连播放器定位完成：${video?.path ?? ""} -> ${pending.targetTime.toFixed(3)} 秒，触发 ${trigger}，耗时 ${Math.max(0, Math.round(performance.now() - pending.startedAt))}ms，自动重试 ${pending.retried}，readyState ${element.readyState}，缓冲 ${describeBufferedRanges(element)}`,
+    );
+    return true;
+  };
 
   const showFullscreenControls = () => {
     setFullscreenControlsVisible(true);
@@ -133,6 +184,9 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   }, [onEnsureThumbnail, thumbnailPath, videoPath]);
 
   useEffect(() => {
+    directSeekRequest.current += 1;
+    clearDirectSeekRecovery();
+    pendingDirectSeek.current = null;
     setStreamUrl(null);
     setIsTranscoded(false);
     setPlayerError(null);
@@ -178,6 +232,9 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     return () => {
       active = false;
       window.clearTimeout(timer);
+      directSeekRequest.current += 1;
+      clearDirectSeekRecovery();
+      pendingDirectSeek.current = null;
       writeClientLog("debug", `播放器视频发生切换或卸载，停止旧转码：${videoPath}`);
       void invoke("stop_transcoded_preview", { path: videoPath }).catch((error: unknown) => {
         writeClientLog("warn", `停止旧转码预览失败：${videoPath}，${errorMessage(error)}`);
@@ -289,11 +346,53 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
       if (!element) {
         return;
       }
+      clearDirectSeekRecovery();
+      const requestId = ++directSeekRequest.current;
+      pendingDirectSeek.current = {
+        requestId,
+        targetTime,
+        startedAt: performance.now(),
+        retried: false,
+      };
       element.currentTime = targetTime;
       setCurrentTime(targetTime);
-      writeClientLog("info", `直连播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒`);
+      writeClientLog(
+        "info",
+        `直连播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒，请求 ${requestId}，readyState ${element.readyState}，networkState ${element.networkState}，缓冲 ${describeBufferedRanges(element)}`,
+      );
+      directSeekRecoveryTimer.current = window.setTimeout(() => {
+        directSeekRecoveryTimer.current = null;
+        const pending = pendingDirectSeek.current;
+        const activeElement = videoElement.current;
+        if (!pending || pending.requestId !== requestId || !activeElement) {
+          return;
+        }
+        if (!activeElement.seeking && activeElement.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          const completed = finishDirectSeek(activeElement, "状态检查");
+          if (completed && playbackIntent.current && activeElement.paused) {
+            void activeElement.play().catch((error) => {
+              writeClientLog("warn", `直连定位状态检查后恢复播放失败：${video.path}，${errorMessage(error)}`);
+            });
+          }
+          return;
+        }
+        pending.retried = true;
+        writeClientLog(
+          "warn",
+          `直连播放器首次定位未就绪，自动重试：${video.path} -> ${targetTime.toFixed(3)} 秒，请求 ${requestId}，seeking ${activeElement.seeking}，readyState ${activeElement.readyState}，networkState ${activeElement.networkState}，缓冲 ${describeBufferedRanges(activeElement)}`,
+        );
+        activeElement.currentTime = targetTime;
+        if (playbackIntent.current) {
+          void activeElement.play().catch((error) => {
+            writeClientLog("warn", `直连定位自动重试后恢复播放失败：${video.path}，${errorMessage(error)}`);
+          });
+        }
+      }, DIRECT_SEEK_RECOVERY_DELAY_MS);
       return;
     }
+    directSeekRequest.current += 1;
+    clearDirectSeekRecovery();
+    pendingDirectSeek.current = null;
     const resume = playbackIntent.current;
     writeClientLog("info", `转码播放器定位：${video.path} -> ${targetTime.toFixed(3)} 秒`);
     startTranscodedPreview(targetTime, resume);
@@ -319,6 +418,9 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   };
 
   const releasePlayback = () => {
+    directSeekRequest.current += 1;
+    clearDirectSeekRecovery();
+    pendingDirectSeek.current = null;
     playbackIntent.current = false;
     activeMediaRequest.current = 0;
     const element = videoElement.current;
@@ -426,6 +528,9 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
                 return;
               }
               setPlayerState("ready");
+              if (!isTranscoded) {
+                finishDirectSeek(event.currentTarget, "canplay");
+              }
               writeClientLog(
                 "info",
                 `播放器可以播放：${video.path}，模式 ${isTranscoded ? "FFmpeg 转码" : "原文件直连"}，尺寸 ${event.currentTarget.videoWidth}×${event.currentTarget.videoHeight}`,
@@ -455,6 +560,16 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
             onTimeUpdate={(event) => {
               if (!isScrubbing.current) {
                 setCurrentTime(streamStartTime.current + event.currentTarget.currentTime);
+              }
+            }}
+            onSeeked={(event) => {
+              if (isTranscoded || !finishDirectSeek(event.currentTarget, "seeked")) {
+                return;
+              }
+              if (playbackIntent.current && event.currentTarget.paused) {
+                void event.currentTarget.play().catch((error) => {
+                  writeClientLog("warn", `直连播放器定位完成后恢复播放失败：${video.path}，${errorMessage(error)}`);
+                });
               }
             }}
             onPlay={() => {

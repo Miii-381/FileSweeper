@@ -75,6 +75,8 @@ export type WorkspaceSelectionGesture = {
   root: HTMLDivElement;
   startClientX: number;
   startClientY: number;
+  startContentX: number;
+  startContentY: number;
   lastClientX: number;
   lastClientY: number;
   initialSelection: Set<string>;
@@ -221,6 +223,9 @@ export type Preferences = {
   imageMaxMegabytes: number;
   imageMaxMegapixels: number;
   managedVideoExtensions: string[];
+  managedAudioExtensions: string[];
+  managedImageExtensions: string[];
+  managedTextExtensions: string[];
   backgroundSidecarConcurrency: number;
   listColumns: ListColumn[];
   backgroundImage: string | null;

@@ -16,6 +16,132 @@ const codeThemeOptions: Array<{ id: CodeTheme; name: string }> = [
   { id: "solarizedlight", name: "Solarized Light" },
 ];
 
+function normalizeExtension(value: string) {
+  const extension = value.trim().toLocaleLowerCase();
+  if (!extension || /[\\/:*?"<>|\s]/.test(extension)) {
+    return null;
+  }
+  return extension.startsWith(".") ? extension : `.${extension}`;
+}
+
+function ExtensionManager({
+  formatName,
+  enabledExtensions,
+  managedExtensions,
+  onChange,
+  onNotify,
+}: {
+  formatName: string;
+  enabledExtensions: string[];
+  managedExtensions: string[];
+  onChange: (enabledExtensions: string[], managedExtensions: string[]) => void;
+  onNotify: (message: string) => void;
+}) {
+  const [newExtension, setNewExtension] = useState("");
+  const exampleExtension = formatName === "视频"
+    ? ".mp4"
+    : formatName === "音频"
+      ? ".mp3"
+      : formatName === "图片"
+        ? ".png"
+        : ".txt";
+
+  const toggleExtension = (extension: string) => {
+    const enabled = enabledExtensions.includes(extension);
+    if (enabled && enabledExtensions.length === 1) {
+      onNotify(`至少保留一种已启用的${formatName}格式`);
+      writeClientLog("warn", `${formatName}扩展名切换被拒绝：${extension} 是最后一种已启用格式`);
+      return;
+    }
+    const nextEnabled = enabled
+      ? enabledExtensions.filter((item) => item !== extension)
+      : [...enabledExtensions, extension].sort();
+    writeClientLog("debug", `${enabled ? "禁用" : "启用"}${formatName}扩展名：${extension}，启用数量 ${nextEnabled.length}`);
+    onChange(nextEnabled, managedExtensions);
+  };
+
+  const addExtension = () => {
+    const extension = normalizeExtension(newExtension);
+    if (!extension) {
+      onNotify("请输入有效的扩展名，例如 .mp4");
+      writeClientLog("warn", `添加${formatName}扩展名被拒绝：输入“${newExtension}”无效`);
+      return;
+    }
+    const nextManaged = managedExtensions.includes(extension)
+      ? managedExtensions
+      : [...managedExtensions, extension].sort();
+    const nextEnabled = enabledExtensions.includes(extension)
+      ? enabledExtensions
+      : [...enabledExtensions, extension].sort();
+    writeClientLog("info", `添加并启用${formatName}扩展名：${extension}，候选数量 ${nextManaged.length}`);
+    onChange(nextEnabled, nextManaged);
+    setNewExtension("");
+  };
+
+  const removeExtension = (extension: string) => {
+    const enabled = enabledExtensions.includes(extension);
+    if (enabled && enabledExtensions.length === 1) {
+      onNotify(`至少保留一种已启用的${formatName}格式`);
+      writeClientLog("warn", `删除${formatName}扩展名被拒绝：${extension} 是最后一种已启用格式`);
+      return;
+    }
+    const nextEnabled = enabledExtensions.filter((item) => item !== extension);
+    const nextManaged = managedExtensions.filter((item) => item !== extension);
+    writeClientLog("info", `删除${formatName}扩展名：${extension}，删除前启用 ${enabled}，剩余候选 ${nextManaged.length}`);
+    onChange(nextEnabled, nextManaged);
+  };
+
+  return (
+    <div className="setting-row extension-setting">
+      <span>支持的{formatName}格式</span>
+      <div className="extension-manager">
+        <div className="extension-add">
+          <input
+            className="extension-input"
+            type="text"
+            value={newExtension}
+            placeholder={`例如 ${exampleExtension}`}
+            aria-label={`添加${formatName}扩展名`}
+            onChange={(event) => setNewExtension(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addExtension();
+              }
+            }}
+          />
+          <button type="button" className="extension-add-button" onClick={addExtension}>
+            <Plus size={14} />
+            添加
+          </button>
+        </div>
+        <ul className="extension-list" aria-label={`${formatName}格式列表`}>
+          {managedExtensions.map((extension) => {
+            const enabled = enabledExtensions.includes(extension);
+            return (
+              <li key={extension}>
+                <label>
+                  <input type="checkbox" checked={enabled} onChange={() => toggleExtension(extension)} />
+                  <span>{extension}</span>
+                </label>
+                <button
+                  type="button"
+                  className="quiet-icon-button"
+                  aria-label={`删除${formatName}格式 ${extension}`}
+                  title="删除格式"
+                  onClick={() => removeExtension(extension)}
+                >
+                  <X size={14} />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsDialog({
   settings,
   limits,
@@ -50,12 +176,14 @@ export function SettingsDialog({
     videoExtensions: [...settings.videoExtensions],
     audioExtensions: [...settings.audioExtensions],
     managedVideoExtensions: [...settings.managedVideoExtensions],
+    managedAudioExtensions: [...settings.managedAudioExtensions],
+    managedImageExtensions: [...settings.managedImageExtensions],
+    managedTextExtensions: [...settings.managedTextExtensions],
     imageExtensions: [...settings.imageExtensions],
     textExtensions: [...settings.textExtensions],
     textLanguageMap: { ...settings.textLanguageMap },
     listColumns: settings.listColumns.map((column) => ({ ...column })),
   }));
-  const [newVideoExtension, setNewVideoExtension] = useState("");
   const [backgroundSource, setBackgroundSource] = useState<string | null>(null);
   const settingsDirty = JSON.stringify(settingsDraft) !== JSON.stringify(settings) || backgroundSource !== null;
 
@@ -66,65 +194,6 @@ export function SettingsDialog({
     }
     writeClientLog("info", settingsDirty ? "关闭偏好设置并放弃未应用内容" : "关闭偏好设置");
     onClose();
-  };
-  const normalizeVideoExtension = (value: string) => {
-    const extension = value.trim().toLocaleLowerCase();
-    if (!extension || /[\\/:*?"<>|\s]/.test(extension)) {
-      return null;
-    }
-    return extension.startsWith(".") ? extension : `.${extension}`;
-  };
-  const toggleVideoExtension = (extension: string) => {
-    setSettingsDraft((draft) => {
-      const enabled = draft.videoExtensions.includes(extension);
-      if (enabled && draft.videoExtensions.length === 1) {
-        onNotify("至少保留一种已启用的视频格式");
-        writeClientLog("warn", `视频扩展名切换被拒绝：${extension} 是最后一种已启用格式`);
-        return draft;
-      }
-      writeClientLog("debug", `${enabled ? "禁用" : "启用"}视频扩展名：${extension}`);
-      return {
-        ...draft,
-        videoExtensions: enabled
-          ? draft.videoExtensions.filter((item) => item !== extension)
-          : [...draft.videoExtensions, extension].sort(),
-      };
-    });
-  };
-  const addVideoExtension = () => {
-    const extension = normalizeVideoExtension(newVideoExtension);
-    if (!extension) {
-      onNotify("请输入有效的扩展名，例如 .mp4");
-      writeClientLog("warn", `添加视频扩展名被拒绝：输入“${newVideoExtension}”无效`);
-      return;
-    }
-    setSettingsDraft((draft) => ({
-      ...draft,
-      managedVideoExtensions: draft.managedVideoExtensions.includes(extension)
-        ? draft.managedVideoExtensions
-        : [...draft.managedVideoExtensions, extension].sort(),
-      videoExtensions: draft.videoExtensions.includes(extension)
-        ? draft.videoExtensions
-        : [...draft.videoExtensions, extension].sort(),
-    }));
-    writeClientLog("info", `添加并启用视频扩展名：${extension}`);
-    setNewVideoExtension("");
-  };
-  const removeVideoExtension = (extension: string) => {
-    setSettingsDraft((draft) => {
-      const enabled = draft.videoExtensions.includes(extension);
-      if (enabled && draft.videoExtensions.length === 1) {
-        onNotify("至少保留一种已启用的视频格式");
-        writeClientLog("warn", `删除视频扩展名被拒绝：${extension} 是最后一种已启用格式`);
-        return draft;
-      }
-      writeClientLog("info", `删除视频扩展名：${extension}，删除前启用 ${enabled}`);
-      return {
-        ...draft,
-        managedVideoExtensions: draft.managedVideoExtensions.filter((item) => item !== extension),
-        videoExtensions: draft.videoExtensions.filter((item) => item !== extension),
-      };
-    });
   };
   const updateListColumn = (columnId: ListColumnId, update: Partial<ListColumn>) => {
     setSettingsDraft((draft) => ({
@@ -377,93 +446,50 @@ export function SettingsDialog({
                     <output>{settingsDraft.volume}%</output>
                   </span>
                 </label>
-                <div className="setting-row extension-setting">
-                  <span>支持的视频格式</span>
-                  <div className="extension-manager">
-                    <div className="extension-add">
-                      <input
-                        className="extension-input"
-                        type="text"
-                        value={newVideoExtension}
-                        placeholder="例如 .mp4"
-                        aria-label="添加视频扩展名"
-                        onChange={(event) => setNewVideoExtension(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            addVideoExtension();
-                          }
-                        }}
-                      />
-                      <button type="button" className="extension-add-button" onClick={addVideoExtension}>
-                        <Plus size={14} />
-                        添加
-                      </button>
-                    </div>
-                    <ul className="extension-list" aria-label="视频格式列表">
-                      {settingsDraft.managedVideoExtensions.map((extension) => {
-                        const enabled = settingsDraft.videoExtensions.includes(extension);
-                        return (
-                          <li key={extension}>
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={enabled}
-                                onChange={() => toggleVideoExtension(extension)}
-                              />
-                              <span>{extension}</span>
-                            </label>
-                            <button
-                              type="button"
-                              className="quiet-icon-button"
-                              aria-label={`删除 ${extension}`}
-                              title="删除格式"
-                              onClick={() => removeVideoExtension(extension)}
-                            >
-                              <X size={14} />
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                </div>
-                <label className="setting-row">
-                  <span>音频格式</span>
-                  <input
-                    className="extension-input"
-                    value={settingsDraft.audioExtensions.join(", ")}
-                    aria-label="音频扩展名"
-                    onChange={(event) => setSettingsDraft((draft) => ({
-                      ...draft,
-                      audioExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
-                    }))}
-                  />
-                </label>
-                <label className="setting-row">
-                  <span>图片格式</span>
-                  <input
-                    className="extension-input"
-                    value={settingsDraft.imageExtensions.join(", ")}
-                    aria-label="图片扩展名"
-                    onChange={(event) => setSettingsDraft((draft) => ({
-                      ...draft,
-                      imageExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
-                    }))}
-                  />
-                </label>
-                <label className="setting-row">
-                  <span>文本格式</span>
-                  <input
-                    className="extension-input"
-                    value={settingsDraft.textExtensions.join(", ")}
-                    aria-label="文本扩展名"
-                    onChange={(event) => setSettingsDraft((draft) => ({
-                      ...draft,
-                      textExtensions: event.target.value.split(",").map(normalizeVideoExtension).filter((item): item is string => item !== null),
-                    }))}
-                  />
-                </label>
+                <ExtensionManager
+                  formatName="视频"
+                  enabledExtensions={settingsDraft.videoExtensions}
+                  managedExtensions={settingsDraft.managedVideoExtensions}
+                  onNotify={onNotify}
+                  onChange={(videoExtensions, managedVideoExtensions) => setSettingsDraft((draft) => ({
+                    ...draft,
+                    videoExtensions,
+                    managedVideoExtensions,
+                  }))}
+                />
+                <ExtensionManager
+                  formatName="音频"
+                  enabledExtensions={settingsDraft.audioExtensions}
+                  managedExtensions={settingsDraft.managedAudioExtensions}
+                  onNotify={onNotify}
+                  onChange={(audioExtensions, managedAudioExtensions) => setSettingsDraft((draft) => ({
+                    ...draft,
+                    audioExtensions,
+                    managedAudioExtensions,
+                  }))}
+                />
+                <ExtensionManager
+                  formatName="图片"
+                  enabledExtensions={settingsDraft.imageExtensions}
+                  managedExtensions={settingsDraft.managedImageExtensions}
+                  onNotify={onNotify}
+                  onChange={(imageExtensions, managedImageExtensions) => setSettingsDraft((draft) => ({
+                    ...draft,
+                    imageExtensions,
+                    managedImageExtensions,
+                  }))}
+                />
+                <ExtensionManager
+                  formatName="文本"
+                  enabledExtensions={settingsDraft.textExtensions}
+                  managedExtensions={settingsDraft.managedTextExtensions}
+                  onNotify={onNotify}
+                  onChange={(textExtensions, managedTextExtensions) => setSettingsDraft((draft) => ({
+                    ...draft,
+                    textExtensions,
+                    managedTextExtensions,
+                  }))}
+                />
               </details>
 
               <details className="settings-section">

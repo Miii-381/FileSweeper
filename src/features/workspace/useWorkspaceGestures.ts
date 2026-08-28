@@ -15,6 +15,7 @@ import type {
   WorkspaceSelectionGesture,
 } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
+import { calculateWorkspaceSelectionGeometry } from "./workspaceSelection";
 
 export function useWorkspaceGestures({
   hasWorkspace,
@@ -130,21 +131,35 @@ export function useWorkspaceGestures({
     clientX: number,
     clientY: number,
   ) => {
-    const width = Math.abs(clientX - gesture.startClientX);
-    const height = Math.abs(clientY - gesture.startClientY);
-    if (!gesture.moved && width < 4 && height < 4) {
+    const pointerWidth = Math.abs(clientX - gesture.startClientX);
+    const pointerHeight = Math.abs(clientY - gesture.startClientY);
+    if (!gesture.moved && pointerWidth < 4 && pointerHeight < 4) {
       return;
     }
     gesture.moved = true;
-    const leftClient = Math.min(gesture.startClientX, clientX);
-    const topClient = Math.min(gesture.startClientY, clientY);
-    const selectionRect = new DOMRect(leftClient, topClient, width, height);
     const rootRect = gesture.root.getBoundingClientRect();
-    setSelectionBox({ viewMode: gesture.viewMode, left: leftClient, top: topClient, width, height });
+    const geometry = calculateWorkspaceSelectionGeometry({
+      rootLeft: rootRect.left,
+      rootTop: rootRect.top,
+      scrollLeft: gesture.root.scrollLeft,
+      scrollTop: gesture.root.scrollTop,
+      startContentX: gesture.startContentX,
+      startContentY: gesture.startContentY,
+      clientX,
+      clientY,
+    });
+    const { left, top, width, height } = geometry.contentBox;
+    const selectionRect = new DOMRect(
+      geometry.viewportBox.left,
+      geometry.viewportBox.top,
+      geometry.viewportBox.width,
+      geometry.viewportBox.height,
+    );
+    setSelectionBox({ viewMode: gesture.viewMode, left, top, width, height });
     if (width < 8 && height < 8) {
       writeClientLog(
         "debug",
-        `框选进入拖动：${gesture.viewMode}，视口 (${Math.round(leftClient)}, ${Math.round(topClient)})，容器内 (${Math.round(leftClient - rootRect.left + gesture.root.scrollLeft)}, ${Math.round(topClient - rootRect.top + gesture.root.scrollTop)})，尺寸 ${Math.round(width)}×${Math.round(height)}`,
+        `框选进入拖动：${gesture.viewMode}，视口 (${Math.round(geometry.viewportBox.left)}, ${Math.round(geometry.viewportBox.top)})，内容坐标 (${Math.round(left)}, ${Math.round(top)})，尺寸 ${Math.round(width)}×${Math.round(height)}`,
       );
     }
     const intersectingPaths = selectionPathsIntersecting(gesture.root, selectionRect);
@@ -166,12 +181,13 @@ export function useWorkspaceGestures({
 
   const updateAutoScroll = (gesture: WorkspaceSelectionGesture) => {
     const edgeSize = 56;
+    const rootRect = gesture.root.getBoundingClientRect();
     let scrollStep = 0;
-    if (gesture.lastClientY <= edgeSize) {
-      const proximity = Math.min(1, (edgeSize - gesture.lastClientY) / edgeSize);
+    if (gesture.lastClientY <= rootRect.top + edgeSize) {
+      const proximity = Math.min(1, (rootRect.top + edgeSize - gesture.lastClientY) / edgeSize);
       scrollStep = -Math.ceil(5 + proximity * 19);
-    } else if (gesture.lastClientY >= window.innerHeight - edgeSize) {
-      const proximity = Math.min(1, (gesture.lastClientY - (window.innerHeight - edgeSize)) / edgeSize);
+    } else if (gesture.lastClientY >= rootRect.bottom - edgeSize) {
+      const proximity = Math.min(1, (gesture.lastClientY - (rootRect.bottom - edgeSize)) / edgeSize);
       scrollStep = Math.ceil(5 + proximity * 19);
     }
     if (scrollStep === 0) {
@@ -226,6 +242,8 @@ export function useWorkspaceGestures({
       root: event.currentTarget,
       startClientX: event.clientX,
       startClientY: event.clientY,
+      startContentX: event.clientX - rootRect.left + event.currentTarget.scrollLeft,
+      startContentY: event.clientY - rootRect.top + event.currentTarget.scrollTop,
       lastClientX: event.clientX,
       lastClientY: event.clientY,
       initialSelection: new Set(selectedFiles),
