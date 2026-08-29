@@ -69,6 +69,13 @@ export type WorkspaceSelectionBox = {
   height: number;
 };
 
+export type WorkspaceSelectionItemBounds = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
 export type WorkspaceSelectionGesture = {
   viewMode: ViewMode;
   pointerId: number;
@@ -81,6 +88,7 @@ export type WorkspaceSelectionGesture = {
   lastClientY: number;
   initialSelection: Set<string>;
   intersectedPaths: Set<string>;
+  itemBounds: Map<string, WorkspaceSelectionItemBounds>;
   additive: boolean;
   moved: boolean;
   hasAutoScrolled: boolean;
@@ -141,6 +149,8 @@ export type FileTaskSnapshot = {
   destinationPath: string;
   totalItems: number;
   completedItems: number;
+  totalBytes: number | null;
+  transferredBytes: number;
   results: FileTaskItemResult[];
 };
 

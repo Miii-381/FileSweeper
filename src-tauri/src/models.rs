@@ -643,6 +643,8 @@ pub(super) struct FileTaskSnapshot {
     pub(super) destination_path: String,
     pub(super) total_items: usize,
     pub(super) completed_items: usize,
+    pub(super) total_bytes: Option<u64>,
+    pub(super) transferred_bytes: u64,
     pub(super) results: Vec<FileTaskItemResult>,
 }
 
@@ -655,6 +657,15 @@ pub(super) struct FileTaskControl {
 pub(super) struct ClipboardFiles {
     pub(super) paths: Vec<String>,
     pub(super) operation: FileTaskOperation,
+    pub(super) sequence_number: u32,
+}
+
+#[derive(Clone)]
+pub(super) struct ClipboardPasteReporter {
+    pub(super) sender: mpsc::Sender<ClipboardOperationTask>,
+    #[cfg(target_os = "windows")]
+    pub(super) thread_id: u32,
+    pub(super) expected_sequence: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -749,6 +760,7 @@ pub(super) enum FileOperationTask {
         destination: PathBuf,
         operation: FileTaskOperation,
         app_handle: tauri::AppHandle,
+        clipboard_reporter: Option<ClipboardPasteReporter>,
     },
 }
 
@@ -761,6 +773,10 @@ pub(super) enum ClipboardOperationTask {
     },
     ReadClipboard {
         response: mpsc::Sender<Result<ClipboardFiles, String>>,
+    },
+    ReportPaste {
+        expected_sequence: u32,
+        operation: FileTaskOperation,
     },
     Flush {
         response: mpsc::Sender<Result<(), String>>,

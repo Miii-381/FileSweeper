@@ -328,6 +328,16 @@ select:focus-visible {
 }
 
 .file-task-card {
+    --file-task-card-shadow: #00000066;
+    --file-task-chart-background: color-mix(in srgb, var(--surface-control) 88%, var(--accent-deep));
+    --file-task-grid-color: color-mix(in srgb, var(--accent) 14%, transparent);
+    --file-task-progress-start-color: var(--accent-deep);
+    --file-task-progress-start-opacity: .8;
+    --file-task-progress-end-color: var(--accent);
+    --file-task-progress-end-opacity: .34;
+    --file-task-speed-area-color: color-mix(in srgb, var(--accent-deep) 78%, var(--accent-ink));
+    --file-task-speed-line-color: color-mix(in srgb, var(--accent) 58%, var(--accent-ink));
+    --file-task-progress-boundary-color: color-mix(in srgb, var(--accent) 58%, var(--text-primary));
     z-index: 31;
     color: var(--text-primary);
     background: color-mix(in srgb, var(--surface-raised) 94%, transparent);
@@ -338,9 +348,23 @@ select:focus-visible {
     position: fixed;
     right: 22px;
     bottom: 78px;
-    box-shadow: 0 14px 36px #00000066;
+    box-shadow: 0 14px 36px var(--file-task-card-shadow);
     backdrop-filter: blur(12px);
     animation: floating-card-enter .38s var(--motion-standard-easing) both
+}
+
+.light-theme .file-task-card {
+    --file-task-card-shadow: #1c1c1e24;
+    --file-task-chart-background: color-mix(in srgb, var(--surface-control) 91%, var(--accent-deep));
+    --file-task-grid-color: color-mix(in srgb, var(--accent) 20%, transparent);
+    --file-task-progress-start-color: var(--accent);
+    --file-task-progress-start-opacity: .16;
+    --file-task-progress-end-color: var(--accent);
+    --file-task-progress-end-opacity: .3;
+    --file-task-speed-area-color: color-mix(in srgb, var(--accent) 44%, var(--surface-raised));
+    --file-task-speed-line-color: color-mix(in srgb, var(--accent) 68%, var(--accent-ink));
+    --file-task-progress-boundary-color: color-mix(in srgb, var(--accent) 62%, var(--text-primary));
+    background: color-mix(in srgb, var(--surface-raised) 98%, transparent)
 }
 
 .file-task-heading,
@@ -383,8 +407,8 @@ select:focus-visible {
 }
 
 .file-task-speed-chart {
-    background-color: color-mix(in srgb, var(--accent-deep) 52%, var(--surface-control));
-    background-image: linear-gradient(color-mix(in srgb, var(--accent) 14%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--accent) 14%, transparent) 1px, transparent 1px);
+    background-color: var(--file-task-chart-background);
+    background-image: linear-gradient(var(--file-task-grid-color) 1px, transparent 1px), linear-gradient(90deg, var(--file-task-grid-color) 1px, transparent 1px);
     background-size: 100% 18px, 42px 100%;
     border: 1px solid var(--border-subtle);
     border-radius: 5px;
@@ -395,24 +419,65 @@ select:focus-visible {
     overflow: hidden
 }
 
+.file-task-progress-start {
+    stop-color: var(--file-task-progress-start-color);
+    stop-opacity: var(--file-task-progress-start-opacity)
+}
+
+.file-task-progress-end {
+    stop-color: var(--file-task-progress-end-color);
+    stop-opacity: var(--file-task-progress-end-opacity)
+}
+
+.file-task-progress-fill {
+    pointer-events: none;
+    shape-rendering: crispEdges;
+    transition: width .2s linear
+}
+
+.file-task-progress-clip {
+    shape-rendering: crispEdges
+}
+
 .file-task-speed-chart svg {
+    z-index: 1;
     width: 100%;
     height: 100%;
-    display: block
+    display: block;
+    position: relative
 }
 
-.file-task-speed-chart polygon {
-    fill: color-mix(in srgb, var(--accent) 42%, transparent)
+.file-task-speed-area {
+    opacity: 1;
+    fill: var(--file-task-speed-area-color)
 }
 
-.file-task-speed-chart polyline {
+.file-task-speed-line {
     fill: none;
-    stroke: var(--accent);
-    stroke-width: 1.25;
+    stroke: var(--file-task-speed-line-color);
+    stroke-width: 1.45;
+    vector-effect: non-scaling-stroke
+}
+
+.file-task-current-speed-marker {
+    opacity: .92;
+    stroke: color-mix(in srgb, var(--text-primary) 78%, var(--accent));
+    stroke-dasharray: 5 3;
+    stroke-width: 1.35;
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 88%, transparent));
+    vector-effect: non-scaling-stroke
+}
+
+.file-task-current-progress-boundary {
+    opacity: .9;
+    stroke: var(--file-task-progress-boundary-color);
+    stroke-width: 1;
+    shape-rendering: crispEdges;
     vector-effect: non-scaling-stroke
 }
 
 .file-task-speed-chart>span {
+    z-index: 2;
     color: var(--text-primary);
     background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
     border-radius: 4px 0 0 0;
@@ -422,6 +487,11 @@ select:focus-visible {
     right: 0;
     bottom: 0;
     backdrop-filter: blur(5px)
+}
+
+.light-theme .file-task-speed-chart>span {
+    background: color-mix(in srgb, var(--surface-raised) 90%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-subtle) 72%, transparent)
 }
 
 .file-task-details {

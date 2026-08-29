@@ -1,3 +1,25 @@
+import type { WorkspaceSelectionItemBounds } from "../../app-types";
+
+export function findPathsIntersectingSelectionBounds(
+  itemBounds: ReadonlyMap<string, WorkspaceSelectionItemBounds>,
+  selectionBox: { left: number; top: number; width: number; height: number },
+) {
+  const right = selectionBox.left + selectionBox.width;
+  const bottom = selectionBox.top + selectionBox.height;
+  const paths = new Set<string>();
+  itemBounds.forEach((bounds, path) => {
+    if (
+      bounds.left < right &&
+      bounds.right > selectionBox.left &&
+      bounds.top < bottom &&
+      bounds.bottom > selectionBox.top
+    ) {
+      paths.add(path);
+    }
+  });
+  return paths;
+}
+
 export function findNextPathAfterRemoval(
   orderedPaths: readonly string[],
   removedPaths: ReadonlySet<string>,

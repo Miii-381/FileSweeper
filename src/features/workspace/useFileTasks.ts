@@ -306,7 +306,7 @@ export function useFileTasks({
     writeClientLog("info", `请求取消文件任务 #${activeFileTask.id}，当前状态 ${activeFileTask.state}`);
     try {
       const accepted = await invoke<boolean>("cancel_file_task", { taskId: activeFileTask.id });
-      notifyRef.current(accepted ? `正在取消任务 #${activeFileTask.id} 的未开始项目` : `任务 #${activeFileTask.id} 已无法取消`);
+      notifyRef.current(accepted ? `正在请求 Windows 停止任务 #${activeFileTask.id}，已完成项目将保留` : `任务 #${activeFileTask.id} 已无法取消`);
       writeClientLog(accepted ? "info" : "warn", `文件任务取消结果：任务 #${activeFileTask.id}，接受 ${accepted}`);
     } catch (cancelError) {
       const message = errorMessage(cancelError);

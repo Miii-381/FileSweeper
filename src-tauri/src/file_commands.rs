@@ -214,20 +214,17 @@ pub(super) fn cancel_file_task(
 }
 
 #[tauri::command]
-pub(super) fn write_items_to_clipboard(
+pub(super) async fn write_items_to_clipboard(
     paths: Vec<String>,
     operation: FileTaskOperation,
     window: tauri::WebviewWindow,
-    queue: tauri::State<FileOperationQueue>,
+    queue: tauri::State<'_, FileOperationQueue>,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
     log::info!(
         "Received file clipboard write request: operation={operation:?}, requested_paths={}",
         paths.len()
     );
-    let paths = file_operations::normalize_item_paths(paths).map_err(|error| {
-        log::warn!("File clipboard write rejected during path validation: {error}");
-        error
-    })?;
     #[cfg(target_os = "windows")]
     let owner = Some(
         window
@@ -237,11 +234,57 @@ pub(super) fn write_items_to_clipboard(
     );
     #[cfg(not(target_os = "windows"))]
     let owner = None;
-    file_operations::enqueue_write_clipboard(paths, operation, owner, &queue)
-        .inspect(|_| log::info!("File clipboard write request completed: operation={operation:?}"))
+    let clipboard_sender = queue.clipboard_sender.clone();
+    #[cfg(target_os = "windows")]
+    let clipboard_thread_id = queue.clipboard_thread_id;
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let worker_started_at = Instant::now();
+        let normalization_started_at = Instant::now();
+        let paths = file_operations::normalize_item_paths(paths).map_err(|error| {
+            log::warn!("File clipboard write rejected during path validation: {error}");
+            error
+        })?;
+        let normalization_elapsed = normalization_started_at.elapsed();
+        let accepted_paths = paths.len();
+        let clipboard_started_at = Instant::now();
+        #[cfg(target_os = "windows")]
+        let result = file_operations::enqueue_write_clipboard(
+            paths,
+            operation,
+            owner,
+            clipboard_sender,
+            clipboard_thread_id,
+        );
+        #[cfg(not(target_os = "windows"))]
+        let result = file_operations::enqueue_write_clipboard(
+            paths,
+            operation,
+            owner,
+            clipboard_sender,
+        );
+        log::debug!(
+            "Background clipboard write worker finished: operation={operation:?}, accepted_paths={accepted_paths}, normalization_ms={}, clipboard_wait_ms={}, worker_total_ms={}",
+            normalization_elapsed.as_millis(),
+            clipboard_started_at.elapsed().as_millis(),
+            worker_started_at.elapsed().as_millis()
+        );
+        result
+    })
+    .await
+    .map_err(|error| format!("The background clipboard task could not complete: {error}"))?;
+
+    result
+        .inspect(|_| {
+            log::info!(
+                "File clipboard write request completed: operation={operation:?}, total_ms={}",
+                started_at.elapsed().as_millis()
+            )
+        })
         .inspect_err(|error| {
             log::error!(
-                "File clipboard write request failed: operation={operation:?}, error={error}"
+                "File clipboard write request failed: operation={operation:?}, total_ms={}, error={error}",
+                started_at.elapsed().as_millis()
             )
         })
 }
@@ -267,15 +310,26 @@ pub(super) fn paste_files_from_clipboard(
         clipboard.paths.len(),
         path_string(&destination)
     );
-    file_operations::start_transfer_task(
+    #[cfg(target_os = "windows")]
+    let result = file_operations::start_clipboard_transfer_task(
+        clipboard.paths,
+        destination,
+        clipboard.operation,
+        clipboard.sequence_number,
+        app_handle,
+        &queue,
+    );
+    #[cfg(not(target_os = "windows"))]
+    let result = file_operations::start_transfer_task(
         clipboard.paths,
         destination,
         clipboard.operation,
         app_handle,
         &queue,
-    )
-    .inspect(|snapshot| log::info!("Clipboard paste task accepted: task_id={}", snapshot.id))
-    .inspect_err(|error| log::error!("Unable to create clipboard paste task: {error}"))
+    );
+    result
+        .inspect(|snapshot| log::info!("Clipboard paste task accepted: task_id={}", snapshot.id))
+        .inspect_err(|error| log::error!("Unable to create clipboard paste task: {error}"))
 }
 
 #[tauri::command]

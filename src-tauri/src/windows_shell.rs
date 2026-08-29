@@ -49,7 +49,7 @@ extern "system" {
 fn parse_shell_item_id_list(path: &Path, purpose: &str) -> Result<*mut ITEMIDLIST, String> {
     unsafe {
         let mut item_id_list = std::ptr::null_mut();
-        log::debug!(
+        log::trace!(
             "Preparing Shell item ID list for {purpose}: {}",
             path_string(path)
         );
@@ -64,7 +64,7 @@ fn parse_shell_item_id_list(path: &Path, purpose: &str) -> Result<*mut ITEMIDLIS
         if item_id_list.is_null() {
             return Err("Unable to prepare the dragged file.".to_string());
         }
-        log::debug!(
+        log::trace!(
             "Prepared Shell item ID list for {purpose}: {}",
             path_string(path)
         );
@@ -125,6 +125,7 @@ fn create_sh_file_data_object(paths: &[PathBuf]) -> Result<IDataObject, String> 
     }
 
     unsafe {
+        let pidl_started_at = Instant::now();
         let parent_id_list = parse_shell_item_id_list(parent, "SHCreateDataObject parent")?;
         let mut absolute_item_id_lists = Vec::with_capacity(paths.len());
         let result = (|| {
@@ -148,17 +149,27 @@ fn create_sh_file_data_object(paths: &[PathBuf]) -> Result<IDataObject, String> 
                 }
                 child_item_id_lists.push(child as *const ITEMIDLIST);
             }
+            let pidl_elapsed = pidl_started_at.elapsed();
             log::debug!(
                 "Creating Shell file data object with SHCreateDataObject: parent={}, files={}",
                 path_string(parent),
                 child_item_id_lists.len()
             );
-            SHCreateDataObject::<_, IDataObject>(
+            let creation_started_at = Instant::now();
+            let data_object = SHCreateDataObject::<_, IDataObject>(
                 Some(parent_id_list),
                 Some(&child_item_id_lists),
                 None::<&IDataObject>,
             )
-            .map_err(|error| format!("SHCreateDataObject failed: {error}"))
+            .map_err(|error| format!("SHCreateDataObject failed: {error}"))?;
+            log::debug!(
+                "Shell file data object created: files={}, pidl_ms={}, sh_create_data_object_ms={}, total_ms={}",
+                child_item_id_lists.len(),
+                pidl_elapsed.as_millis(),
+                creation_started_at.elapsed().as_millis(),
+                pidl_started_at.elapsed().as_millis()
+            );
+            Ok(data_object)
         })();
         for item_id_list in absolute_item_id_lists {
             CoTaskMemFree(Some(item_id_list.cast()));
@@ -180,6 +191,85 @@ unsafe fn clipboard_global_memory_from_bytes(bytes: &[u8]) -> Result<HGLOBAL, St
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), target.cast::<u8>(), bytes.len());
     let _ = GlobalUnlock(memory);
     Ok(memory)
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn set_data_object_drop_effect(
+    data_object: &IDataObject,
+    format_name: &str,
+    drop_effect: u32,
+) -> Result<(), String> {
+    let format_id = registered_clipboard_format(format_name);
+    if format_id == 0 {
+        return Err(format!(
+            "Unable to register the {format_name} clipboard format."
+        ));
+    }
+    let effect_memory = clipboard_global_memory_from_bytes(&drop_effect.to_le_bytes())?;
+    let format = FORMATETC {
+        cfFormat: format_id as u16,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    };
+    let medium = STGMEDIUM {
+        tymed: TYMED_HGLOBAL.0 as u32,
+        u: STGMEDIUM_0 {
+            hGlobal: effect_memory,
+        },
+        pUnkForRelease: std::mem::ManuallyDrop::new(None),
+    };
+    if let Err(error) = data_object.SetData(&format, &medium, true) {
+        let _ = GlobalFree(Some(effect_memory));
+        return Err(format!(
+            "Unable to write {format_name} to the clipboard data object: {error}"
+        ));
+    }
+    log::debug!(
+        "Shell clipboard completion format written: name={format_name}, format={format_id}, effect=0x{drop_effect:X}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn report_windows_clipboard_paste(
+    expected_sequence: u32,
+    operation: FileTaskOperation,
+) -> Result<bool, String> {
+    unsafe {
+        let current_sequence = GetClipboardSequenceNumber();
+        if current_sequence != expected_sequence {
+            log::info!(
+                "Shell clipboard paste completion skipped because the clipboard changed: expected_sequence={expected_sequence}, current_sequence={current_sequence}, operation={operation:?}"
+            );
+            return Ok(false);
+        }
+        let data_object = OleGetClipboard().map_err(|error| {
+            format!("Unable to access the Shell clipboard data object after paste: {error}")
+        })?;
+        let effect = match operation {
+            FileTaskOperation::Copy => DROPEFFECT_COPY.0,
+            FileTaskOperation::Move => DROPEFFECT_MOVE.0,
+        };
+        set_data_object_drop_effect(&data_object, "Performed DropEffect", effect)?;
+        set_data_object_drop_effect(&data_object, "Logical Performed DropEffect", effect)?;
+        if operation == FileTaskOperation::Move {
+            set_data_object_drop_effect(&data_object, "Paste Succeeded", effect)?;
+        }
+        log::info!(
+            "Shell clipboard paste completion reported: sequence={current_sequence}, operation={operation:?}, effect=0x{effect:X}"
+        );
+        Ok(true)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn report_windows_clipboard_paste(
+    _expected_sequence: u32,
+    _operation: FileTaskOperation,
+) -> Result<bool, String> {
+    Err("Shell clipboard paste reporting is currently available only on Windows.".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -227,7 +317,7 @@ unsafe fn log_data_object_diagnostics(stage: &str, data_object: &IDataObject) {
             }
             let format = item[0];
             format_count += 1;
-            log::debug!(
+            log::trace!(
                 "Clipboard IDataObject format: stage={stage}, index={format_count}, id={}, name={}, tymed=0x{:X}, aspect=0x{:X}, lindex={}, target_device={}",
                 format.cfFormat,
                 clipboard_format_label(format.cfFormat),
@@ -244,7 +334,7 @@ unsafe fn log_data_object_diagnostics(stage: &str, data_object: &IDataObject) {
             log::warn!("Clipboard IDataObject enumeration failed: stage={stage}, error={error}")
         }
     }
-    log::debug!(
+    log::trace!(
         "Clipboard IDataObject enumeration completed: stage={stage}, formats={format_count}"
     );
 
@@ -272,7 +362,7 @@ unsafe fn log_data_object_diagnostics(stage: &str, data_object: &IDataObject) {
             tymed: TYMED_HGLOBAL.0 as u32,
         };
         let status = data_object.QueryGetData(&query);
-        log::debug!(
+        log::trace!(
             "Clipboard IDataObject QueryGetData: stage={stage}, id={format_id}, name={name}, available={}, hresult=0x{:08X}",
             status == S_OK,
             status.0 as u32
@@ -293,8 +383,11 @@ pub(super) fn write_windows_file_clipboard(
             paths.len(),
             requested_owner.unwrap_or_default()
         );
+        let data_object_started_at = Instant::now();
         let data_object = create_sh_file_data_object(paths)?;
+        let data_object_elapsed = data_object_started_at.elapsed();
 
+        let effect_started_at = Instant::now();
         let format_name = HSTRING::from("Preferred DropEffect");
         let preferred_effect_format = RegisterClipboardFormatW(PCWSTR(format_name.as_ptr()));
         if preferred_effect_format == 0 {
@@ -327,7 +420,13 @@ pub(super) fn write_windows_file_clipboard(
         log::debug!(
             "SHCreateDataObject IDataObject Preferred DropEffect attached: format={preferred_effect_format}, value=0x{drop_effect:X}"
         );
-        log_data_object_diagnostics("source-before-publish", &data_object);
+        let effect_elapsed = effect_started_at.elapsed();
+        let diagnostics_started_at = Instant::now();
+        let diagnostics_enabled = log::log_enabled!(log::Level::Trace);
+        if diagnostics_enabled {
+            log_data_object_diagnostics("source-before-publish", &data_object);
+        }
+        let diagnostics_elapsed = diagnostics_started_at.elapsed();
 
         let sequence_before = GetClipboardSequenceNumber();
         let set_started_at = Instant::now();
@@ -338,8 +437,11 @@ pub(super) fn write_windows_file_clipboard(
             slot.replace(Some(data_object));
         });
         log::debug!(
-            "Live OLE clipboard object published and retained on the STA thread: sequence_before={sequence_before}, sequence_after={}, publish_ms={}, total_ms={}, immediate_flush=false",
+            "Live OLE clipboard object published and retained on the STA thread: sequence_before={sequence_before}, sequence_after={}, data_object_ms={}, preferred_effect_ms={}, diagnostics_enabled={diagnostics_enabled}, diagnostics_ms={}, publish_ms={}, total_ms={}, immediate_flush=false",
             GetClipboardSequenceNumber(),
+            data_object_elapsed.as_millis(),
+            effect_elapsed.as_millis(),
+            diagnostics_elapsed.as_millis(),
             set_elapsed.as_millis(),
             started_at.elapsed().as_millis()
         );

@@ -18,6 +18,8 @@ mod sidecar;
 mod storage;
 mod window_state;
 mod windows_shell;
+#[cfg(target_os = "windows")]
+mod windows_transfer;
 mod workspace;
 
 use config_store::folder_name;
@@ -73,8 +75,8 @@ use windows::{
     core::{Interface, HRESULT, HSTRING, PCWSTR},
     Win32::{
         Foundation::{
-            GlobalFree, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, HGLOBAL,
-            HWND, LPARAM, S_FALSE, S_OK, WPARAM,
+            GlobalFree, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, E_ABORT,
+            HGLOBAL, HWND, LPARAM, S_FALSE, S_OK, WPARAM,
         },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::Com::{
@@ -91,19 +93,26 @@ use windows::{
         },
         System::{
             Ole::{
-                DoDragDrop, IDropSource, IDropSource_Impl, OleFlushClipboard, OleInitialize,
-                OleSetClipboard, OleUninitialize, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY,
-                DROPEFFECT_MOVE,
+                DoDragDrop, IDropSource, IDropSource_Impl, OleFlushClipboard, OleGetClipboard,
+                OleInitialize, OleSetClipboard, OleUninitialize, CF_HDROP, DROPEFFECT,
+                DROPEFFECT_COPY, DROPEFFECT_MOVE,
             },
             SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS},
             Threading::GetCurrentThreadId,
         },
         UI::Shell::{
-            BHID_DataObject, Common::ITEMIDLIST, DragQueryFileW, FileOperation, IFileOperation,
-            IShellFolder, IShellItem, IsUserAnAdmin, SHBindToParent, SHCreateDataObject,
-            SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists,
-            SHOpenFolderAndSelectItems, SHParseDisplayName, FILEOPERATION_FLAGS,
-            FOFX_RECYCLEONDELETE, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, HDROP,
+            BHID_DataObject,
+            Common::ITEMIDLIST,
+            DragQueryFileW, FileOperation, IFileOperation, IFileOperationProgressSink,
+            IFileOperationProgressSink_Impl, IOperationsProgressDialog,
+            IOperationsProgressDialog_Impl, IShellFolder, IShellItem, IsUserAnAdmin,
+            PropertiesSystem::{
+                PDOPSTATUS, PDOPS_CANCELLED, PDOPS_ERRORS, PDOPS_RUNNING, PDOPS_STOPPED,
+            },
+            SHBindToParent, SHCreateDataObject, SHCreateItemFromParsingName,
+            SHCreateShellItemArrayFromIDLists, SHOpenFolderAndSelectItems, SHParseDisplayName,
+            FILEOPERATION_FLAGS, FOFX_RECYCLEONDELETE, FOF_NOCONFIRMATION, FOF_NOERRORUI,
+            FOF_RENAMEONCOLLISION, FOF_SILENT, HDROP, SIGDN_FILESYSPATH, SPACTION,
         },
         UI::WindowsAndMessaging::{
             DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, TranslateMessage, MSG,

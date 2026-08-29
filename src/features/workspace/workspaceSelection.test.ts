@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { calculateWorkspaceSelectionGeometry, findNextPathAfterRemoval } from "./workspaceSelection";
+import {
+  calculateWorkspaceSelectionGeometry,
+  findNextPathAfterRemoval,
+  findPathsIntersectingSelectionBounds,
+} from "./workspaceSelection";
 
 describe("findNextPathAfterRemoval", () => {
   const orderedPaths = ["A", "B", "C", "D"];
@@ -51,5 +55,24 @@ describe("calculateWorkspaceSelectionGeometry", () => {
     });
     expect(geometry.contentBox).toEqual({ left: 40, top: 30, width: 100, height: 200 });
     expect(geometry.viewportBox).toEqual({ left: 360, top: 6, width: 100, height: 200 });
+  });
+});
+
+describe("findPathsIntersectingSelectionBounds", () => {
+  const itemBounds = new Map([
+    ["A", { left: 0, top: 0, right: 50, bottom: 50 }],
+    ["B", { left: 60, top: 0, right: 110, bottom: 50 }],
+  ]);
+
+  it("选择框回移后移除已经不再相交的文件", () => {
+    expect(findPathsIntersectingSelectionBounds(
+      itemBounds,
+      { left: 0, top: 0, width: 110, height: 50 },
+    )).toEqual(new Set(["A", "B"]));
+
+    expect(findPathsIntersectingSelectionBounds(
+      itemBounds,
+      { left: 0, top: 0, width: 50, height: 50 },
+    )).toEqual(new Set(["A"]));
   });
 });

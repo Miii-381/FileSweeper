@@ -15,7 +15,10 @@ import type {
   WorkspaceSelectionGesture,
 } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
-import { calculateWorkspaceSelectionGeometry } from "./workspaceSelection";
+import {
+  calculateWorkspaceSelectionGeometry,
+  findPathsIntersectingSelectionBounds,
+} from "./workspaceSelection";
 
 export function useWorkspaceGestures({
   hasWorkspace,
@@ -100,23 +103,22 @@ export function useWorkspaceGestures({
     [clearSelection],
   );
 
-  const selectionPathsIntersecting = (root: HTMLDivElement, selectionRect: DOMRect) => {
-    const paths = new Set<string>();
-    root.querySelectorAll<HTMLElement>(".file-card[data-file-path], .file-list-row[data-file-path]").forEach((item) => {
+  const captureVisibleSelectionItemBounds = (
+    gesture: WorkspaceSelectionGesture,
+    rootRect: DOMRect,
+  ) => {
+    gesture.root.querySelectorAll<HTMLElement>(".file-card[data-file-path], .file-list-row[data-file-path]").forEach((item) => {
       const itemRect = item.getBoundingClientRect();
-      const intersects =
-        itemRect.left < selectionRect.right &&
-        itemRect.right > selectionRect.left &&
-        itemRect.top < selectionRect.bottom &&
-        itemRect.bottom > selectionRect.top;
-      if (intersects) {
-        const path = item.dataset.filePath;
-        if (path) {
-          paths.add(path);
-        }
+      const path = item.dataset.filePath;
+      if (path) {
+        gesture.itemBounds.set(path, {
+          left: itemRect.left - rootRect.left + gesture.root.scrollLeft,
+          top: itemRect.top - rootRect.top + gesture.root.scrollTop,
+          right: itemRect.right - rootRect.left + gesture.root.scrollLeft,
+          bottom: itemRect.bottom - rootRect.top + gesture.root.scrollTop,
+        });
       }
     });
-    return paths;
   };
 
   const stopAutoScroll = () => {
@@ -149,12 +151,6 @@ export function useWorkspaceGestures({
       clientY,
     });
     const { left, top, width, height } = geometry.contentBox;
-    const selectionRect = new DOMRect(
-      geometry.viewportBox.left,
-      geometry.viewportBox.top,
-      geometry.viewportBox.width,
-      geometry.viewportBox.height,
-    );
     setSelectionBox({ viewMode: gesture.viewMode, left, top, width, height });
     if (width < 8 && height < 8) {
       writeClientLog(
@@ -162,11 +158,17 @@ export function useWorkspaceGestures({
         `框选进入拖动：${gesture.viewMode}，视口 (${Math.round(geometry.viewportBox.left)}, ${Math.round(geometry.viewportBox.top)})，内容坐标 (${Math.round(left)}, ${Math.round(top)})，尺寸 ${Math.round(width)}×${Math.round(height)}`,
       );
     }
-    const intersectingPaths = selectionPathsIntersecting(gesture.root, selectionRect);
-    if (gesture.hasAutoScrolled) {
-      intersectingPaths.forEach((path) => gesture.intersectedPaths.add(path));
-    } else {
-      gesture.intersectedPaths = intersectingPaths;
+    captureVisibleSelectionItemBounds(gesture, rootRect);
+    const previousIntersectionCount = gesture.intersectedPaths.size;
+    gesture.intersectedPaths = findPathsIntersectingSelectionBounds(
+      gesture.itemBounds,
+      geometry.contentBox,
+    );
+    if (gesture.intersectedPaths.size !== previousIntersectionCount) {
+      writeClientLog(
+        "debug",
+        `框选命中集合已重算：${previousIntersectionCount} -> ${gesture.intersectedPaths.size}，已记录边界 ${gesture.itemBounds.size} 个`,
+      );
     }
     const nextSelection = gesture.additive ? new Set(gesture.initialSelection) : new Set<string>();
     gesture.intersectedPaths.forEach((path) => nextSelection.add(path));
@@ -248,6 +250,7 @@ export function useWorkspaceGestures({
       lastClientY: event.clientY,
       initialSelection: new Set(selectedFiles),
       intersectedPaths: new Set(),
+      itemBounds: new Map(),
       additive: event.ctrlKey || event.metaKey || event.shiftKey,
       moved: false,
       hasAutoScrolled: false,

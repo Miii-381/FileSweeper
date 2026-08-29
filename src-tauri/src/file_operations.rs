@@ -1,9 +1,10 @@
 use super::*;
 
 pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
+    let started_at = Instant::now();
     let requested = paths.len();
     let mut seen_paths = HashSet::new();
-    let mut normalized_paths = Vec::new();
+    let mut normalized_items = Vec::new();
 
     for path in paths {
         let normalized = fs::canonicalize(path)
@@ -15,36 +16,93 @@ pub(super) fn normalize_item_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, S
         }
         let normalized_text = path_string(&normalized);
         if seen_paths.insert(normalized_text.to_ascii_lowercase()) {
-            log::debug!("Item path accepted during normalization: {normalized_text}");
-            normalized_paths.push(normalized);
+            normalized_items.push((normalized, metadata.is_dir()));
         } else {
-            log::debug!("Duplicate item path removed during normalization: {normalized_text}");
+            log::trace!("Duplicate item path removed during normalization: {normalized_text}");
         }
     }
 
-    if normalized_paths.is_empty() {
+    if normalized_items.is_empty() {
         log::warn!("Item path normalization produced no usable items: requested={requested}");
         return Err("Select at least one file or folder.".to_string());
     }
-    let candidates = normalized_paths.clone();
-    let before_descendant_filter = normalized_paths.len();
-    normalized_paths.retain(|path| {
-        !candidates.iter().any(|other| {
-            other != path
-                && other.is_dir()
-                && domain::is_same_or_descendant_path(&path_string(path), &path_string(other))
-        })
+
+    let validation_elapsed = started_at.elapsed();
+    let filter_started_at = Instant::now();
+    let selected_directories = normalized_items
+        .iter()
+        .filter(|(_, is_directory)| *is_directory)
+        .map(|(path, _)| path_string(path).to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let before_descendant_filter = normalized_items.len();
+    normalized_items.retain(|(path, _)| {
+        let mut ancestor = path.parent();
+        while let Some(parent) = ancestor {
+            if selected_directories.contains(&path_string(parent).to_ascii_lowercase()) {
+                return false;
+            }
+            ancestor = parent.parent();
+        }
+        true
     });
+    let filter_elapsed = filter_started_at.elapsed();
+    let normalized_paths = normalized_items
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
     log::debug!(
-        "Item paths normalized: requested={requested}, accepted={}, descendants_removed={}",
+        "Item paths normalized: requested={requested}, accepted={}, descendants_removed={}, validation_ms={}, descendant_filter_ms={}, total_ms={}",
         normalized_paths.len(),
-        before_descendant_filter.saturating_sub(normalized_paths.len())
+        before_descendant_filter.saturating_sub(normalized_paths.len()),
+        validation_elapsed.as_millis(),
+        filter_elapsed.as_millis(),
+        started_at.elapsed().as_millis()
     );
+    log_path_sample("Normalized item", &normalized_paths);
     Ok(normalized_paths)
 }
 
+fn log_path_sample(label: &str, paths: &[PathBuf]) {
+    const HEAD_COUNT: usize = 3;
+    const TAIL_COUNT: usize = 2;
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+
+    let total = paths.len();
+    if total <= HEAD_COUNT + TAIL_COUNT {
+        for (index, path) in paths.iter().enumerate() {
+            log::debug!(
+                "{label} path sample: index={}/{total}, path={}",
+                index + 1,
+                path_string(path)
+            );
+        }
+        return;
+    }
+    for (index, path) in paths.iter().take(HEAD_COUNT).enumerate() {
+        log::debug!(
+            "{label} path sample: index={}/{total}, path={}",
+            index + 1,
+            path_string(path)
+        );
+    }
+    log::debug!(
+        "{label} path sample omitted: count={}",
+        total - HEAD_COUNT - TAIL_COUNT
+    );
+    let tail_start = total - TAIL_COUNT;
+    for (index, path) in paths.iter().enumerate().skip(tail_start) {
+        log::debug!(
+            "{label} path sample: index={}/{total}, path={}",
+            index + 1,
+            path_string(path)
+        );
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn shell_item(path: &Path) -> Result<IShellItem, String> {
+pub(super) fn shell_item(path: &Path) -> Result<IShellItem, String> {
     unsafe {
         SHCreateItemFromParsingName(&HSTRING::from(path_string(path)), None)
             .map_err(|error| format!("Unable to prepare the selected file: {error}"))
@@ -52,12 +110,22 @@ fn shell_item(path: &Path) -> Result<IShellItem, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn background_shell_operation_flags() -> FILEOPERATION_FLAGS {
+pub(super) fn background_shell_operation_flags() -> FILEOPERATION_FLAGS {
     FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
 }
 
 #[cfg(target_os = "windows")]
-fn shell_file_operation() -> Result<IFileOperation, String> {
+pub(super) fn background_shell_transfer_flags() -> FILEOPERATION_FLAGS {
+    FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_RENAMEONCOLLISION
+}
+
+#[cfg(target_os = "windows")]
+fn background_shell_recycle_flags() -> FILEOPERATION_FLAGS {
+    background_shell_operation_flags() | FOFX_RECYCLEONDELETE
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn shell_file_operation() -> Result<IFileOperation, String> {
     unsafe {
         let operation: IFileOperation =
             CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)
@@ -116,38 +184,6 @@ fn rename_path_with_shell(path: &Path, new_name: &str) -> Result<(), String> {
         .map_err(|error| format!("Unable to rename the selected file: {error}"))
 }
 
-#[cfg(target_os = "windows")]
-fn copy_path_with_shell(
-    source: &Path,
-    destination_directory: &Path,
-    destination_name: &str,
-) -> Result<(), String> {
-    unsafe {
-        log::debug!(
-            "Starting Shell copy: source={}, destination_directory={}, destination_name={destination_name}",
-            path_string(source),
-            path_string(destination_directory)
-        );
-        let operation = shell_file_operation()?;
-        let source_item = shell_item(source)?;
-        let destination_item = shell_item(destination_directory)?;
-        let name = HSTRING::from(destination_name);
-        operation
-            .CopyItem(&source_item, &destination_item, PCWSTR(name.as_ptr()), None)
-            .map_err(|error| format!("Unable to queue the file copy: {error}"))?;
-        operation
-            .PerformOperations()
-            .map_err(|error| format!("Unable to copy the selected file: {error}"))?;
-        ensure_shell_operation_completed(&operation)?;
-        log::debug!(
-            "Shell copy completed: source={}, destination_directory={}, destination_name={destination_name}",
-            path_string(source),
-            path_string(destination_directory)
-        );
-        Ok(())
-    }
-}
-
 #[cfg(not(target_os = "windows"))]
 fn copy_path_with_shell(
     source: &Path,
@@ -182,6 +218,7 @@ fn rename_item_path(path: PathBuf, new_stem: String) -> Result<RenameResult, Str
     })
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 fn unique_copy_destination(source: &Path, destination_directory: &Path) -> Result<PathBuf, String> {
     let file_name = source
         .file_name()
@@ -221,46 +258,6 @@ fn unique_copy_destination(source: &Path, destination_directory: &Path) -> Resul
     Err("Unable to find an available destination file name.".to_string())
 }
 
-#[cfg(target_os = "windows")]
-fn delete_path_with_shell(path: &Path) -> Result<(), String> {
-    unsafe {
-        log::debug!("Starting permanent Shell delete: {}", path_string(path));
-        let operation = shell_file_operation()?;
-        let item = shell_item(path)?;
-        operation
-            .DeleteItem(&item, None)
-            .map_err(|error| format!("Unable to queue the source file removal: {error}"))?;
-        operation.PerformOperations().map_err(|error| {
-            format!("Unable to remove the source file after moving it: {error}")
-        })?;
-        ensure_shell_operation_completed(&operation)?;
-        log::debug!("Permanent Shell delete completed: {}", path_string(path));
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn commit_temporary_copy(temporary: &Path, target: &Path) -> Result<(), String> {
-    let source = temporary
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    unsafe {
-        MoveFileExW(
-            PCWSTR(source.as_ptr()),
-            PCWSTR(destination.as_ptr()),
-            MOVEFILE_WRITE_THROUGH,
-        )
-        .map_err(|error| format!("Unable to commit the copied file without overwriting: {error}"))
-    }
-}
-
 #[cfg(not(target_os = "windows"))]
 fn commit_temporary_copy(temporary: &Path, target: &Path) -> Result<(), String> {
     if target.exists() {
@@ -275,6 +272,7 @@ fn delete_path_with_shell(path: &Path) -> Result<(), String> {
     fs::remove_file(path).map_err(|error| format!("Unable to remove the source file: {error}"))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn copy_one_to_directory(
     source_path: &Path,
     destination: &Path,
@@ -360,14 +358,18 @@ fn copy_one_to_directory(
     Ok(target)
 }
 
-fn should_skip_same_directory_transfer(
+pub(super) fn should_skip_same_directory_transfer(
     source: &Path,
     destination: &Path,
     operation: FileTaskOperation,
 ) -> bool {
-    operation == FileTaskOperation::Move && source.parent() == Some(destination)
+    operation == FileTaskOperation::Move
+        && source.parent().is_some_and(|parent| {
+            path_string(parent).eq_ignore_ascii_case(&path_string(destination))
+        })
 }
 
+#[cfg(not(target_os = "windows"))]
 fn transfer_one(
     source: String,
     destination: &Path,
@@ -487,7 +489,7 @@ fn transfer_one(
     }
 }
 
-fn emit_task_snapshot(control: &FileTaskControl, app_handle: &tauri::AppHandle) {
+pub(super) fn emit_task_snapshot(control: &FileTaskControl, app_handle: &tauri::AppHandle) {
     match control.snapshot.lock().map(|snapshot| snapshot.clone()) {
         Ok(snapshot) => {
             log::debug!(
@@ -510,12 +512,33 @@ fn emit_task_snapshot(control: &FileTaskControl, app_handle: &tauri::AppHandle) 
     }
 }
 
+#[cfg(target_os = "windows")]
 fn run_transfer_task(
     control: FileTaskControl,
     paths: Vec<String>,
     destination: PathBuf,
     operation: FileTaskOperation,
     app_handle: tauri::AppHandle,
+    clipboard_reporter: Option<ClipboardPasteReporter>,
+) {
+    windows_transfer::run_transfer_task(
+        control,
+        paths,
+        destination,
+        operation,
+        app_handle,
+        clipboard_reporter,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_transfer_task(
+    control: FileTaskControl,
+    paths: Vec<String>,
+    destination: PathBuf,
+    operation: FileTaskOperation,
+    app_handle: tauri::AppHandle,
+    _clipboard_reporter: Option<ClipboardPasteReporter>,
 ) {
     let task_id = match control.snapshot.lock() {
         Ok(snapshot) => snapshot.id,
@@ -676,14 +699,7 @@ fn write_file_clipboard(
         paths.len(),
         owner.unwrap_or_default()
     );
-    for (index, path) in paths.iter().enumerate() {
-        log::debug!(
-            "Windows file clipboard source {}/{}: {}",
-            index + 1,
-            paths.len(),
-            path_string(path)
-        );
-    }
+    log_path_sample("Windows file clipboard source", paths);
     let result = windows_shell::write_windows_file_clipboard(paths, drop_effect, owner);
     match &result {
         Ok(()) => log::info!(
@@ -711,9 +727,10 @@ fn write_file_clipboard(
 
 #[cfg(target_os = "windows")]
 fn read_file_clipboard() -> Result<ClipboardFiles, String> {
+    let observed_sequence = unsafe { GetClipboardSequenceNumber() };
     log::info!(
         "Reading Windows file clipboard: sequence={}, CF_HDROP_format={}",
-        unsafe { GetClipboardSequenceNumber() },
+        observed_sequence,
         CF_HDROP.0
     );
     unsafe {
@@ -721,6 +738,12 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
             .map_err(|_| "The clipboard does not contain files.".to_string())?;
     }
     open_clipboard_with_retry(None)?;
+    let sequence_number = unsafe { GetClipboardSequenceNumber() };
+    if sequence_number != observed_sequence {
+        log::info!(
+            "Windows clipboard changed while waiting to open it; using the opened data sequence: observed_sequence={observed_sequence}, opened_sequence={sequence_number}"
+        );
+    }
     let result = (|| unsafe {
         let clipboard_handle = GetClipboardData(CF_HDROP.0 as u32)
             .map_err(|error| format!("Unable to read files from the Windows clipboard: {error}"))?;
@@ -800,7 +823,11 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
                 paths.len()
             );
         }
-        Ok(ClipboardFiles { paths, operation })
+        Ok(ClipboardFiles {
+            paths,
+            operation,
+            sequence_number,
+        })
     })();
     if let Err(error) = unsafe { CloseClipboard() } {
         log::warn!("Unable to close the Windows clipboard after reading: {error}");
@@ -817,59 +844,126 @@ fn read_file_clipboard() -> Result<ClipboardFiles, String> {
 }
 
 #[cfg(target_os = "windows")]
-pub(super) fn recycle_path(path: &Path) -> Result<(), String> {
-    unsafe {
-        let operation: IFileOperation =
-            CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)
-                .map_err(|error| format!("Unable to start the Recycle Bin operation: {error}"))?;
-        operation
-            .SetOperationFlags(FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION)
-            .map_err(|error| format!("Unable to configure the Recycle Bin operation: {error}"))?;
-        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path_string(path)), None)
-            .map_err(|error| format!("Unable to prepare the selected file: {error}"))?;
-        operation
-            .DeleteItem(&item, None)
-            .map_err(|error| format!("Unable to queue the selected file for deletion: {error}"))?;
-        operation.PerformOperations().map_err(|error| {
-            format!("Unable to move the selected file to the Recycle Bin: {error}")
-        })?;
-        if operation
-            .GetAnyOperationsAborted()
-            .map_err(|error| format!("Unable to inspect the Recycle Bin operation: {error}"))?
-            .as_bool()
-        {
-            return Err("The Recycle Bin operation was cancelled.".to_string());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(super) fn recycle_path(_path: &Path) -> Result<(), String> {
-    Err("Moving files to the Recycle Bin is only supported on Windows.".to_string())
-}
-
 fn recycle_paths(paths: Vec<PathBuf>) -> RecycleResult {
+    let started_at = Instant::now();
+    let requested = paths.len();
     let mut recycled_paths = Vec::new();
     let mut failed_paths = Vec::new();
-    for path in paths {
-        match recycle_path(&path) {
-            Ok(()) => {
-                log::info!("File moved to Recycle Bin: path={}", path_string(&path));
-                recycled_paths.push(path_string(&path));
-            }
+    log::info!("Windows batch Recycle Bin operation preparing: requested_items={requested}");
+    log_path_sample("Windows Recycle Bin source", &paths);
+    let operation = match shell_file_operation() {
+        Ok(operation) => operation,
+        Err(error) => {
+            log::error!(
+                "Windows batch Recycle Bin operation could not be created: requested_items={requested}, error={error}"
+            );
+            return RecycleResult {
+                recycled_paths,
+                failed_paths: paths.iter().map(|path| path_string(path)).collect(),
+            };
+        }
+    };
+    let flags = background_shell_recycle_flags();
+    if let Err(error) = unsafe { operation.SetOperationFlags(flags) } {
+        log::error!(
+            "Windows batch Recycle Bin flags could not be configured: requested_items={requested}, flags=0x{:X}, error={error}",
+            flags.0
+        );
+        return RecycleResult {
+            recycled_paths,
+            failed_paths: paths.iter().map(|path| path_string(path)).collect(),
+        };
+    }
+    log::debug!(
+        "Windows batch Recycle Bin flags configured: requested_items={requested}, flags=0x{:X}, silent=true, confirmation_ui=false, error_ui=false",
+        flags.0
+    );
+
+    let mut queued_paths = Vec::with_capacity(paths.len());
+    for (index, path) in paths.into_iter().enumerate() {
+        let path_text = path_string(&path);
+        let item = match shell_item(&path) {
+            Ok(item) => item,
             Err(error) => {
                 log::error!(
-                    "Unable to move file to Recycle Bin: path={}, error={error}",
-                    path_string(&path)
+                    "Windows batch Recycle Bin item could not be prepared: item={}/{requested}, path={path_text}, error={error}",
+                    index + 1
                 );
-                failed_paths.push(path_string(&path));
+                failed_paths.push(path_text);
+                continue;
             }
+        };
+        if let Err(error) = unsafe { operation.DeleteItem(&item, None) } {
+            log::error!(
+                "Windows batch Recycle Bin item could not be queued: item={}/{requested}, path={path_text}, error={error}",
+                index + 1
+            );
+            failed_paths.push(path_text);
+            continue;
+        }
+        log::trace!(
+            "Windows batch Recycle Bin item queued: item={}/{requested}, path={path_text}",
+            index + 1
+        );
+        queued_paths.push(path);
+    }
+
+    let mut perform_error = None;
+    let mut operations_aborted = false;
+    if !queued_paths.is_empty() {
+        log::info!(
+            "Executing one Windows Recycle Bin batch: queued_items={}, requested_items={requested}",
+            queued_paths.len()
+        );
+        if let Err(error) = unsafe { operation.PerformOperations() } {
+            log::error!(
+                "Windows batch Recycle Bin PerformOperations failed: queued_items={}, error={error}",
+                queued_paths.len()
+            );
+            perform_error = Some(error.to_string());
+        }
+        match unsafe { operation.GetAnyOperationsAborted() } {
+            Ok(aborted) => operations_aborted = aborted.as_bool(),
+            Err(error) => log::error!(
+                "Windows batch Recycle Bin abort state could not be read: error={error}"
+            ),
         }
     }
+
+    for path in queued_paths {
+        let path_text = path_string(&path);
+        if !path.exists() {
+            log::trace!("File moved to Recycle Bin by Windows batch: path={path_text}");
+            recycled_paths.push(path_text);
+        } else {
+            log::error!(
+                "Windows batch Recycle Bin item remains at its source: path={path_text}, operations_aborted={operations_aborted}, perform_error={}",
+                perform_error.as_deref().unwrap_or("-")
+            );
+            failed_paths.push(path_text);
+        }
+    }
+    log::info!(
+        "Windows batch Recycle Bin operation finished: requested_items={requested}, recycled_items={}, failed_items={}, operations_aborted={operations_aborted}, elapsed_ms={}",
+        recycled_paths.len(),
+        failed_paths.len(),
+        started_at.elapsed().as_millis()
+    );
     RecycleResult {
         recycled_paths,
         failed_paths,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn recycle_paths(paths: Vec<PathBuf>) -> RecycleResult {
+    log::error!(
+        "Recycle Bin batch rejected because the current platform is unsupported: requested_items={}",
+        paths.len()
+    );
+    RecycleResult {
+        recycled_paths: Vec::new(),
+        failed_paths: paths.iter().map(|path| path_string(path)).collect(),
     }
 }
 
@@ -897,6 +991,17 @@ fn process_clipboard_operation(task: ClipboardOperationTask) {
                 );
             }
         }
+        ClipboardOperationTask::ReportPaste {
+            expected_sequence,
+            operation,
+        } => match windows_shell::report_windows_clipboard_paste(expected_sequence, operation) {
+            Ok(reported) => log::info!(
+                "Clipboard paste completion processed: expected_sequence={expected_sequence}, operation={operation:?}, reported={reported}"
+            ),
+            Err(error) => log::warn!(
+                "Clipboard paste completion could not be reported: expected_sequence={expected_sequence}, operation={operation:?}, error={error}"
+            ),
+        },
         ClipboardOperationTask::Flush { response } => {
             if response
                 .send(windows_shell::flush_windows_file_clipboard())
@@ -954,7 +1059,15 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
                     destination,
                     operation,
                     app_handle,
-                } => run_transfer_task(control, paths, destination, operation, app_handle),
+                    clipboard_reporter,
+                } => run_transfer_task(
+                    control,
+                    paths,
+                    destination,
+                    operation,
+                    app_handle,
+                    clipboard_reporter,
+                ),
             }
         }
 
@@ -1047,19 +1160,19 @@ pub(super) fn start_file_operation_queue() -> FileOperationQueue {
 }
 
 #[cfg(target_os = "windows")]
-fn wake_clipboard_queue(queue: &FileOperationQueue) -> Result<(), String> {
-    if queue.clipboard_thread_id == 0 {
+fn wake_clipboard_thread(thread_id: u32) -> Result<(), String> {
+    if thread_id == 0 {
         return Err("The clipboard STA thread did not initialize.".to_string());
     }
     unsafe {
-        PostThreadMessageW(
-            queue.clipboard_thread_id,
-            WM_CLIPBOARD_TASK,
-            WPARAM(0),
-            LPARAM(0),
-        )
-        .map_err(|error| format!("Unable to wake the clipboard STA thread: {error}"))
+        PostThreadMessageW(thread_id, WM_CLIPBOARD_TASK, WPARAM(0), LPARAM(0))
+            .map_err(|error| format!("Unable to wake the clipboard STA thread: {error}"))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn wake_clipboard_queue(queue: &FileOperationQueue) -> Result<(), String> {
+    wake_clipboard_thread(queue.clipboard_thread_id)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1110,6 +1223,40 @@ pub(super) fn start_transfer_task(
     app_handle: tauri::AppHandle,
     queue: &FileOperationQueue,
 ) -> Result<FileTaskSnapshot, String> {
+    start_transfer_task_internal(paths, destination, operation, app_handle, queue, None)
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn start_clipboard_transfer_task(
+    paths: Vec<String>,
+    destination: PathBuf,
+    operation: FileTaskOperation,
+    clipboard_sequence: u32,
+    app_handle: tauri::AppHandle,
+    queue: &FileOperationQueue,
+) -> Result<FileTaskSnapshot, String> {
+    start_transfer_task_internal(
+        paths,
+        destination,
+        operation,
+        app_handle,
+        queue,
+        Some(ClipboardPasteReporter {
+            sender: queue.clipboard_sender.clone(),
+            thread_id: queue.clipboard_thread_id,
+            expected_sequence: clipboard_sequence,
+        }),
+    )
+}
+
+fn start_transfer_task_internal(
+    paths: Vec<String>,
+    destination: PathBuf,
+    operation: FileTaskOperation,
+    app_handle: tauri::AppHandle,
+    queue: &FileOperationQueue,
+    clipboard_reporter: Option<ClipboardPasteReporter>,
+) -> Result<FileTaskSnapshot, String> {
     if paths.is_empty() {
         return Err("Select at least one file for the task.".to_string());
     }
@@ -1133,6 +1280,8 @@ pub(super) fn start_transfer_task(
         destination_path: path_string(&destination),
         total_items: paths.len(),
         completed_items: 0,
+        total_bytes: None,
+        transferred_bytes: 0,
         results: Vec::with_capacity(paths.len()),
     };
     let control = FileTaskControl {
@@ -1179,6 +1328,7 @@ pub(super) fn start_transfer_task(
             destination,
             operation,
             app_handle,
+            clipboard_reporter,
         })
         .is_err()
     {
@@ -1190,6 +1340,46 @@ pub(super) fn start_transfer_task(
         return Err("The file operation queue is unavailable.".to_string());
     }
     Ok(snapshot)
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn report_completed_clipboard_paste(
+    reporter: ClipboardPasteReporter,
+    operation: FileTaskOperation,
+) {
+    let expected_sequence = reporter.expected_sequence;
+    if reporter
+        .sender
+        .send(ClipboardOperationTask::ReportPaste {
+            expected_sequence,
+            operation,
+        })
+        .is_err()
+    {
+        log::warn!(
+            "Completed clipboard paste could not be queued for Shell reporting: expected_sequence={expected_sequence}, operation={operation:?}"
+        );
+        return;
+    }
+    if reporter.thread_id == 0 {
+        log::warn!(
+            "Completed clipboard paste was queued but the clipboard STA thread is unavailable: expected_sequence={expected_sequence}, operation={operation:?}"
+        );
+        return;
+    }
+    if let Err(error) =
+        unsafe { PostThreadMessageW(reporter.thread_id, WM_CLIPBOARD_TASK, WPARAM(0), LPARAM(0)) }
+    {
+        log::warn!(
+            "Completed clipboard paste could not wake the clipboard STA thread: expected_sequence={expected_sequence}, operation={operation:?}, thread_id={}, error={error}",
+            reporter.thread_id
+        );
+    } else {
+        log::debug!(
+            "Completed clipboard paste queued for Shell reporting: expected_sequence={expected_sequence}, operation={operation:?}, thread_id={}",
+            reporter.thread_id
+        );
+    }
 }
 
 pub(super) fn get_file_task(
@@ -1241,11 +1431,12 @@ pub(super) fn enqueue_write_clipboard(
     paths: Vec<PathBuf>,
     operation: FileTaskOperation,
     owner: Option<isize>,
-    queue: &FileOperationQueue,
+    clipboard_sender: mpsc::Sender<ClipboardOperationTask>,
+    #[cfg(target_os = "windows")] clipboard_thread_id: u32,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
     let (response_sender, response_receiver) = mpsc::channel();
-    queue
-        .clipboard_sender
+    clipboard_sender
         .send(ClipboardOperationTask::WriteClipboard {
             paths,
             operation,
@@ -1253,10 +1444,16 @@ pub(super) fn enqueue_write_clipboard(
             response: response_sender,
         })
         .map_err(|_| "The file operation queue is unavailable.".to_string())?;
-    wake_clipboard_queue(queue)?;
-    response_receiver
+    #[cfg(target_os = "windows")]
+    wake_clipboard_thread(clipboard_thread_id)?;
+    let result = response_receiver
         .recv()
-        .map_err(|_| "The clipboard operation did not return a result.".to_string())?
+        .map_err(|_| "The clipboard operation did not return a result.".to_string())?;
+    log::debug!(
+        "Clipboard STA write request returned: operation={operation:?}, wait_ms={}",
+        started_at.elapsed().as_millis()
+    );
+    result
 }
 
 pub(super) fn enqueue_read_clipboard(queue: &FileOperationQueue) -> Result<ClipboardFiles, String> {
@@ -1301,6 +1498,28 @@ mod tests {
         assert_ne!(flags.0 & FOF_NOERRORUI.0, 0);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn background_shell_recycle_uses_one_silent_recycle_batch() {
+        let flags = background_shell_recycle_flags();
+
+        assert_ne!(flags.0 & FOFX_RECYCLEONDELETE.0, 0);
+        assert_ne!(flags.0 & FOF_NOCONFIRMATION.0, 0);
+        assert_ne!(flags.0 & FOF_SILENT.0, 0);
+        assert_ne!(flags.0 & FOF_NOERRORUI.0, 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn background_shell_transfers_route_progress_to_the_custom_receiver() {
+        let flags = background_shell_transfer_flags();
+
+        assert_ne!(flags.0 & FOF_RENAMEONCOLLISION.0, 0);
+        assert_ne!(flags.0 & FOF_NOCONFIRMATION.0, 0);
+        assert_eq!(flags.0 & FOF_SILENT.0, 0);
+        assert_ne!(flags.0 & FOF_NOERRORUI.0, 0);
+    }
+
     fn temporary_test_directory(label: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1312,6 +1531,41 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn normalization_removes_duplicates_and_descendants_without_rechecking_metadata() {
+        let directory = temporary_test_directory("normalize-descendants");
+        let selected_directory = directory.join("selected");
+        let nested_directory = selected_directory.join("nested");
+        let nested_file = nested_directory.join("inside.txt");
+        let sibling_file = directory.join("sibling.txt");
+        fs::create_dir_all(&nested_directory).unwrap();
+        fs::write(&nested_file, b"nested").unwrap();
+        fs::write(&sibling_file, b"sibling").unwrap();
+
+        let normalized = normalize_item_paths(vec![
+            path_string(&selected_directory),
+            path_string(&nested_file),
+            path_string(&sibling_file),
+            path_string(&sibling_file),
+        ])
+        .unwrap();
+        let normalized_keys = normalized
+            .iter()
+            .map(|path| path_string(path).to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(normalized.len(), 2);
+        assert!(normalized_keys.contains(
+            &path_string(&fs::canonicalize(&selected_directory).unwrap()).to_ascii_lowercase()
+        ));
+        assert!(normalized_keys.contains(
+            &path_string(&fs::canonicalize(&sibling_file).unwrap()).to_ascii_lowercase()
+        ));
+        assert!(!normalized_keys
+            .contains(&path_string(&fs::canonicalize(&nested_file).unwrap()).to_ascii_lowercase()));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1355,6 +1609,8 @@ mod tests {
             destination_path: r"D:\destination".to_string(),
             total_items: 2,
             completed_items: 0,
+            total_bytes: None,
+            transferred_bytes: 0,
             results: Vec::new(),
         };
         let control = FileTaskControl {
