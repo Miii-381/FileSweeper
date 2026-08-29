@@ -1,3 +1,5 @@
+import type { FileTaskSnapshot, FileTaskState } from "../../app-types";
+
 export type FileTaskProgressSample = {
   timestamp: number;
   completedItems: number;
@@ -9,6 +11,28 @@ export type FileTaskSpeedPoint = {
 };
 
 export const FILE_TASK_SPEED_HISTORY_MS = 12_000;
+
+const FILE_TASK_STATE_ORDER: Record<FileTaskState, number> = {
+  queued: 0,
+  running: 1,
+  cancelled: 2,
+  completed: 2,
+};
+
+export function selectMonotonicFileTaskSnapshot(
+  current: FileTaskSnapshot | null,
+  incoming: FileTaskSnapshot,
+) {
+  if (!current || incoming.id > current.id) return incoming;
+  if (incoming.id < current.id) return current;
+  if (incoming.completedItems > current.completedItems) return incoming;
+  if (incoming.completedItems < current.completedItems) return current;
+  if (incoming.results.length > current.results.length) return incoming;
+  if (incoming.results.length < current.results.length) return current;
+  return FILE_TASK_STATE_ORDER[incoming.state] > FILE_TASK_STATE_ORDER[current.state]
+    ? incoming
+    : current;
+}
 
 export function appendFileTaskProgressSample(
   samples: readonly FileTaskProgressSample[],
@@ -43,17 +67,16 @@ export function calculateCurrentItemSpeed(
   return Math.max(0, latest.completedItems - baseline.completedItems) / elapsedSeconds;
 }
 
-export function calculateItemSpeedSeries(samples: readonly FileTaskProgressSample[]) {
+export function calculateItemSpeedSeries(
+  samples: readonly FileTaskProgressSample[],
+  averagingWindow = 2_500,
+) {
   const points: FileTaskSpeedPoint[] = [];
   for (let index = 1; index < samples.length; index += 1) {
-    const previous = samples[index - 1];
     const current = samples[index];
-    const elapsedSeconds = (current.timestamp - previous.timestamp) / 1_000;
     points.push({
       timestamp: current.timestamp,
-      itemsPerSecond: elapsedSeconds > 0
-        ? Math.max(0, current.completedItems - previous.completedItems) / elapsedSeconds
-        : 0,
+      itemsPerSecond: calculateCurrentItemSpeed(samples.slice(0, index + 1), averagingWindow),
     });
   }
   return points;

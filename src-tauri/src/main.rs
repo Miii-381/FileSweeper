@@ -102,8 +102,8 @@ use windows::{
             BHID_DataObject, Common::ITEMIDLIST, DragQueryFileW, FileOperation, IFileOperation,
             IShellFolder, IShellItem, IsUserAnAdmin, SHBindToParent, SHCreateDataObject,
             SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists,
-            SHOpenFolderAndSelectItems, SHParseDisplayName, FOFX_RECYCLEONDELETE,
-            FOF_NOCONFIRMATION, HDROP,
+            SHOpenFolderAndSelectItems, SHParseDisplayName, FILEOPERATION_FLAGS,
+            FOFX_RECYCLEONDELETE, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, HDROP,
         },
         UI::WindowsAndMessaging::{
             DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, TranslateMessage, MSG,

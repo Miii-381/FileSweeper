@@ -976,7 +976,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
       </PanelGroup>
       </div>
 
-      {activeFileTask && <FileTaskCard task={activeFileTask} onCancel={() => void cancelActiveFileTask()} />}
+      {activeFileTask && <FileTaskCard key={activeFileTask.id} task={activeFileTask} onCancel={() => void cancelActiveFileTask()} />}
       {toast && <div className="toast" role="status">{toast}</div>}
 
       {confirmation && <ThemedConfirmDialog title={confirmation.title} message={confirmation.message} confirmLabel={confirmation.confirmLabel} onCancel={() => { confirmation.resolve(false); setConfirmation(null); }} onConfirm={() => { confirmation.resolve(true); setConfirmation(null); }} />}

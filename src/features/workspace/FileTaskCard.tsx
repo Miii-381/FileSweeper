@@ -35,28 +35,21 @@ export function FileTaskCard({ task, onCancel }: Props) {
   const latestTask = useRef(task);
   latestTask.current = task;
   const [samples, setSamples] = useState<FileTaskProgressSample[]>(() => [{
-    timestamp: Date.now(),
+    timestamp: performance.now(),
     completedItems: task.completedItems,
   }]);
   const isActive = task.state === "queued" || task.state === "running";
 
   useEffect(() => {
-    const sample = { timestamp: Date.now(), completedItems: task.completedItems };
-    setSamples([sample]);
-    writeClientLog("debug", `文件任务速度采样已初始化：任务 #${task.id}，已完成 ${task.completedItems}/${task.totalItems}`);
+    writeClientLog("debug", `文件任务固定节拍速度采样已初始化：任务 #${task.id}，间隔 ${SAMPLE_INTERVAL_MS}ms，已完成 ${task.completedItems}/${task.totalItems}`);
   }, [task.id]);
-
-  useEffect(() => {
-    const sample = { timestamp: Date.now(), completedItems: task.completedItems };
-    setSamples((current) => appendFileTaskProgressSample(current, sample));
-  }, [task.completedItems, task.state]);
 
   useEffect(() => {
     if (!isActive) return;
     const timer = window.setInterval(() => {
       const currentTask = latestTask.current;
       setSamples((current) => appendFileTaskProgressSample(current, {
-        timestamp: Date.now(),
+        timestamp: performance.now(),
         completedItems: currentTask.completedItems,
       }));
     }, SAMPLE_INTERVAL_MS);
@@ -72,7 +65,7 @@ export function FileTaskCard({ task, onCancel }: Props) {
   const graphPoints = useMemo(() => {
     const series = calculateItemSpeedSeries(samples);
     if (series.length === 0) return `0,${GRAPH_HEIGHT} ${GRAPH_WIDTH},${GRAPH_HEIGHT}`;
-    const latestTimestamp = samples.at(-1)?.timestamp ?? Date.now();
+    const latestTimestamp = samples.at(-1)?.timestamp ?? performance.now();
     const earliestTimestamp = latestTimestamp - FILE_TASK_SPEED_HISTORY_MS;
     const maximumSpeed = Math.max(1, ...series.map((point) => point.itemsPerSecond));
     const points = series.map((point) => {

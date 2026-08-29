@@ -15,6 +15,7 @@ import type {
 } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
 import type { PreviewPlayerHandle } from "../../components/PreviewPlayer";
+import { selectMonotonicFileTaskSnapshot } from "./fileTaskProgress";
 import { findNextPathAfterRemoval } from "./workspaceSelection";
 
 export function useFileTasks({
@@ -218,7 +219,7 @@ export function useFileTasks({
         dismissTimer.current = null;
       }
       const task = await invoke<FileTaskSnapshot>("start_file_task", { paths, destinationPath, operation });
-      setActiveFileTask(task);
+      setActiveFileTask((current) => selectMonotonicFileTaskSnapshot(current, task));
       notifyRef.current(`${operation === "move" ? "移动" : "复制"}任务 #${task.id} 已加入队列`);
       writeClientLog("info", `文件任务 #${task.id} 已创建：${operation} ${paths.length} 个项目到 ${destinationPath}`);
       return task;
@@ -287,7 +288,7 @@ export function useFileTasks({
         dismissTimer.current = null;
       }
       const task = await invoke<FileTaskSnapshot>("paste_files_from_clipboard", { destinationPath: workspace.path });
-      setActiveFileTask(task);
+      setActiveFileTask((current) => selectMonotonicFileTaskSnapshot(current, task));
       notifyRef.current(`${task.operation === "move" ? "移动" : "复制"}任务 #${task.id} 已加入队列`);
       writeClientLog("info", `从系统文件剪贴板创建任务 #${task.id}，目标 ${workspace.path}`);
     } catch (pasteError) {
@@ -319,7 +320,7 @@ export function useFileTasks({
     let unlisten: (() => void) | undefined;
     void listen<FileTaskSnapshot>("file-task-progress", (event) => {
       const task = event.payload;
-      setActiveFileTask((current) => (!current || current.id === task.id || task.id > current.id ? task : current));
+      setActiveFileTask((current) => selectMonotonicFileTaskSnapshot(current, task));
       if (!["completed", "cancelled"].includes(task.state) || completedTasks.current.has(task.id)) {
         return;
       }

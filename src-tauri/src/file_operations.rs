@@ -52,13 +52,23 @@ fn shell_item(path: &Path) -> Result<IShellItem, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn background_shell_operation_flags() -> FILEOPERATION_FLAGS {
+    FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+}
+
+#[cfg(target_os = "windows")]
 fn shell_file_operation() -> Result<IFileOperation, String> {
     unsafe {
         let operation: IFileOperation =
             CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER)
                 .map_err(|error| format!("Unable to start the file operation: {error}"))?;
+        let flags = background_shell_operation_flags();
+        log::debug!(
+            "Configuring background Shell file operation: flags=0x{:X}, silent=true, native_error_ui=false",
+            flags.0
+        );
         operation
-            .SetOperationFlags(FOF_NOCONFIRMATION)
+            .SetOperationFlags(flags)
             .map_err(|error| format!("Unable to configure the file operation: {error}"))?;
         Ok(operation)
     }
@@ -1280,6 +1290,16 @@ pub(super) fn flush_file_clipboard(queue: &FileOperationQueue) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn background_shell_operations_do_not_create_native_progress_or_error_ui() {
+        let flags = background_shell_operation_flags();
+
+        assert_ne!(flags.0 & FOF_NOCONFIRMATION.0, 0);
+        assert_ne!(flags.0 & FOF_SILENT.0, 0);
+        assert_ne!(flags.0 & FOF_NOERRORUI.0, 0);
+    }
 
     fn temporary_test_directory(label: &str) -> PathBuf {
         let suffix = SystemTime::now()

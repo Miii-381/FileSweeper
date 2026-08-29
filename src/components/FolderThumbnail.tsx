@@ -62,9 +62,18 @@ export const FolderThumbnail = memo(function FolderThumbnail({
     const target = element.current;
     if (!target) return;
     let active = true;
-    const load = () => void requestFolderSources(folder.path).then((sources) => {
-      if (active) setFiles(sources);
-    });
+    const contentRevision = folder.modifiedAt ?? 0;
+    const load = () => {
+      writeClientLog("debug", `请求文件夹缩略图来源：${folder.path}，内容版本 ${contentRevision}`);
+      void requestFolderSources(folder.path).then((sources) => {
+        if (!active) {
+          writeClientLog("debug", `忽略已过期的文件夹缩略图来源：${folder.path}，内容版本 ${contentRevision}`);
+          return;
+        }
+        setFiles(sources);
+        writeClientLog("debug", `文件夹缩略图来源已更新：${folder.path}，内容版本 ${contentRevision}，来源 ${sources.length} 个`);
+      });
+    };
     if (!("IntersectionObserver" in window)) {
       load();
       return () => { active = false; };
@@ -80,7 +89,7 @@ export const FolderThumbnail = memo(function FolderThumbnail({
       active = false;
       observer.disconnect();
     };
-  }, [folder.path]);
+  }, [folder.path, folder.modifiedAt]);
 
   return (
     <span ref={element} className={`folder-thumbnail ${files && files.length > 0 ? "has-sources" : ""}`}>
