@@ -1385,6 +1385,7 @@ mod tests {
         // Production canonicalizes the destination before it reaches the Windows
         // transfer queue. Mirror that boundary so Windows 8.3 and long paths compare equally.
         let canonical_destination = fs::canonicalize(&root).unwrap();
+        let canonical_source = fs::canonicalize(&source).unwrap();
         let mut reserved = HashSet::new();
 
         let result = prepare_transfer(
@@ -1396,7 +1397,10 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(result.status, FileTaskItemStatus::Skipped);
-        assert_eq!(result.destination_path, Some(path_string(&source)));
+        assert_eq!(
+            result.destination_path,
+            Some(path_string(&canonical_source))
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
