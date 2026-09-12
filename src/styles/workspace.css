@@ -296,6 +296,11 @@
     margin-left: 2px
 }
 
+.navigation-toggle {
+    flex: 0 0 auto;
+    margin-right: 2px
+}
+
 .empty-workspace {
     text-align: center;
     flex-direction: column;

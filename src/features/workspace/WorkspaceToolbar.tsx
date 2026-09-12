@@ -5,6 +5,8 @@ import {
   ChevronUp,
   Grid2X2,
   List,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
@@ -17,11 +19,13 @@ export function WorkspaceToolbar({
   sortAscending,
   viewMode,
   previewOpen,
+  navigationOpen,
   metadataLoading,
   onSortKeyChange,
   onToggleSortDirection,
   onViewModeChange,
   onTogglePreview,
+  onToggleNavigation,
   canNavigateBack,
   canNavigateForward,
   canNavigateUp,
@@ -35,11 +39,13 @@ export function WorkspaceToolbar({
   sortAscending: boolean;
   viewMode: ViewMode;
   previewOpen: boolean;
+  navigationOpen: boolean;
   metadataLoading: boolean;
   onSortKeyChange: (key: SortKey) => void;
   onToggleSortDirection: () => void;
   onViewModeChange: (mode: ViewMode) => void;
   onTogglePreview: () => void;
+  onToggleNavigation: () => void;
   canNavigateBack: boolean;
   canNavigateForward: boolean;
   canNavigateUp: boolean;
@@ -58,6 +64,15 @@ export function WorkspaceToolbar({
 
   return (
     <div className="workspace-toolbar">
+      <button
+        className="quiet-icon-button navigation-toggle"
+        type="button"
+        aria-label={navigationOpen ? "折叠左侧导航栏" : "展开左侧导航栏"}
+        title={navigationOpen ? "折叠左侧导航栏" : "展开左侧导航栏"}
+        onClick={onToggleNavigation}
+      >
+        {navigationOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
+      </button>
       <div className="directory-navigation" aria-label="目录导航">
         <button className="quiet-icon-button" type="button" aria-label="后退" title="后退" disabled={!canNavigateBack} onClick={onNavigateBack}><ChevronLeft size={17} /></button>
         <button className="quiet-icon-button" type="button" aria-label="前进" title="前进" disabled={!canNavigateForward} onClick={onNavigateForward}><ChevronRight size={17} /></button>
@@ -119,8 +134,8 @@ export function WorkspaceToolbar({
       <button
         className="quiet-icon-button preview-toggle"
         type="button"
-        aria-label={previewOpen ? "折叠预览面板" : "展开预览面板"}
-        title={previewOpen ? "折叠预览面板" : "展开预览面板"}
+        aria-label={previewOpen ? "折叠右侧预览栏" : "展开右侧预览栏"}
+        title={previewOpen ? "折叠右侧预览栏" : "展开右侧预览栏"}
         onClick={onTogglePreview}
       >
         {previewOpen ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}

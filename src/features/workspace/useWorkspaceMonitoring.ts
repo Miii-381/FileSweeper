@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { WorkspaceListing } from "../../app-types";
 import { errorMessage, writeClientLog } from "../../app-utils";
+import { filterCrossFolderDropPaths } from "./workspaceDrop";
 
 export function useWorkspaceMonitoring({ workspace, refreshWorkspace, markUnavailable, copyDroppedFiles }: {
   workspace: WorkspaceListing | null;
@@ -25,12 +26,29 @@ export function useWorkspaceMonitoring({ workspace, refreshWorkspace, markUnavai
     let active = true;
     let unlisten: (() => void) | undefined;
     void getCurrentWebview().onDragDropEvent((event) => {
-      if (event.payload.type === "enter" || event.payload.type === "over") setIsExternalDropActive(true);
-      else if (event.payload.type === "leave") setIsExternalDropActive(false);
-      else if (event.payload.type === "drop") {
+      if (event.payload.type === "enter") {
+        const acceptedPaths = filterCrossFolderDropPaths(event.payload.paths, workspace.path);
+        setIsExternalDropActive(acceptedPaths.length > 0);
+        const ignored = event.payload.paths.length - acceptedPaths.length;
+        writeClientLog(
+          "debug",
+          `拖入路径预检：接收 ${acceptedPaths.length} 个，忽略当前文件夹项目 ${ignored} 个，目标 ${workspace.path}`,
+        );
+      } else if (event.payload.type === "leave") {
         setIsExternalDropActive(false);
-        writeClientLog("info", `接收拖入文件：${event.payload.paths.length} 个`);
-        void copyDroppedRef.current(event.payload.paths, workspace.path);
+      } else if (event.payload.type === "drop") {
+        setIsExternalDropActive(false);
+        const acceptedPaths = filterCrossFolderDropPaths(event.payload.paths, workspace.path);
+        const ignored = event.payload.paths.length - acceptedPaths.length;
+        if (acceptedPaths.length === 0) {
+          writeClientLog("info", `已忽略当前文件夹内的拖放复制：${ignored} 个项目，目标 ${workspace.path}`);
+          return;
+        }
+        writeClientLog(
+          "info",
+          `接收跨文件夹拖入：复制 ${acceptedPaths.length} 个项目到 ${workspace.path}${ignored > 0 ? `，忽略同文件夹项目 ${ignored} 个` : ""}`,
+        );
+        void copyDroppedRef.current(acceptedPaths, workspace.path);
       }
     }).then((cleanup) => {
       if (active) unlisten = cleanup;

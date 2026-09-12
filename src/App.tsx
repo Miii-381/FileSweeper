@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { colorModeTokens, themePresets } from "./theme";
 import type { PreviewPlayerHandle } from "./components/PreviewPlayer";
 import { ThemedContextMenu } from "./components/ThemedContextMenu";
@@ -59,8 +59,8 @@ const WORKSPACE_GRID_HORIZONTAL_PADDING = 32;
 const WORKSPACE_GRID_SCROLLBAR_GUTTER = 10;
 const PANEL_RESIZE_HANDLE_WIDTH = 12;
 
-function workspaceMinimumSize(groupWidth: number, previewOpen: boolean) {
-  const handleCount = previewOpen ? 2 : 1;
+function workspaceMinimumSize(groupWidth: number, navigationOpen: boolean, previewOpen: boolean) {
+  const handleCount = Number(navigationOpen) + Number(previewOpen);
   const panelWidth = Math.max(1, groupWidth - handleCount * PANEL_RESIZE_HANDLE_WIDTH);
   const minimumWidth = WORKSPACE_CARD_WIDTH + WORKSPACE_GRID_HORIZONTAL_PADDING + WORKSPACE_GRID_SCROLLBAR_GUTTER;
   return Math.min(100, (minimumWidth / panelWidth) * 100);
@@ -136,6 +136,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [navigationIndex, setNavigationIndex] = useState(-1);
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(true);
+  const [isNavigationOpen, setIsNavigationOpen] = useState(true);
   const [leftPanelSize, setLeftPanelSize] = useState(20);
   const [windowStateReady, setWindowStateReady] = useState(false);
   const [confirmation, setConfirmation] = useState<{ title: string; message: string; confirmLabel: string; resolve: (confirmed: boolean) => void } | null>(null);
@@ -146,12 +147,15 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const [systemColorMode, setSystemColorMode] = useState<ColorMode>("dark");
   const { toast, notify } = useToast();
   const [suppressPreviewAutoplay, setSuppressPreviewAutoplay] = useState(false);
-  const [workspaceMinSize, setWorkspaceMinSize] = useState(() => workspaceMinimumSize(window.innerWidth, true));
+  const [workspaceMinSize, setWorkspaceMinSize] = useState(() => workspaceMinimumSize(window.innerWidth, true, true));
   const probedMetadataPaths = useRef<Set<string>>(new Set());
   const renameInputRef = useRef<HTMLInputElement>(null);
   const previewPlayerRef = useRef<PreviewPlayerHandle>(null);
   const panelGroupRef = useRef<HTMLDivElement>(null);
+  const navigationPanelRef = useRef<ImperativePanelHandle>(null);
+  const previewPanelLayoutRef = useRef<ImperativePanelHandle>(null);
   const initializationStarted = useRef(false);
+  const [isPanelResizing, setIsPanelResizing] = useState(false);
 
   const effectiveColorMode: ColorMode =
     config.settings.appearance === "system" ? systemColorMode : config.settings.appearance;
@@ -582,7 +586,8 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
     let active = true;
     void invoke<WindowState>("get_window_state").then((state) => {
       if (!active) return;
-      setLeftPanelSize(state.leftPanelSize);
+      setIsNavigationOpen(state.leftPanelOpen);
+      setLeftPanelSize(state.leftPanelSize > 0 ? state.leftPanelSize : 20);
       setIsPreviewOpen(state.previewOpen);
     }).catch((error: unknown) => writeClientLog("warn", `读取窗口布局失败：${errorMessage(error)}`)).finally(() => {
       if (active) setWindowStateReady(true);
@@ -591,12 +596,17 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   }, []);
 
   useEffect(() => {
+    if (!windowStateReady) return;
     const timer = window.setTimeout(() => {
-      void invoke("save_window_layout", { leftPanelSize: Math.round(leftPanelSize), previewOpen: isPreviewOpen })
+      void invoke("save_window_layout", {
+        leftPanelSize: Math.round(leftPanelSize),
+        leftPanelOpen: isNavigationOpen,
+        previewOpen: isPreviewOpen,
+      })
         .catch((error: unknown) => writeClientLog("warn", `保存窗口布局失败：${errorMessage(error)}`));
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [isPreviewOpen, leftPanelSize]);
+  }, [isNavigationOpen, isPreviewOpen, leftPanelSize, windowStateReady]);
 
   const chooseBackground = useCallback(async () => {
     const selected = await open({ multiple: false, title: "选择背景图", filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }] });
@@ -767,13 +777,13 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
       return;
     }
     const syncWorkspaceMinimum = () => {
-      setWorkspaceMinSize(workspaceMinimumSize(group.clientWidth, isPreviewOpen));
+      setWorkspaceMinSize(workspaceMinimumSize(group.clientWidth, isNavigationOpen, isPreviewOpen));
     };
     const observer = new ResizeObserver(syncWorkspaceMinimum);
     observer.observe(group);
     syncWorkspaceMinimum();
     return () => observer.disconnect();
-  }, [isPreviewOpen]);
+  }, [isNavigationOpen, isPreviewOpen]);
 
 
 
@@ -831,10 +841,19 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
   const isFavorite = Boolean(workspace && config.favorites.some((favorite) => favorite.path === workspace.path));
 
   const togglePreviewPanel = () => {
-    setIsPreviewOpen((isOpen) => {
-      writeClientLog("info", `${isOpen ? "折叠" : "展开"}预览面板`);
-      return !isOpen;
-    });
+    const nextOpen = !isPreviewOpen;
+    writeClientLog("info", `${nextOpen ? "展开" : "折叠"}右侧预览栏`);
+    setIsPreviewOpen(nextOpen);
+    if (nextOpen) previewPanelLayoutRef.current?.expand();
+    else previewPanelLayoutRef.current?.collapse();
+  };
+
+  const toggleNavigationPanel = () => {
+    const nextOpen = !isNavigationOpen;
+    writeClientLog("info", `${nextOpen ? "展开" : "折叠"}左侧导航栏`);
+    setIsNavigationOpen(nextOpen);
+    if (nextOpen) navigationPanelRef.current?.expand();
+    else navigationPanelRef.current?.collapse();
   };
 
 
@@ -869,12 +888,25 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
 
       <div className="application-panels" ref={panelGroupRef}>
       <PanelGroup
-        className="panel-group"
-        autoSaveId={isPreviewOpen ? "file-sweeper-three-panels" : "file-sweeper-two-panels"}
+        className={`panel-group ${isPanelResizing ? "panel-group-resizing" : ""}`}
+        autoSaveId="file-sweeper-panels-v2"
         direction="horizontal"
-        onLayout={(sizes) => setLeftPanelSize(sizes[0] ?? 20)}
+        onLayout={(sizes) => {
+          if (sizes[0] > 0) setLeftPanelSize(sizes[0]);
+        }}
       >
-      <Panel defaultSize={leftPanelSize} minSize={0}>
+      <Panel
+        ref={navigationPanelRef}
+        className="animated-layout-panel"
+        collapsible
+        collapsedSize={0}
+        defaultSize={isNavigationOpen ? leftPanelSize : 0}
+        minSize={12}
+        maxSize={60}
+        order={1}
+        onCollapse={() => setIsNavigationOpen(false)}
+        onExpand={() => setIsNavigationOpen(true)}
+      >
       <NavigationPanel
         config={config}
         roots={roots}
@@ -885,14 +917,19 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
         onSelectPath={(path) => void navigateDirectory(path)}
         onTogglePath={toggleTreeNode}
         onContextMenu={showPathContextMenu}
-        onOpenSettings={openSettingsWithLoading}
       />
       </Panel>
 
-      <PanelResizeHandle className="panel-resize-handle" aria-label="调整左栏宽度" />
+      <PanelResizeHandle
+        className={`panel-resize-handle ${isNavigationOpen ? "" : "panel-resize-handle-collapsed"}`}
+        aria-label="调整左栏宽度"
+        disabled={!isNavigationOpen}
+        onDragging={setIsPanelResizing}
+      />
 
       <WorkspacePanel
         isPreviewOpen={isPreviewOpen}
+        isNavigationOpen={isNavigationOpen}
         workspaceMinSize={workspaceMinSize}
         workspace={workspace}
         workspaceLoading={workspaceLoading}
@@ -905,6 +942,7 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
         toggleWorkspaceSortDirection={toggleWorkspaceSortDirection}
         changeWorkspaceViewMode={changeWorkspaceViewMode}
         togglePreviewPanel={togglePreviewPanel}
+        toggleNavigationPanel={toggleNavigationPanel}
         canNavigateBack={navigationIndex > 0}
         canNavigateForward={navigationIndex >= 0 && navigationIndex < navigationHistory.length - 1}
         canNavigateUp={Boolean(workspace && parentDirectoryPath(workspace.path))}
@@ -955,8 +993,11 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
         isExternalDropActive={isExternalDropActive}
       />
 
-      {isPreviewOpen && (
-        <PreviewPanel
+      <PreviewPanel
+          isOpen={isPreviewOpen}
+          panelRef={previewPanelLayoutRef}
+          onOpenChange={setIsPreviewOpen}
+          onResizeHandleDragging={setIsPanelResizing}
           playerRef={previewPlayerRef}
           selectedPath={selectionAnchor ?? [...selectedFiles][0] ?? null}
           items={workspace?.items ?? []}
@@ -972,7 +1013,6 @@ function FileSweeperApp({ initialState }: { initialState: ApplicationState }) {
             textPreviewLatinFont={config.settings.textPreviewLatinFont}
             textPreviewCjkFont={config.settings.textPreviewCjkFont}
         />
-      )}
       </PanelGroup>
       </div>
 

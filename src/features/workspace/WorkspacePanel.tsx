@@ -11,6 +11,7 @@ import { WorkspaceToolbar } from "./WorkspaceToolbar";
 
 type WorkspacePanelProps = {
   isPreviewOpen: boolean;
+  isNavigationOpen: boolean;
   workspaceMinSize: number;
   workspace: WorkspaceListing | null;
   workspaceLoading: boolean;
@@ -23,6 +24,7 @@ type WorkspacePanelProps = {
   toggleWorkspaceSortDirection: () => void;
   changeWorkspaceViewMode: (mode: ViewMode) => void;
   togglePreviewPanel: () => void;
+  toggleNavigationPanel: () => void;
   canNavigateBack: boolean;
   canNavigateForward: boolean;
   canNavigateUp: boolean;
@@ -75,9 +77,9 @@ type WorkspacePanelProps = {
 
 export function WorkspacePanel(props: WorkspacePanelProps) {
   const {
-    isPreviewOpen, workspaceMinSize, workspace, workspaceLoading, searchQuery,
+    isPreviewOpen, isNavigationOpen, workspaceMinSize, workspace, workspaceLoading, searchQuery,
     sortKey, sortAscending, viewMode, metadataLoading, changeWorkspaceSortKey,
-    toggleWorkspaceSortDirection, changeWorkspaceViewMode, togglePreviewPanel, chooseWorkspaceFolder,
+    toggleWorkspaceSortDirection, changeWorkspaceViewMode, togglePreviewPanel, toggleNavigationPanel, chooseWorkspaceFolder,
     canNavigateBack, canNavigateForward, canNavigateUp, navigateBack, navigateForward, navigateUp, navigateTo,
     visibleFiles, openFolder, clearWorkspaceSelection, showWorkspaceContextMenu, setGridScrollRef,
     handleThumbnailViewportScroll, clearSelectionFromBackground, startWorkspaceRectangleSelection,
@@ -91,7 +93,12 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
     scrollWorkspaceToStart, isExternalDropActive,
   } = props;
   return (
-      <Panel defaultSize={isPreviewOpen ? 54 : 80} minSize={workspaceMinSize}>
+      <Panel
+        className="animated-layout-panel"
+        defaultSize={100 - (isNavigationOpen ? 20 : 0) - (isPreviewOpen ? 26 : 0)}
+        minSize={workspaceMinSize}
+        order={2}
+      >
 
       <section className="workspace">
         <WorkspaceToolbar
@@ -100,11 +107,13 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
           sortAscending={sortAscending}
           viewMode={viewMode}
           previewOpen={isPreviewOpen}
+          navigationOpen={isNavigationOpen}
           metadataLoading={metadataLoading}
           onSortKeyChange={changeWorkspaceSortKey}
           onToggleSortDirection={toggleWorkspaceSortDirection}
           onViewModeChange={changeWorkspaceViewMode}
           onTogglePreview={togglePreviewPanel}
+          onToggleNavigation={toggleNavigationPanel}
           canNavigateBack={canNavigateBack}
           canNavigateForward={canNavigateForward}
           canNavigateUp={canNavigateUp}

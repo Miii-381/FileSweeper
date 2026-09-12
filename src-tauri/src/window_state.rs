@@ -91,6 +91,7 @@ pub(super) fn get_window_state() -> WindowState {
 #[tauri::command]
 pub(super) fn save_window_layout(
     left_panel_size: u8,
+    left_panel_open: bool,
     preview_open: bool,
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
@@ -108,6 +109,7 @@ pub(super) fn save_window_layout(
     state.height = size.height;
     state.maximized = window.is_maximized().unwrap_or(false);
     state.left_panel_size = left_panel_size.clamp(0, 60);
+    state.left_panel_open = left_panel_open;
     state.preview_open = preview_open;
     write_window_state(&state)
 }

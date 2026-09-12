@@ -1,4 +1,4 @@
-import { Panel, PanelResizeHandle } from "react-resizable-panels";
+import { Panel, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { useMemo, type RefObject } from "react";
 import { PreviewPlayer, type PreviewPlayerHandle } from "../../components/PreviewPlayer";
 import { isFileEntry, type CodeTheme, type DirectoryItem, type FileEntry } from "../../app-types";
@@ -9,6 +9,10 @@ import { PdfPreview } from "./PdfPreview";
 import { TextPreview } from "./TextPreview";
 
 type Props = {
+  isOpen: boolean;
+  panelRef: RefObject<ImperativePanelHandle | null>;
+  onOpenChange: (open: boolean) => void;
+  onResizeHandleDragging: (dragging: boolean) => void;
   playerRef: RefObject<PreviewPlayerHandle | null>;
   selectedPath: string | null;
   items: DirectoryItem[];
@@ -26,6 +30,10 @@ type Props = {
 };
 
 export function PreviewPanel({
+  isOpen,
+  panelRef,
+  onOpenChange,
+  onResizeHandleDragging,
   playerRef,
   selectedPath,
   items,
@@ -51,8 +59,24 @@ export function PreviewPanel({
   const thumbnailPath = file ? thumbnailPathOverrides.get(file.path) ?? file.thumbnailPath : null;
   return (
     <>
-      <PanelResizeHandle className="panel-resize-handle" aria-label="调整预览栏宽度" />
-      <Panel defaultSize={26} minSize={0}>
+      <PanelResizeHandle
+        className={`panel-resize-handle ${isOpen ? "" : "panel-resize-handle-collapsed"}`}
+        aria-label="调整预览栏宽度"
+        disabled={!isOpen}
+        onDragging={onResizeHandleDragging}
+      />
+      <Panel
+        ref={panelRef}
+        className="animated-layout-panel"
+        collapsible
+        collapsedSize={0}
+        defaultSize={isOpen ? 26 : 0}
+        minSize={18}
+        order={3}
+        onCollapse={() => onOpenChange(false)}
+        onExpand={() => onOpenChange(true)}
+      >
+        {isOpen && (
         <aside
           className="preview-panel"
           tabIndex={0}
@@ -110,6 +134,7 @@ export function PreviewPanel({
             : <PreviewError message="此文件类型不支持内嵌预览" file={file} />}
           <FileDetails item={item} loading={(file?.kind === "video" || file?.kind === "audio") && metadataLoading} />
         </aside>
+        )}
       </Panel>
     </>
   );

@@ -266,6 +266,7 @@ export type WindowState = {
   height: number;
   maximized: boolean;
   leftPanelSize: number;
+  leftPanelOpen: boolean;
   previewOpen: boolean;
 };
 

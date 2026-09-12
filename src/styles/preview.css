@@ -7,7 +7,7 @@
     height: 100%;
     display: grid;
     overflow: hidden;
-    animation: preview-panel-enter .42s var(--motion-standard-easing) both
+    animation: preview-panel-enter var(--panel-collapse-duration) var(--panel-collapse-easing) both
 }
 
 .player-placeholder {

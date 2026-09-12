@@ -1,4 +1,4 @@
-import { Plus, SlidersHorizontal, Star } from "lucide-react";
+import { Plus, Star } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { AppConfig, DirectoryEntry, TreeState } from "../../app-types";
@@ -14,7 +14,6 @@ export function NavigationPanel({
   onSelectPath,
   onTogglePath,
   onContextMenu,
-  onOpenSettings,
 }: {
   config: AppConfig;
   roots: DirectoryEntry[];
@@ -25,7 +24,6 @@ export function NavigationPanel({
   onSelectPath: (path: string) => void;
   onTogglePath: (path: string) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, entry: DirectoryEntry) => void;
-  onOpenSettings: () => void;
 }) {
   return (
     <aside className="navigation-panel">
@@ -75,13 +73,6 @@ export function NavigationPanel({
           ))}
         </ul>
       </section>
-
-      <div className="navigation-footer">
-        <button className="nav-row" type="button" onClick={onOpenSettings}>
-          <SlidersHorizontal size={16} />
-          <span>偏好设置</span>
-        </button>
-      </div>
     </aside>
   );
 }

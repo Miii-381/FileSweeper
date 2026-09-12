@@ -442,12 +442,17 @@ pub(super) struct WindowState {
     pub(super) maximized: bool,
     #[serde(default = "default_left_panel_size")]
     pub(super) left_panel_size: u8,
+    #[serde(default = "default_left_panel_open")]
+    pub(super) left_panel_open: bool,
     #[serde(default = "default_preview_open")]
     pub(super) preview_open: bool,
 }
 
 pub(super) fn default_left_panel_size() -> u8 {
     20
+}
+pub(super) fn default_left_panel_open() -> bool {
+    true
 }
 pub(super) fn default_preview_open() -> bool {
     true
@@ -463,6 +468,7 @@ impl Default for WindowState {
             height: 900,
             maximized: false,
             left_panel_size: default_left_panel_size(),
+            left_panel_open: default_left_panel_open(),
             preview_open: default_preview_open(),
         }
     }
