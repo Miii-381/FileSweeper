@@ -1382,11 +1382,14 @@ mod tests {
         let root = temporary_test_directory("same-directory-move");
         let source = root.join("clip.mp4");
         fs::write(&source, b"video").unwrap();
+        // Production canonicalizes the destination before it reaches the Windows
+        // transfer queue. Mirror that boundary so Windows 8.3 and long paths compare equally.
+        let canonical_destination = fs::canonicalize(&root).unwrap();
         let mut reserved = HashSet::new();
 
         let result = prepare_transfer(
             path_string(&source),
-            &root,
+            &canonical_destination,
             FileTaskOperation::Move,
             &mut reserved,
         )
