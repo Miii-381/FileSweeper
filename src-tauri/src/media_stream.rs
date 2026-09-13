@@ -10,6 +10,14 @@ fn terminate_process_tree(process_id: u32) -> Result<(), String> {
         .stderr(Stdio::null())
         .status()
         .map_err(|error| format!("Unable to stop the FFmpeg preview process: {error}"))?;
+    // taskkill returns 128 when the process disappeared between controller lookup and
+    // termination. Cleanup is idempotent, so an already-exited process is a success.
+    if status.code() == Some(128) {
+        log::debug!(
+            "FFmpeg preview process was already absent during termination: process_id={process_id}"
+        );
+        return Ok(());
+    }
     if !status.success() {
         return Err(format!(
             "Unable to stop the FFmpeg preview process tree {process_id}: taskkill exited with {status}."
@@ -42,7 +50,6 @@ pub(super) struct VideoStreamServer {
 
 pub(super) struct TranscodeController {
     active_processes: Mutex<HashMap<u32, String>>,
-    processes_changed: Condvar,
 }
 
 pub(super) struct TranscodeRegistration {
@@ -54,7 +61,6 @@ impl TranscodeController {
     pub(super) fn new() -> Self {
         Self {
             active_processes: Mutex::new(HashMap::new()),
-            processes_changed: Condvar::new(),
         }
     }
 
@@ -71,21 +77,24 @@ impl TranscodeController {
         process_id: u32,
         video_path: &Path,
     ) -> TranscodeRegistration {
-        let previous_processes = if let Ok(mut active) = self.active_processes.lock() {
+        if let Ok(mut active) = self.active_processes.lock() {
             let previous = active.keys().copied().collect::<Vec<_>>();
+            for previous_process_id in previous {
+                match terminate_process_tree(previous_process_id) {
+                    Ok(()) => {
+                        active.remove(&previous_process_id);
+                    }
+                    Err(error) => {
+                        log::warn!("Unable to replace an earlier FFmpeg preview: {error}");
+                    }
+                }
+            }
             active.insert(process_id, path_string(video_path));
-            previous
         } else {
             log::error!(
                 "Unable to register FFmpeg preview process; process replacement tracking is unavailable: process_id={process_id}, video={}",
                 path_string(video_path)
             );
-            Vec::new()
-        };
-        for previous_process_id in previous_processes {
-            if let Err(error) = terminate_process_tree(previous_process_id) {
-                log::warn!("Unable to replace an earlier FFmpeg preview: {error}");
-            }
         }
         log::info!(
             "FFmpeg preview registered: process_id={process_id}, video={}",
@@ -112,10 +121,21 @@ impl TranscodeController {
         &self,
         predicate: impl Fn(&String) -> bool,
     ) -> Result<bool, String> {
-        let process_ids = self
+        self.stop_matching_with(predicate, terminate_process_tree)
+    }
+
+    fn stop_matching_with(
+        &self,
+        predicate: impl Fn(&String) -> bool,
+        terminate: impl Fn(u32) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        // Keep the registry locked across termination and removal. Concurrent cleanup
+        // requests then observe either one owner or no owner and cannot kill the same PID twice.
+        let mut active = self
             .active_processes
             .lock()
-            .map_err(|_| "Unable to access the FFmpeg preview process list.".to_string())?
+            .map_err(|_| "Unable to access the FFmpeg preview process list.".to_string())?;
+        let process_ids = active
             .iter()
             .filter_map(|(process_id, process)| predicate(process).then_some(*process_id))
             .collect::<Vec<_>>();
@@ -125,38 +145,8 @@ impl TranscodeController {
         }
 
         for process_id in &process_ids {
-            terminate_process_tree(*process_id)?;
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut active = self
-            .active_processes
-            .lock()
-            .map_err(|_| "Unable to access the FFmpeg preview process list.".to_string())?;
-        while process_ids
-            .iter()
-            .any(|process_id| active.contains_key(process_id))
-        {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(
-                    "FFmpeg did not exit before the delete operation timed out.".to_string()
-                );
-            }
-            let (next, wait_result) = self
-                .processes_changed
-                .wait_timeout(active, remaining)
-                .map_err(|_| "Unable to wait for the FFmpeg preview process.".to_string())?;
-            active = next;
-            if wait_result.timed_out()
-                && process_ids
-                    .iter()
-                    .any(|process_id| active.contains_key(process_id))
-            {
-                return Err(
-                    "FFmpeg did not exit before the delete operation timed out.".to_string()
-                );
-            }
+            terminate(*process_id)?;
+            active.remove(process_id);
         }
         log::info!("Stopped {} FFmpeg preview process(es)", process_ids.len());
         Ok(true)
@@ -172,7 +162,6 @@ impl Drop for TranscodeRegistration {
                     self.process_id
                 );
             }
-            self.controller.processes_changed.notify_all();
         }
     }
 }
@@ -778,5 +767,39 @@ mod tests {
             );
         });
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn repeated_transcode_cleanup_terminates_a_tracked_process_only_once() {
+        use std::cell::Cell;
+
+        let controller = Arc::new(TranscodeController::new());
+        let registration = controller.replace_with(42, Path::new(r"D:\Videos\focused.mp4"));
+        let termination_count = Cell::new(0);
+
+        let first = controller
+            .stop_matching_with(
+                |_| true,
+                |_| {
+                    termination_count.set(termination_count.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let second = controller
+            .stop_matching_with(
+                |_| true,
+                |_| {
+                    termination_count.set(termination_count.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert!(first);
+        assert!(!second);
+        assert_eq!(termination_count.get(), 1);
+        assert!(controller.active_process_path(42).is_none());
+        drop(registration);
     }
 }

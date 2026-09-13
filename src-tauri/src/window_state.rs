@@ -2,6 +2,7 @@ use super::*;
 use tauri::{PhysicalPosition, PhysicalSize};
 
 const WINDOW_STATE_VERSION: u32 = 1;
+const MIN_WINDOW_WIDTH: u32 = 720;
 
 fn window_state_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("window-state.json"))
@@ -28,7 +29,7 @@ pub(super) fn load_window_state() -> WindowState {
     };
     match serde_json::from_slice::<WindowState>(&bytes) {
         Ok(mut state) if state.version == WINDOW_STATE_VERSION => {
-            state.width = state.width.clamp(1024, 16_384);
+            state.width = state.width.clamp(MIN_WINDOW_WIDTH, 16_384);
             state.height = state.height.clamp(650, 16_384);
             state.left_panel_size = state.left_panel_size.clamp(0, 60);
             state
@@ -48,7 +49,7 @@ pub(super) fn restore_main_window(window: &tauri::WebviewWindow) {
         let width = state
             .width
             .min(work_area.size.width)
-            .max(1024.min(work_area.size.width));
+            .max(MIN_WINDOW_WIDTH.min(work_area.size.width));
         let height = state
             .height
             .min(work_area.size.height)
@@ -70,6 +71,9 @@ pub(super) fn restore_main_window(window: &tauri::WebviewWindow) {
     } else {
         (state.width, state.height, state.x, state.y)
     };
+    log::debug!(
+        "Restoring main window within the active work area: size {width}x{height}, position {x},{y}"
+    );
     if let Err(error) = window.set_size(PhysicalSize::new(width, height)) {
         log::warn!("Unable to restore window size: {error}");
     }

@@ -109,11 +109,12 @@ export function useFileTasks({
       try {
         const focusedFilePath = selectedFile && paths.includes(selectedFile.path) ? selectedFile.path : null;
         if (focusedFilePath && selectedFile?.kind === "video") {
-          writeClientLog("debug", `删除前停止焦点文件预览：${focusedFilePath}`);
+          writeClientLog("debug", `删除前断开焦点文件的媒体流：${focusedFilePath}`);
           previewPlayerRef.current?.stopPlayback();
-          await invoke("stop_transcoded_preview", { path: focusedFilePath });
           previewPlayerRef.current?.releasePlayback();
         }
+        // recycle_items is the single backend owner of FFmpeg termination. It stops the
+        // focused preview after the browser stream is disconnected and before Shell deletion.
         const result = await invoke<RecycleResult>("recycle_items", { paths, focusedFilePath });
         applyRecycleResult(result);
       } catch (recycleError) {

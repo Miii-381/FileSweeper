@@ -123,4 +123,25 @@ describe("PreviewPlayer", () => {
     });
     expect(currentTimeAssignments).toHaveBeenCalledTimes(2);
   });
+
+  it("使用两层控制栏并支持保持比例、裁切铺满和拉伸铺满", async () => {
+    invoke.mockImplementation((command: string) => command === "get_video_stream_url"
+      ? Promise.resolve({ url: "http://stream/direct", isTranscoded: false, duration: 60 })
+      : Promise.resolve(false));
+    render(<PreviewPlayer video={video} thumbnailPath={null} autoplay volume={100} muted={false} onEnsureThumbnail={vi.fn()} onAudioPreferenceChange={vi.fn()} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    const element = document.querySelector("video")!;
+    fireEvent.canPlay(element);
+    const fitSelect = screen.getByRole("combobox", { name: "画面适配方式" });
+
+    expect(document.querySelectorAll(".player-controls-row")).toHaveLength(2);
+    expect(element.classList.contains("fit-contain")).toBe(true);
+    fireEvent.change(fitSelect, { target: { value: "cover" } });
+    expect(element.classList.contains("fit-cover")).toBe(true);
+    fireEvent.change(fitSelect, { target: { value: "fill" } });
+    expect(element.classList.contains("fit-fill")).toBe(true);
+  });
 });

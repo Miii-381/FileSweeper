@@ -518,6 +518,12 @@ pub(super) async fn stop_transcoded_preview(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let video_path = match fs::canonicalize(&path) {
             Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                log::debug!(
+                    "Preview source no longer exists during shutdown; using the tracked request path: path={path}"
+                );
+                PathBuf::from(path)
+            }
             Err(error) => {
                 log::warn!(
                     "Unable to canonicalize preview path during shutdown; falling back to the requested path: path={path}, error={error}"

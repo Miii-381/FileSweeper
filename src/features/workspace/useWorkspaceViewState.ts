@@ -7,6 +7,7 @@ import { GRID_CARD_WIDTH, GRID_ROW_HEIGHT, LIST_ROW_HEIGHT, isFileEntry, isFolde
 import { errorMessage, writeClientLog } from "../../app-utils";
 
 const DEFAULT_WORKSPACE_SORT: WorkspaceSort = { key: "name", ascending: true };
+const WORKSPACE_RESIZE_SETTLE_MS = 120;
 
 function materialStandardEasing(progress: number) {
   let lower = 0;
@@ -50,6 +51,7 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
   const activeSort = useRef<WorkspaceSort>(DEFAULT_WORKSPACE_SORT);
   const persistence = useRef<Promise<void>>(Promise.resolve());
   const scrollAnimation = useRef<number | null>(null);
+  const repositionFocusAfterResize = useRef<(previousWidth: number, nextWidth: number) => void>(() => undefined);
 
   const selectedItem = useMemo(() =>
     workspace?.items.find((item) => item.path === selectionAnchor) ??
@@ -157,11 +159,37 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
 
   useLayoutEffect(() => {
     if (viewMode !== "grid" || !gridViewport) return;
-    const updateColumnCount = (width = gridViewport.clientWidth) => setGridColumns(Math.max(1, Math.floor((Math.max(0, width - 32) + 12) / (GRID_CARD_WIDTH + 12))));
-    const observer = new ResizeObserver(([entry]) => updateColumnCount(entry.contentRect.width));
+    let previousWidth: number | null = null;
+    let resizeStartWidth: number | null = null;
+    let settleTimer: number | null = null;
+    const updateColumnCount = (width = gridViewport.clientWidth) => {
+      setGridColumns(Math.max(1, Math.floor((Math.max(0, width - 32) + 12) / (GRID_CARD_WIDTH + 12))));
+    };
+    const observer = new ResizeObserver(([entry]) => {
+      const nextWidth = entry.contentRect.width;
+      updateColumnCount(nextWidth);
+      if (previousWidth === null) {
+        previousWidth = nextWidth;
+        return;
+      }
+      if (Math.abs(nextWidth - previousWidth) < 0.5) return;
+      resizeStartWidth ??= previousWidth;
+      previousWidth = nextWidth;
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => {
+        const initialWidth = resizeStartWidth ?? nextWidth;
+        resizeStartWidth = null;
+        settleTimer = null;
+        repositionFocusAfterResize.current(initialWidth, nextWidth);
+      }, WORKSPACE_RESIZE_SETTLE_MS);
+    });
     observer.observe(gridViewport);
     const frame = window.requestAnimationFrame(() => updateColumnCount());
-    return () => { window.cancelAnimationFrame(frame); observer.disconnect(); };
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      observer.disconnect();
+    };
   }, [gridViewport, viewMode]);
 
   useEffect(() => {
@@ -219,18 +247,51 @@ export function useWorkspaceViewState({ initialConfig, config, setConfig, worksp
   }, []);
 
   const scrollWorkspaceToStart = useCallback(() => animateScroll(viewMode === "grid" ? gridScrollElement.current : listScrollElement.current, 0), [animateScroll, viewMode]);
-  const scrollWorkspaceToFocus = useCallback(() => {
-    const focusPath = selectedFile?.path ?? (workspace ? config.workspaceFocus[workspace.path]?.filePath : null);
+  const positionWorkspaceFocus = useCallback((animated: boolean, notifyWhenMissing: boolean, source: "button" | "resize") => {
+    const focusPath = selectedItem?.path ?? (workspace ? config.workspaceFocus[workspace.path]?.filePath : null);
     const fileIndex = focusPath ? visibleFiles.findIndex((file) => file.path === focusPath) : -1;
-    if (fileIndex < 0) { notify("当前筛选结果中没有可定位的焦点文件"); return; }
-    if (viewMode === "grid") {
-      const viewportHeight = gridScrollElement.current?.clientHeight ?? 0;
-      animateScroll(gridScrollElement.current, Math.max(0, Math.floor(fileIndex / gridColumns) * GRID_ROW_HEIGHT - (viewportHeight - GRID_ROW_HEIGHT) / 2));
-    } else {
-      const viewportHeight = listScrollElement.current?.clientHeight ?? 0;
-      animateScroll(listScrollElement.current, Math.max(0, fileIndex * LIST_ROW_HEIGHT - (viewportHeight - LIST_ROW_HEIGHT) / 2));
+    if (fileIndex < 0) {
+      if (notifyWhenMissing) notify("当前筛选结果中没有可定位的焦点文件");
+      if (source === "resize") writeClientLog("debug", "工作区宽度变化后跳过焦点重定位：当前筛选结果中没有可定位项目");
+      return false;
     }
-  }, [animateScroll, config.workspaceFocus, gridColumns, notify, selectedFile, viewMode, visibleFiles, workspace]);
+    let element: HTMLDivElement | null;
+    let targetOffset: number;
+    if (viewMode === "grid") {
+      element = gridScrollElement.current;
+      const viewportHeight = element?.clientHeight ?? 0;
+      targetOffset = Math.max(0, Math.floor(fileIndex / gridColumns) * GRID_ROW_HEIGHT - (viewportHeight - GRID_ROW_HEIGHT) / 2);
+    } else {
+      element = listScrollElement.current;
+      const viewportHeight = element?.clientHeight ?? 0;
+      targetOffset = Math.max(0, fileIndex * LIST_ROW_HEIGHT - (viewportHeight - LIST_ROW_HEIGHT) / 2);
+    }
+    if (animated) {
+      animateScroll(element, targetOffset);
+    } else if (element) {
+      if (scrollAnimation.current !== null) {
+        window.cancelAnimationFrame(scrollAnimation.current);
+        scrollAnimation.current = null;
+      }
+      element.scrollTop = targetOffset;
+    }
+    writeClientLog("debug", `工作区焦点已定位：来源 ${source}，文件 ${focusPath}，视图 ${viewMode}，索引 ${fileIndex}，偏移 ${Math.round(targetOffset)}`);
+    return true;
+  }, [animateScroll, config.workspaceFocus, gridColumns, notify, selectedItem, viewMode, visibleFiles, workspace]);
+  const scrollWorkspaceToFocus = useCallback(() => {
+    positionWorkspaceFocus(true, true, "button");
+  }, [positionWorkspaceFocus]);
+
+  // ResizeObserver lives across renders; the ref gives its settle callback the latest
+  // selection, column count, and virtualized viewport without recreating the observer.
+  repositionFocusAfterResize.current = (previousWidth, nextWidth) => {
+    if (viewMode !== "grid") return;
+    const positioned = positionWorkspaceFocus(false, false, "resize");
+    writeClientLog(
+      "debug",
+      `工作区宽度变化已稳定：${Math.round(previousWidth)} -> ${Math.round(nextWidth)}，网格 ${gridColumns} 列，焦点重定位 ${positioned ? "完成" : "跳过"}`,
+    );
+  };
 
   useEffect(() => () => { if (scrollAnimation.current !== null) window.cancelAnimationFrame(scrollAnimation.current); }, []);
 

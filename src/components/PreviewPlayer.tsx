@@ -32,6 +32,8 @@ type PendingDirectSeek = {
   retried: boolean;
 };
 
+type VideoFitMode = "contain" | "cover" | "fill";
+
 function describeBufferedRanges(element: HTMLVideoElement) {
   const ranges: string[] = [];
   for (let index = 0; index < element.buffered.length; index += 1) {
@@ -65,6 +67,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState(1);
+  const [fitMode, setFitMode] = useState<VideoFitMode>("contain");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fullscreenControlsVisible, setFullscreenControlsVisible] = useState(true);
   const streamStartTime = useRef(0);
@@ -423,6 +426,9 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     pendingDirectSeek.current = null;
     playbackIntent.current = false;
     activeMediaRequest.current = 0;
+    // Ignore metadata/error events already queued for the detached source. Without this
+    // guard, a late 0x0 metadata event could start a new FFmpeg fallback during deletion.
+    directFallbackRequested.current = true;
     const element = videoElement.current;
     if (element) {
       element.removeAttribute("src");
@@ -431,10 +437,9 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
     setStreamUrl(null);
     setPlayerState("idle");
     if (video) {
-      writeClientLog("info", `播放器释放媒体资源：${video.path}`);
-      void invoke("stop_transcoded_preview", { path: video.path }).catch((error: unknown) => {
-        writeClientLog("warn", `释放播放器资源时停止转码失败：${video.path}，${errorMessage(error)}`);
-      });
+      // Backend termination is owned by the caller or the video-path cleanup effect.
+      // Keeping release local prevents two concurrent stop commands for the same PID.
+      writeClientLog("info", `播放器已断开媒体流并释放浏览器资源：${video.path}`);
     }
   };
 
@@ -511,7 +516,7 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
         {streamUrl && (
           <video
             ref={videoElement}
-            className={`preview-video ${playerState === "ready" ? "is-ready" : ""}`}
+            className={`preview-video fit-${fitMode} ${playerState === "ready" ? "is-ready" : ""}`}
             src={streamUrl}
             preload="metadata"
             playsInline
@@ -617,94 +622,114 @@ export const PreviewPlayer = forwardRef<PreviewPlayerHandle, PreviewPlayerProps>
         onPointerEnter={keepFullscreenControlsVisible}
         onPointerLeave={showFullscreenControls}
       >
-        <button type="button" aria-label={isPlaying ? "暂停" : "播放"} title={isPlaying ? "暂停" : "播放"} onClick={togglePlayback} disabled={playerState !== "ready"}>
-          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-        </button>
-        <span className="player-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
-        <input
-          className="player-progress"
-          type="range"
-          min="0"
-          max={duration || 0}
-          step="0.1"
-          value={Math.min(currentTime, duration || 0)}
-          style={{ "--range-progress": `${duration > 0 ? Math.min(currentTime / duration, 1) * 100 : 0}%` } as CSSProperties}
-          aria-label="播放进度"
-          disabled={duration <= 0}
-          onPointerDown={() => {
-            isScrubbing.current = true;
-          }}
-          onInput={(event) => setCurrentTime(Number(event.currentTarget.value))}
-          onPointerUp={(event) => {
-            isScrubbing.current = false;
-            seek(Number(event.currentTarget.value));
-          }}
-          onPointerCancel={() => {
-            isScrubbing.current = false;
-          }}
-          onKeyUp={(event) => {
-            if (["ArrowLeft", "ArrowRight", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+        <div className="player-controls-row player-progress-row">
+          <button type="button" aria-label={isPlaying ? "暂停" : "播放"} title={isPlaying ? "暂停" : "播放"} onClick={togglePlayback} disabled={playerState !== "ready"}>
+            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+          </button>
+          <input
+            className="player-progress"
+            type="range"
+            min="0"
+            max={duration || 0}
+            step="0.1"
+            value={Math.min(currentTime, duration || 0)}
+            style={{ "--range-progress": `${duration > 0 ? Math.min(currentTime / duration, 1) * 100 : 0}%` } as CSSProperties}
+            aria-label="播放进度"
+            disabled={duration <= 0}
+            onPointerDown={() => {
+              isScrubbing.current = true;
+            }}
+            onInput={(event) => setCurrentTime(Number(event.currentTarget.value))}
+            onPointerUp={(event) => {
+              isScrubbing.current = false;
               seek(Number(event.currentTarget.value));
-            }
-          }}
-        />
-        <button
-          type="button"
-          aria-label={isMuted ? "取消静音" : "静音"}
-          title={isMuted ? "取消静音" : "静音"}
-          onClick={() => {
-            const nextMuted = !isMuted;
-            setIsMuted(nextMuted);
-            onAudioPreferenceChange(playerVolume, nextMuted, true);
-            writeClientLog("info", `播放器静音状态更新：${video.path}，静音 ${nextMuted}`);
-          }}
-          disabled={playerState !== "ready"}
-        >
-          {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-        </button>
-        <input
-          className="player-volume"
-          type="range"
-          min="0"
-          max="100"
-          value={isMuted ? 0 : playerVolume}
-          style={{ "--range-progress": `${isMuted ? 0 : playerVolume}%` } as CSSProperties}
-          aria-label="音量"
-          disabled={playerState !== "ready"}
-          onInput={(event) => {
-            const nextVolume = Number(event.currentTarget.value);
-            const element = videoElement.current;
-            if (element) {
-              element.volume = (nextVolume || playerVolume) / 100;
-              element.muted = nextVolume === 0;
-            }
-            if (nextVolume > 0) {
-              setPlayerVolume(nextVolume);
-              setIsMuted(false);
-              onAudioPreferenceChange(nextVolume, false);
-            } else {
-              setIsMuted(true);
-              onAudioPreferenceChange(playerVolume, true);
-            }
-          }}
-          onPointerUp={() => writeClientLog("info", `播放器音量调整完成：${video.path}，音量 ${isMuted ? 0 : playerVolume}`)}
-          onKeyUp={() => writeClientLog("debug", `播放器键盘调整音量：${video.path}，音量 ${isMuted ? 0 : playerVolume}`)}
-        />
-        <select
-          aria-label="播放速率"
-          value={rate}
-          disabled={playerState !== "ready"}
-          onChange={(event) => {
-            const nextRate = Number(event.target.value);
-            setRate(nextRate);
-            writeClientLog("info", `播放器速率调整：${video.path}，${rate}x -> ${nextRate}x`);
-          }}
-        >
-          {[0.5, 0.75, 1, 1.25, 1.5, 2].map((value) => <option key={value} value={value}>{value}×</option>)}
-        </select>
-        <button type="button" aria-label={isFullscreen ? "退出全屏" : "全屏"} title={isFullscreen ? "退出全屏" : "全屏"} disabled={playerState !== "ready"} onClick={toggleFullscreen}>
-          {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-        </button>
+            }}
+            onPointerCancel={() => {
+              isScrubbing.current = false;
+            }}
+            onKeyUp={(event) => {
+              if (["ArrowLeft", "ArrowRight", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+                seek(Number(event.currentTarget.value));
+              }
+            }}
+          />
+          <span className="player-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
+        </div>
+        <div className="player-controls-row player-options-row">
+          <button
+            type="button"
+            aria-label={isMuted ? "取消静音" : "静音"}
+            title={isMuted ? "取消静音" : "静音"}
+            onClick={() => {
+              const nextMuted = !isMuted;
+              setIsMuted(nextMuted);
+              onAudioPreferenceChange(playerVolume, nextMuted, true);
+              writeClientLog("info", `播放器静音状态更新：${video.path}，静音 ${nextMuted}`);
+            }}
+            disabled={playerState !== "ready"}
+          >
+            {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+          <input
+            className="player-volume"
+            type="range"
+            min="0"
+            max="100"
+            value={isMuted ? 0 : playerVolume}
+            style={{ "--range-progress": `${isMuted ? 0 : playerVolume}%` } as CSSProperties}
+            aria-label="音量"
+            disabled={playerState !== "ready"}
+            onInput={(event) => {
+              const nextVolume = Number(event.currentTarget.value);
+              const element = videoElement.current;
+              if (element) {
+                element.volume = (nextVolume || playerVolume) / 100;
+                element.muted = nextVolume === 0;
+              }
+              if (nextVolume > 0) {
+                setPlayerVolume(nextVolume);
+                setIsMuted(false);
+                onAudioPreferenceChange(nextVolume, false);
+              } else {
+                setIsMuted(true);
+                onAudioPreferenceChange(playerVolume, true);
+              }
+            }}
+            onPointerUp={() => writeClientLog("info", `播放器音量调整完成：${video.path}，音量 ${isMuted ? 0 : playerVolume}`)}
+            onKeyUp={() => writeClientLog("debug", `播放器键盘调整音量：${video.path}，音量 ${isMuted ? 0 : playerVolume}`)}
+          />
+          <select
+            className="player-fit-select"
+            aria-label="画面适配方式"
+            title="画面适配方式"
+            value={fitMode}
+            onChange={(event) => {
+              const nextFitMode = event.target.value as VideoFitMode;
+              setFitMode(nextFitMode);
+              writeClientLog("info", `播放器画面适配更新：${video.path}，${fitMode} -> ${nextFitMode}`);
+            }}
+          >
+            <option value="contain">保持比例</option>
+            <option value="cover">裁切铺满</option>
+            <option value="fill">拉伸铺满</option>
+          </select>
+          <select
+            className="player-rate-select"
+            aria-label="播放速率"
+            value={rate}
+            disabled={playerState !== "ready"}
+            onChange={(event) => {
+              const nextRate = Number(event.target.value);
+              setRate(nextRate);
+              writeClientLog("info", `播放器速率调整：${video.path}，${rate}x -> ${nextRate}x`);
+            }}
+          >
+            {[0.5, 0.75, 1, 1.25, 1.5, 2].map((value) => <option key={value} value={value}>{value}×</option>)}
+          </select>
+          <button type="button" aria-label={isFullscreen ? "退出全屏" : "全屏"} title={isFullscreen ? "退出全屏" : "全屏"} disabled={playerState !== "ready"} onClick={toggleFullscreen}>
+            {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
+        </div>
       </div>
     </section>
   );
