@@ -7,8 +7,10 @@ import {
   PasswordResponses,
   RenderingCancelledException,
   type PDFDocumentProxy,
-} from "pdfjs-dist";
-import PdfWorkerModule from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
+} from "pdfjs-dist/legacy/build/pdf.mjs";
+// System WebViews can lag behind the OS. Use the upstream compatibility build
+// in both realms so Map/Promise polyfills and worker versions always match.
+import PdfWorkerModule from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import type { FileEntry } from "../../app-types";
@@ -72,8 +74,8 @@ function useRenderQueue(sessionKey: string) {
   }), []);
 }
 
-function clampZoom(value: number) {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(value * 100) / 100));
+function clampZoom(value: number, minimum = MIN_ZOOM) {
+  return Math.min(MAX_ZOOM, Math.max(minimum, Math.round(value * 100) / 100));
 }
 
 function fitPageZoom(availableWidth: number, pageWidth: number) {
@@ -197,6 +199,63 @@ export function PdfPreview({ file }: { file: FileEntry }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const sessionKey = `${file.path}:${reloadId}`;
   const acquireRenderSlot = useRenderQueue(sessionKey);
+  const viewState = useRef({ zoom, fitWidth, currentPage, viewportWidth });
+  viewState.current = { zoom, fitWidth, currentPage, viewportWidth };
+
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || !document) return;
+    let pinch: { distance: number; latestDistance: number; baseZoom: number | null; x: number; y: number; startX: number; startY: number; left: number; top: number } | null = null;
+    let frame = 0;
+    const points = (touches: TouchList) => {
+      const a = touches[0], b = touches[1];
+      const rect = scroll.getBoundingClientRect();
+      return { distance: Math.max(1, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)), x: (a.clientX + b.clientX) / 2 - rect.left, y: (a.clientY + b.clientY) / 2 - rect.top };
+    };
+    const apply = () => {
+      if (!pinch || pinch.baseZoom === null) return;
+      const next = clampZoom(pinch.baseZoom * pinch.latestDistance / pinch.distance, 0.01);
+      const ratio = next / pinch.baseZoom;
+      setFitWidth(false); setZoom(next);
+      const left = (pinch.left + pinch.startX) * ratio - pinch.x;
+      const top = (pinch.top + pinch.startY) * ratio - pinch.y;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { scroll.scrollLeft = left; scroll.scrollTop = top; });
+    };
+    const start = (event: TouchEvent) => {
+      if (event.touches.length !== 2) { pinch = null; return; }
+      event.preventDefault();
+      const point = points(event.touches);
+      const gesture = { ...point, latestDistance: point.distance, baseZoom: viewState.current.fitWidth ? null : viewState.current.zoom, startX: point.x, startY: point.y, left: scroll.scrollLeft, top: scroll.scrollTop };
+      pinch = gesture;
+      if (gesture.baseZoom === null) {
+        void document.getPage(viewState.current.currentPage).then((page) => {
+          if (pinch !== gesture) return;
+          gesture.baseZoom = fitPageZoom(viewState.current.viewportWidth, page.getViewport({ scale: 1 }).width);
+          apply();
+        }).catch((reason) => writeClientLog("warn", `PDF 手势初始化失败：${file.path}，${errorMessage(reason)}`));
+      }
+    };
+    const move = (event: TouchEvent) => {
+      if (event.touches.length !== 2) return;
+      event.preventDefault();
+      if (!pinch) { start(event); return; }
+      const point = points(event.touches);
+      pinch.latestDistance = point.distance; pinch.x = point.x; pinch.y = point.y;
+      apply();
+    };
+    const end = () => {
+      if (pinch) writeClientLog("debug", `PDF 双指缩放结束：${file.path}，倍率 ${viewState.current.zoom}`);
+      pinch = null;
+    };
+    // React delegates touch listeners as passive. Register locally so only two-finger
+    // gestures suppress the browser default; one-finger overflow scrolling stays native.
+    scroll.addEventListener("touchstart", start, { passive: false });
+    scroll.addEventListener("touchmove", move, { passive: false });
+    scroll.addEventListener("touchend", end);
+    scroll.addEventListener("touchcancel", end);
+    return () => { pinch = null; cancelAnimationFrame(frame); scroll.removeEventListener("touchstart", start); scroll.removeEventListener("touchmove", move); scroll.removeEventListener("touchend", end); scroll.removeEventListener("touchcancel", end); };
+  }, [document, file.path]);
 
   useEffect(() => {
     const stage = stageRef.current;

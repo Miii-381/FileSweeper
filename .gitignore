@@ -3,6 +3,7 @@
 /dist/
 /.npm-cache/
 /coverage/
+/artifacts/android/
 *.log
 
 # Local environment, editor and agent state
@@ -38,7 +39,11 @@ Desktop.ini
 
 # Rust and Tauri generated output
 /src-tauri/target/
-/src-tauri/gen/
+/src-tauri/gen/*
+!/src-tauri/gen/android/
+/src-tauri/gen/android/app/src/main/jniLibs/
+/src-tauri/gen/android/app/tauri.properties
+/src-tauri/gen/android/app/tauri.build.gradle.kts
 
 # Windows NSIS builds only use icon.ico; generated Android/iOS and store icons are not source assets.
 /icon.png
@@ -52,3 +57,4 @@ Desktop.ini
 
 # Local development notes and working drafts are intentionally not versioned.
 /开发文档/
+/docs/android-port-plan.md

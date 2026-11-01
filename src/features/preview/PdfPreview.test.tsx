@@ -19,13 +19,13 @@ vi.mock("../../app-utils", () => ({
   errorMessage: (error: unknown) => error instanceof Error ? error.message : String(error),
   writeClientLog,
 }));
-vi.mock("pdfjs-dist", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument,
   PDFWorker: { create: workerCreate },
   PasswordResponses: { NEED_PASSWORD: 1, INCORRECT_PASSWORD: 2 },
   RenderingCancelledException: class RenderingCancelledException extends Error {},
 }));
-vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?worker", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker", () => ({
   default: class PdfWorkerMock { terminate = workerTerminate; },
 }));
 
@@ -142,5 +142,24 @@ describe("PdfPreview", () => {
     expect(workerDestroy).toHaveBeenCalled();
     expect(workerTerminate).toHaveBeenCalled();
     expect(pageRenderCancel).toHaveBeenCalled();
+  });
+
+  it("双指手势只缩放 PDF，单指事件保留默认滚动", async () => {
+    getDocument.mockReturnValue(createWidePageLoadingTask());
+    render(<PdfPreview file={file} />);
+    const canvas = await screen.findByLabelText("PDF 第 1 页");
+    await waitFor(() => expect(canvas.style.width).toBe("142px"));
+    const content = screen.getByLabelText("PDF 内容");
+    const single = [{ clientX: 20, clientY: 40 }];
+    expect(fireEvent.touchStart(content, { touches: single })).toBe(true);
+    expect(fireEvent.touchMove(content, { touches: [{ clientX: 20, clientY: 60 }] })).toBe(true);
+    const start = [{ clientX: 50, clientY: 80 }, { clientX: 150, clientY: 80 }];
+    expect(fireEvent.touchStart(content, { touches: start })).toBe(false);
+    await screen.findByText("14%");
+    expect(fireEvent.touchMove(content, { touches: [{ clientX: 0, clientY: 80 }, { clientX: 200, clientY: 80 }] })).toBe(false);
+    await screen.findByText("28%");
+    await waitFor(() => expect(canvas.style.width).toBe("280px"));
+    fireEvent.touchEnd(content, { touches: [] });
+    expect(writeClientLog).toHaveBeenCalledWith("debug", expect.stringContaining("PDF 双指缩放结束"));
   });
 });

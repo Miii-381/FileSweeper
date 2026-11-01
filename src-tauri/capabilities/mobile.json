@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Android main WebView logging and core events",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["core:default", "log:allow-log"]
+}

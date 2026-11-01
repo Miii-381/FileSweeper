@@ -1205,6 +1205,8 @@ dependencies = [
  "base64 0.22.1",
  "encoding_rs",
  "image",
+ "jni",
+ "libc",
  "lofty",
  "log",
  "notify",
@@ -1218,6 +1220,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
+ "uuid",
  "windows",
  "windows-core 0.61.2",
 ]

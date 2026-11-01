@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">"FileSweeper"</string>
+    <string name="main_activity_title">"FileSweeper"</string>
+</resources>

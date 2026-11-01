@@ -1,0 +1,9 @@
+{
+  "app": {
+    "windows": [{ "label": "main", "title": "FileSweeper", "dragDropEnabled": false }],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*; img-src 'self' data: http://127.0.0.1:*; media-src 'self' http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:"
+    }
+  },
+  "bundle": { "targets": "all", "android": { "minSdkVersion": 30 } }
+}

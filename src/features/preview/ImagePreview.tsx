@@ -4,6 +4,7 @@ import {
   TransformComponent,
   TransformWrapper,
   type ReactZoomPanPinchContentRef,
+  type ReactZoomPanPinchRef,
 } from "react-zoom-pan-pinch";
 import { useEffect, useRef, useState } from "react";
 
@@ -13,13 +14,13 @@ import { errorMessage, writeClientLog } from "../../app-utils";
 type ImagePreviewInfo = { width: number; height: number; allowed: boolean; reason: string | null };
 
 function fitImage(
-  controls: ReactZoomPanPinchContentRef,
+  controls: ReactZoomPanPinchContentRef | ReactZoomPanPinchRef,
   image: HTMLImageElement,
   rotation: number,
   animationTime = 0,
 ) {
   const canvas = controls.instance.wrapperComponent;
-  if (!canvas || image.naturalWidth === 0 || image.naturalHeight === 0) return;
+  if (!canvas || canvas.clientWidth === 0 || canvas.clientHeight === 0 || image.naturalWidth === 0 || image.naturalHeight === 0) return;
   const rotatedSideways = Math.abs(rotation % 180) === 90;
   const width = rotatedSideways ? image.naturalHeight : image.naturalWidth;
   const height = rotatedSideways ? image.naturalWidth : image.naturalHeight;
@@ -41,6 +42,29 @@ export function ImagePreview({ file }: { file: FileEntry }) {
   const [rotation, setRotation] = useState(0);
   const [scale, setScale] = useState(1);
   const imageRef = useRef<HTMLImageElement>(null);
+  const controlsRef = useRef<ReactZoomPanPinchRef>(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [controlsReady, setControlsReady] = useState(false);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    const canvas = controls?.instance.wrapperComponent;
+    const image = imageRef.current;
+    if (!controlsReady || !controls || !canvas || !image || !dimensions.width) return;
+    let frame = 0;
+    const fit = () => {
+      cancelAnimationFrame(frame);
+      // Run after layout and the transform library's own bounds observer.
+      frame = requestAnimationFrame(() => {
+        fitImage(controls, image, rotation);
+        writeClientLog("debug", `图片适应窗格：${file.path}，视口 ${canvas.clientWidth} × ${canvas.clientHeight}，图片 ${dimensions.width} × ${dimensions.height}，旋转 ${rotation}°`);
+      });
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(canvas);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [controlsReady, source, dimensions.width, dimensions.height, rotation, file.path]);
 
   useEffect(() => {
     let active = true;
@@ -48,6 +72,8 @@ export function ImagePreview({ file }: { file: FileEntry }) {
     setError(null);
     setRotation(0);
     setScale(1);
+    setDimensions({ width: 0, height: 0 });
+    setControlsReady(false);
     writeClientLog("debug", `开始加载图片预览模块资源：${file.path}`);
     void Promise.all([
       invoke<ImagePreviewInfo>("inspect_image_preview", { path: file.path }),
@@ -74,7 +100,9 @@ export function ImagePreview({ file }: { file: FileEntry }) {
   if (!source) return <div className="preview-placeholder">正在读取图片…</div>;
   return (
     <TransformWrapper
-      minScale={0.01}
+      ref={controlsRef}
+      onInit={() => setControlsReady(true)}
+      minScale={0.000001}
       maxScale={Number.MAX_VALUE}
       limitToBounds
       onWheelStart={(ref) => ref.instance.contentComponent?.classList.add("is-wheel-zooming")}
@@ -103,18 +131,20 @@ export function ImagePreview({ file }: { file: FileEntry }) {
           </div>
           <div className="image-preview-stage">
             <TransformComponent wrapperClass="image-preview-canvas" contentClass="image-preview-content">
+              <div className="image-preview-geometry" style={{ width: rotation % 180 === 0 ? dimensions.width : dimensions.height, height: rotation % 180 === 0 ? dimensions.height : dimensions.width }}>
               <img
                 ref={imageRef}
                 src={source}
                 alt={file.name}
                 draggable={false}
-                style={{ transform: `rotate(${rotation}deg)` }}
+                style={{ transform: `translate(-50%, -50%) rotate(${rotation}deg)` }}
                 onLoad={(event) => {
                   const image = event.currentTarget;
-                  requestAnimationFrame(() => fitImage(controls, image, rotation));
+                  setDimensions({ width: image.naturalWidth, height: image.naturalHeight });
                 }}
                 onError={() => setError("浏览器无法解码此图片")}
               />
+              </div>
             </TransformComponent>
             <div className="image-preview-status" role="status" aria-live="polite">
               <span>旋转 {rotation}°</span>
